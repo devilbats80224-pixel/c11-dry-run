@@ -14,6 +14,7 @@
     "wrong_native_commit_identity": "NativeStatusChecks.test_invalid_exact_merge_identity_never_queries_github"
   },
   "native": {
+    "exact_15m_fallback_preserves_base_history": "A verified same-close direct 15m backup is allowed only if the 1m projection is not ready; keep all admitted 1m warm refill rows and prove the original same-round strategy decision.",
     "legacy_wide_masks_base_gap": "An old stored 15m candle does not prove that its constituent closed 1m candles exist.",
     "base_refill_blocked_by_missing_analyzed_frame": "A missing analyzed 15m frame must not prevent submitting a metered closed-1m history request; prove request, durable refill and an original decision in the same test window.",
     "historic_minutes_not_saved": "Every admitted closed 1m candle and its derived bars persist atomically; raw conflicts must not partially write.",

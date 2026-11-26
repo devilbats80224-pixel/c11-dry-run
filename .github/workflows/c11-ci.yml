@@ -71,6 +71,20 @@ jobs:
             exit 1
           fi
           grep -F 'AssertionError: MISSING_BASE_REFILL_REQUEST' "$out"
+      - name: Test proposed C11 fallback code in native Freqtrade
+        if: hashFiles('native_ccxt_projection/local_candle_refresh.py') != ''
+        env:
+          FT_IMAGE: docker.io/freqtradeorg/freqtrade@sha256:956c03780934eeb93734a1f352e7e150b73becdafa3767a947a25ad2422fba2e
+        run: |
+          for test in test_native_15m_fallback.py test_local_candle_refresh.py; do
+            docker run --rm --pull never --network none --read-only \
+              --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL \
+              --security-opt=no-new-privileges --entrypoint python --workdir /freqtrade \
+              -v "$PWD/native_ccxt_projection:/opt/c11-adapter:ro" \
+              -v "$PWD/release_regressions/fallback_ci:/freqtrade/c11_fallback_ci:ro" \
+              -e PYTHONPATH=/opt/c11-adapter:/freqtrade \
+              "$FT_IMAGE" -B "/freqtrade/c11_fallback_ci/$test"
+          done
       - name: Block runtime changes without native Worker evidence
         if: github.event_name == 'pull_request'
         env:

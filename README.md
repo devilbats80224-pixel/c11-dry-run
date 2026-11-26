@@ -49,3 +49,9 @@ rank-slot and symbol boundary before native Freqtrade. It checks preserved
 rank and original Unicode identity, malformed row isolation, the 20% edge,
 and expired or malformed-frame refusal. This does not start or replace the
 production OI20 publisher and no OpenMarket key is present on the runner.
+
+The proposed fallback source under `native_ccxt_projection` is actual
+adapter code, checked out from the PR. GitHub tests it with the original
+Freqtrade provider class and a synthetic in-memory store. This is not proof
+of the real candle database, original C11 strategy or final Worker. Missing
+native evidence still blocks merge.
