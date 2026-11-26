@@ -143,5 +143,24 @@ class NativeStatusChecks(unittest.TestCase):
             list(status['fetch']('refs/heads/main', 'unused'))
 
 
+class PublicTrackedFilesChecks(unittest.TestCase):
+    def test_private_types_are_ignored_and_force_add_fails(self):
+        check = runpy.run_path(str(HERE / 'check_public_tracked_files.py'))['tracked_ignored']
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder)
+            def git(*args):
+                return subprocess.run(['git', *args], cwd=repo, check=True, capture_output=True)
+            git('init')
+            (repo / '.gitignore').write_bytes((HERE.parent / '.gitignore').read_bytes())
+            blocked = ['.env.local', 'scratch.sqlite-wal', 'WIRE_PRIVATE.json', 'receipt.log']
+            for name in [*blocked, 'synthetic-case.json']:
+                (repo / name).touch()
+            git('add', '.')
+            self.assertEqual(check(repo), [])
+            self.assertIn(b'synthetic-case.json', git('ls-files', '-z').stdout)
+            git('add', '-f', '--', *blocked)
+            self.assertEqual(sorted(check(repo)), sorted(blocked))
+
+
 if __name__ == '__main__':
     unittest.main()

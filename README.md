@@ -37,3 +37,9 @@ Regression-first: record every newly reproduced defect in the required
 registry and verify the old failure before starting another fix branch.
 Use the exact same failing case to verify the fix. A no-wire failure must not
 be reported as success merely because there were no direct 5m/15m requests.
+
+Before publishing, stage only reviewed source and synthetic fixtures.
+`.gitignore` protects untracked files and CI also detects ignored paths
+that were already tracked or force-added. It does not purge published Git
+history or identify sensitive information embedded in a normally named source
+file, so review the staged diff before pushing.

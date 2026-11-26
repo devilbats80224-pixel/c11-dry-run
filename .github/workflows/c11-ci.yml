@@ -28,6 +28,8 @@ jobs:
           sh -n release_regressions/run_merged_main_ci.sh
           sh -n native_history_scheduler/run_integrated_cold_warm_review.sh
           sh -n native_history_scheduler/run_prior_invariants.sh
+      - name: Reject tracked local-only files
+        run: python3 -I -B release_regressions/check_public_tracked_files.py
       - name: Run portable regression tests
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
