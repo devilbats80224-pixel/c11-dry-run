@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          fetch-depth: 2
       - name: Verify CI shell syntax
         run: |
           sh -n release_regressions/build_and_run_one_minute_ci.sh
@@ -28,3 +29,6 @@ jobs:
           sh -n native_history_scheduler/run_prior_invariants.sh
       - name: Run portable regression tests
         run: python3 -I -B -m unittest discover -s release_regressions -p test_one_minute_ci_portable.py -v
+      - name: Block runtime changes without native Worker evidence
+        if: github.event_name == 'pull_request'
+        run: python3 -I -B release_regressions/check_pr_scope.py
