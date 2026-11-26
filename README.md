@@ -24,3 +24,11 @@ test does not count). Add the regression with a fix, and keep the old-fails /
 new-passes evidence. Native cases remain required but cannot pass from this
 public workflow; the runtime merge rule stays closed unless the trusted Mac reporter
 posts a pass for every required case on the exact proposed merge commit.
+
+GitHub also runs the official Freqtrade 2026.10 Docker image, pinned by its
+Linux/amd64 manifest digest. A network-disabled fixture feeds synthetic
+closed 1m data through real Freqtrade DataProvider and strategy analysis,
+with blank, partial, and stale starting data, plus deliberate failure controls.
+This tests the public integration contract, not the private C11 code, private
+strategy, exact deployment image, or original paper ledger. Runtime changes
+still require the separately verified Mac results.

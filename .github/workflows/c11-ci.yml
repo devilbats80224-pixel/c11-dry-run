@@ -14,7 +14,7 @@ jobs:
   portable-checks:
     name: Portable checks (no full Worker replay)
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Check out proposed code
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -35,6 +35,33 @@ jobs:
           else
             python3 -I -B release_regressions/run_required_cases.py
           fi
+      - name: Run real Freqtrade with synthetic history and no network
+        env:
+          FT_IMAGE: docker.io/freqtradeorg/freqtrade@sha256:956c03780934eeb93734a1f352e7e150b73becdafa3767a947a25ad2422fba2e
+        run: |
+          docker pull "$FT_IMAGE"
+          replay() {
+            docker run --rm --pull never --network none --read-only \
+              --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL \
+              --security-opt=no-new-privileges --entrypoint python \
+              -v "$PWD/release_regressions/public_freqtrade_replay.py:/fixture.py:ro" \
+              "$FT_IMAGE" -B /fixture.py "$@"
+          }
+          out=$(mktemp)
+          replay | tee "$out"
+          for case in blank partial stale; do
+            grep -Fx "FREQTRADE_NATIVE_CONTRACT_PASS $case" "$out"
+          done
+          if replay --case blank --inject drop-minute >"$out" 2>&1; then
+            echo 'Expected the dropped-minute fixture to fail' >&2
+            exit 1
+          fi
+          grep -F 'AssertionError: CLOSED_MINUTES_NOT_PERSISTED' "$out"
+          if replay --case blank --inject direct-wide >"$out" 2>&1; then
+            echo 'Expected the direct-wider-fetch fixture to fail' >&2
+            exit 1
+          fi
+          grep -F 'AssertionError: UNEXPECTED_WIDER_WIRE' "$out"
       - name: Block runtime changes without native Worker evidence
         if: github.event_name == 'pull_request'
         env:
