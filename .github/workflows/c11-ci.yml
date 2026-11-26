@@ -37,7 +37,7 @@ jobs:
           else
             python3 -I -B release_regressions/run_required_cases.py
           fi
-      - name: Run real Freqtrade with synthetic history and no network
+      - name: Run offline OI20 handoff and native Freqtrade together
         env:
           FT_IMAGE: docker.io/freqtradeorg/freqtrade@sha256:956c03780934eeb93734a1f352e7e150b73becdafa3767a947a25ad2422fba2e
         run: |
@@ -47,12 +47,14 @@ jobs:
               --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL \
               --security-opt=no-new-privileges --entrypoint python --workdir /freqtrade \
               -v "$PWD/release_regressions/public_freqtrade_replay.py:/freqtrade/c11_ci_fixture.py:ro" \
+              -v "$PWD/release_regressions/oi20_contract:/freqtrade/oi20_contract:ro" \
               "$FT_IMAGE" -B /freqtrade/c11_ci_fixture.py "$@"
           }
           out=$(mktemp)
           replay | tee "$out"
           for case in blank partial stale; do
             grep -Fx "FREQTRADE_NATIVE_CONTRACT_PASS $case" "$out"
+            grep -Fx "OI20_CANDIDATE_DELIVERED_TO_FREQTRADE $case" "$out"
           done
           if replay --case blank --inject drop-minute >"$out" 2>&1; then
             echo 'Expected the dropped-minute fixture to fail' >&2
