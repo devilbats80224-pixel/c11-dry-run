@@ -43,3 +43,9 @@ Before publishing, stage only reviewed source and synthetic fixtures.
 that were already tracked or force-added. It does not purge published Git
 history or identify sensitive information embedded in a normally named source
 file, so review the staged diff before pushing.
+
+The same offline run injects a synthetic OI20 publication into the current
+rank-slot and symbol boundary before native Freqtrade. It checks preserved
+rank and original Unicode identity, malformed row isolation, the 20% edge,
+and expired or malformed-frame refusal. This does not start or replace the
+production OI20 publisher and no OpenMarket key is present on the runner.

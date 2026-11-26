@@ -11,8 +11,9 @@ from freqtrade import __version__
 from freqtrade.data.dataprovider import DataProvider
 from freqtrade.enums import CandleType, RunMode
 from freqtrade.strategy import IStrategy
+from oi20_contract.fixture import make_publication, test_scope
 
-PAIR = "DEMO/USDT:USDT"
+PAIR = "龙虾/USDT:USDT"
 TYPE = CandleType.FUTURES
 MINUTE = 60
 START = 1767225600  # UTC on a 15m boundary
@@ -118,7 +119,16 @@ def verify(case, inject):
         # A blank/partial/stale store alone must not fabricate a usable bar.
         ex.project(WIDE)
         require(dp.ohlcv(PAIR, "15m", candle_type=TYPE).empty, "PREMATURE_NATIVE_FRAME")
-        dp.refresh([BASE] + WIDE)
+        snapshot = make_publication(ex.end * 1000)
+        candidates = test_scope(snapshot, ex.end * 1000)
+        require(candidates == [(3, PAIR)], "OI20_RANK_OR_SYMBOL_NOT_PRESERVED")
+        require(not test_scope(snapshot, snapshot["expires_ms"]), "EXPIRED_OI20_REUSED")
+        malformed = {**snapshot, "provider_ranks_v1": [3] * len(snapshot["rows"])}
+        require(not test_scope(malformed, ex.end * 1000), "MALFORMED_OI20_ACCEPTED")
+        # Only candidates actually delivered by the isolated OI20 boundary
+        # can produce a provider refresh or be evaluated by Freqtrade.
+        for _, admitted in candidates:
+            dp.refresh([(admitted, tf, TYPE) for tf in ("1m", "5m", "15m")])
         require(not any(key != BASE for key in ex.wire), "UNEXPECTED_WIDER_WIRE")
         require(ex.wire == [BASE], "MISSING_BASE_REFILL_REQUEST")
         n = db.execute(
@@ -133,7 +143,8 @@ def verify(case, inject):
         require(df5.iloc[-1].close == df15.iloc[-1].close == 129,
                 "INCONSISTENT_LAST_CLOSE")
         # Use the actual Freqtrade strategy analyzer and analyzed-data cache.
-        s.analyze_pair(PAIR)
+        for _, admitted in candidates:
+            s.analyze_pair(admitted)
         result, _ = dp.get_analyzed_dataframe(PAIR, "15m")
         require(not result.empty and result.enter_long.tolist() == [0, 1],
                 "NO_EXPECTED_NATIVE_DECISION")
@@ -141,6 +152,7 @@ def verify(case, inject):
         ex.project(WIDE)
         require(dp.ohlcv(PAIR, "15m", candle_type=TYPE).empty, "STALE_NATIVE_FRAME_REUSED")
         print(f"FREQTRADE_NATIVE_CONTRACT_PASS {case}")
+        print(f"OI20_CANDIDATE_DELIVERED_TO_FREQTRADE {case}")
 
 
 if __name__ == "__main__":
