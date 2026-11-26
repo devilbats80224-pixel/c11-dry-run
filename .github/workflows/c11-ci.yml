@@ -43,9 +43,9 @@ jobs:
           replay() {
             docker run --rm --pull never --network none --read-only \
               --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL \
-              --security-opt=no-new-privileges --entrypoint python \
-              -v "$PWD/release_regressions/public_freqtrade_replay.py:/fixture.py:ro" \
-              "$FT_IMAGE" -B /fixture.py "$@"
+              --security-opt=no-new-privileges --entrypoint python --workdir /freqtrade \
+              -v "$PWD/release_regressions/public_freqtrade_replay.py:/freqtrade/c11_ci_fixture.py:ro" \
+              "$FT_IMAGE" -B /freqtrade/c11_ci_fixture.py "$@"
           }
           out=$(mktemp)
           replay | tee "$out"
