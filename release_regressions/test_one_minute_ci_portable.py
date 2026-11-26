@@ -123,5 +123,25 @@ class RegistryChecks(unittest.TestCase):
         self.assertEqual(verify(baseline, proposed), ['portable:bad_wire', 'native:cold'])
 
 
+class NativeStatusChecks(unittest.TestCase):
+    def test_mac_results_must_be_complete_current_and_trusted(self):
+        status = runpy.run_path(str(HERE / 'native_replay_status.py'))
+        def entry(case, state, actor=status['ISSUER']):
+            return {'context': status['PREFIX'] + case, 'state': state,
+                    'creator': {'login': actor}}
+        cases = ['no_direct_15m', 'blank_state']
+        rows = [entry('no_direct_15m', 'failure'), entry('no_direct_15m', 'success'),
+                entry('blank_state', 'success', 'other-account')]
+        self.assertEqual(status['failures'](cases, rows),
+                         {'blank_state': 'missing', 'no_direct_15m': 'failure'})
+        self.assertEqual(status['failures'](cases, [
+            entry('blank_state', 'success'), entry('no_direct_15m', 'success')]), {})
+
+    def test_invalid_exact_merge_identity_never_queries_github(self):
+        status = runpy.run_path(str(HERE / 'native_replay_status.py'))
+        with self.assertRaisesRegex(ValueError, 'EXPECTED_EXACT_MERGE_SHA'):
+            list(status['fetch']('refs/heads/main', 'unused'))
+
+
 if __name__ == '__main__':
     unittest.main()

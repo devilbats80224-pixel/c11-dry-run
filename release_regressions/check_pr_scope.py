@@ -1,11 +1,11 @@
 """Never let portable-only CI approve a C11 runtime or packaging change.
 
 All unclassified paths are treated as execution-affecting. The public
-workflow intentionally has no access to private native replay data or to a
-trusted replay verifier yet; until it does, those changes fail closed.
+workflow reads only verified status summaries, never private replay data.
 """
 import json
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 
@@ -14,6 +14,7 @@ PORTABLE = frozenset({
     ".github/workflows/c11-ci.yml",
     "README.md",
     "release_regressions/check_pr_scope.py",
+    "release_regressions/native_replay_status.py",
     "release_regressions/required_cases.json",
     "release_regressions/run_required_cases.py",
     "release_regressions/test_one_minute_ci_portable.py",
@@ -41,9 +42,22 @@ def main():
         for path in blocked:
             print(ascii(path))
         manifest = json.loads(Path(__file__).with_name("required_cases.json").read_bytes())
-        for case in sorted(manifest["native"]):
-            print(f"NATIVE_RESULT_REQUIRED {case}")
-        return 2
+        cases = manifest["native"]
+        if not cases:
+            return 2
+        try:
+            sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+            verify = runpy.run_path(str(Path(__file__).with_name("native_replay_status.py")))["verify"]
+            outstanding = verify(cases, sha)
+        except (KeyError, OSError, ValueError):
+            print("NATIVE_STATUS_UNAVAILABLE")
+            return 2
+        for case, state in outstanding.items():
+            print(f"NATIVE_RESULT_REQUIRED {case}: {state}")
+        if outstanding:
+            return 2
+        print("ALL_NATIVE_CASES_PASSED_FOR_EXACT_MERGE")
+        return 0
     print("PORTABLE_ONLY_PR")
     return 0
 

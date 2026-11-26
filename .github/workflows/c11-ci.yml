@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  statuses: read
 concurrency:
   group: c11-pr-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -36,4 +37,6 @@ jobs:
           fi
       - name: Block runtime changes without native Worker evidence
         if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 -I -B release_regressions/check_pr_scope.py
