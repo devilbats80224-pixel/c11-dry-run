@@ -3,6 +3,7 @@ from copy import deepcopy
 import hashlib
 from pathlib import Path
 import runpy
+import subprocess
 import tempfile
 import unittest
 
@@ -70,6 +71,43 @@ class LaunchChecks(unittest.TestCase):
         changed['Image']=self.launch['Image']
         changed['Mounts'][0]['Name']='different-fixture'
         self.assertEqual(self.verify(self.receipt,changed),'MOUNT_MISMATCH')
+
+class MergeGateChecks(unittest.TestCase):
+    def test_docs_and_portable_suite_do_not_require_private_worker(self):
+        check = runpy.run_path(str(HERE / 'check_pr_scope.py'))['requires_native_replay']
+        self.assertEqual(check(['README.md', 'release_regressions/test_one_minute_ci_portable.py']), [])
+
+    def test_runtime_packaging_and_unknown_paths_fail_closed(self):
+        check = runpy.run_path(str(HERE / 'check_pr_scope.py'))['requires_native_replay']
+        runtime = ['native_history_scheduler/native_primary_lane.py',
+                   'release_regressions/build_and_run_one_minute_ci.sh',
+                   'release_regressions/check_one_minute_warm_replay.py',
+                   'compose.yml', 'new-worker-entry']
+        self.assertEqual(check(['README.md'] + runtime), sorted(runtime))
+
+    def test_real_pr_merge_diff_does_not_hide_deleted_runtime_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            def git(*args):
+                subprocess.run(['git', *args], cwd=tmp, check=True, capture_output=True)
+            git('init', '-b', 'base')
+            git('config', 'user.email', 'ci@example.invalid')
+            git('config', 'user.name', 'CI')
+            worker = Path(tmp) / 'worker.py'
+            worker.write_text('pass')
+            git('add', 'worker.py')
+            git('commit', '-m', 'base')
+            git('switch', '-c', 'proposed')
+            git('mv', 'worker.py', 'README.md')
+            git('commit', '-m', 'runtime replaced with a doc')
+            git('switch', 'base')
+            git('merge', '--no-ff', '-m', 'merge test', 'proposed')
+            result = subprocess.run(
+                ['python3', '-I', '-B', str(HERE / 'check_pr_scope.py')], cwd=tmp,
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn('worker.py', result.stdout)
+
 
 if __name__ == '__main__':
     unittest.main()
