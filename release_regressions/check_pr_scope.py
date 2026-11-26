@@ -15,6 +15,7 @@ PORTABLE = frozenset({
     "README.md",
     "release_regressions/check_pr_scope.py",
     "release_regressions/native_replay_status.py",
+    "release_regressions/public_freqtrade_replay.py",
     "release_regressions/required_cases.json",
     "release_regressions/run_required_cases.py",
     "release_regressions/test_one_minute_ci_portable.py",
