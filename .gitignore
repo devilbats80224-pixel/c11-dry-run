@@ -1,0 +1,43 @@
+# C11 local-only secrets and configuration
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.json
+config.local.*
+*_PRIVATE.*
+private/
+secrets/
+
+# Do not publish actual accounts, raw operator input, or run receipts.
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.ledger
+*.log
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.parquet
+*.feather
+runtime-data/
+ledger/
+ledgers/
+live-data/
+raw-data/
+private-fixtures/
+receipts/
+backups/
+
+# Local tooling
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/

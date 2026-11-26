@@ -7,6 +7,7 @@
     "direct_wide_data_fetch": "WireChecks.test_any_direct_wider_request_fails",
     "missing_original_decision": "WireChecks.test_original_callback_and_exact_refill_required",
     "bad_wire_receipt": "WireChecks.test_bad_receipt_is_failure",
+    "ignored_file_cannot_be_force_tracked": "PublicTrackedFilesChecks.test_private_types_are_ignored_and_force_add_fails",
     "missing_regression_result": "RegistryChecks.test_missing_or_skipped_test_fails",
     "deleted_regression_case": "RegistryChecks.test_baseline_cases_cannot_disappear_or_change",
     "untrusted_or_incomplete_native_status": "NativeStatusChecks.test_mac_results_must_be_complete_current_and_trusted",

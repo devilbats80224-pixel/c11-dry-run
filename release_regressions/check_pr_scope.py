@@ -13,6 +13,8 @@ PORTABLE = frozenset({
     ".github/pull_request_template.md",
     ".github/workflows/c11-ci.yml",
     "README.md",
+    ".gitignore",
+    "release_regressions/check_public_tracked_files.py",
     "release_regressions/check_pr_scope.py",
     "release_regressions/native_replay_status.py",
     "release_regressions/public_freqtrade_replay.py",
