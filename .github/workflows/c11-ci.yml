@@ -62,6 +62,11 @@ jobs:
             exit 1
           fi
           grep -F 'AssertionError: UNEXPECTED_WIDER_WIRE' "$out"
+          if replay --case blank --inject no-refill >"$out" 2>&1; then
+            echo 'Expected the missing base refill fixture to fail' >&2
+            exit 1
+          fi
+          grep -F 'AssertionError: MISSING_BASE_REFILL_REQUEST' "$out"
       - name: Block runtime changes without native Worker evidence
         if: github.event_name == 'pull_request'
         env:

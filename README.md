@@ -32,3 +32,8 @@ with blank, partial, and stale starting data, plus deliberate failure controls.
 This tests the public integration contract, not the private C11 code, private
 strategy, exact deployment image, or original paper ledger. Runtime changes
 still require the separately verified Mac results.
+
+Regression-first: record every newly reproduced defect in the required
+registry and verify the old failure before starting another fix branch.
+Use the exact same failing case to verify the fix. A no-wire failure must not
+be reported as success merely because there were no direct 5m/15m requests.

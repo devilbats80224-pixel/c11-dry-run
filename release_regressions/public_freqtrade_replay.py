@@ -45,6 +45,8 @@ class FixtureExchange:
         self.cache.clear()
         if BASE not in pairs:
             raise AssertionError("MISSING_NATIVE_MINUTE_REQUEST")
+        if self.inject == "no-refill":
+            return  # Reproduce the broken dependency on an already-analyzed frame.
         if self.inject == "direct-wide":
             self.native_wire(WIDE[-1])
         closed = [row for row in self.native_wire(BASE) if row[0] + MINUTE <= self.end]
@@ -117,7 +119,8 @@ def verify(case, inject):
         ex.project(WIDE)
         require(dp.ohlcv(PAIR, "15m", candle_type=TYPE).empty, "PREMATURE_NATIVE_FRAME")
         dp.refresh([BASE] + WIDE)
-        require(ex.wire == [BASE], "UNEXPECTED_WIDER_WIRE")
+        require(not any(key != BASE for key in ex.wire), "UNEXPECTED_WIDER_WIRE")
+        require(ex.wire == [BASE], "MISSING_BASE_REFILL_REQUEST")
         n = db.execute(
             "SELECT count(*) FROM minutes WHERE ts >= ? AND ts < ?", (START, ex.end)
         ).fetchone()[0]
@@ -143,7 +146,7 @@ def verify(case, inject):
 if __name__ == "__main__":
     cli = argparse.ArgumentParser()
     cli.add_argument("--case", choices=("blank", "partial", "stale"))
-    cli.add_argument("--inject", choices=("direct-wide", "drop-minute"))
+    cli.add_argument("--inject", choices=("direct-wide", "drop-minute", "no-refill"))
     args = cli.parse_args()
     require(__version__ == "2026.10" or __version__.startswith("2026.10-"),
             "WRONG_FREQTRADE_VERSION")
