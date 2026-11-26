@@ -8,9 +8,8 @@ and portable regression checks; full Worker replay is a separate, local gate.
 No workflow deploys or merges C11 automatically.
 
 The required PR check distinguishes workflow/docs-only changes from runtime,
-replay-harness and packaging changes. The latter fail closed until a trusted
-native replay check is connected to the PR; a green portable suite is not a
-substitute. No private fixtures or self-hosted runner are exposed to public PRs.
+replay-harness and packaging changes. The latter require every native status from the trusted reporter on the exact
+PR merge commit. Missing, failed and stale results cannot approve a merge. No private fixtures or self-hosted runner are exposed to public PRs.
 
 Native replay must verify the exact packaged Worker. In particular, retain every
 admitted closed 1m candle and its derived bars atomically, reject conflicting
@@ -23,5 +22,5 @@ required PR job checks that existing cases have not been removed or changed
 and verifies that each portable case actually passed (a skipped or undiscovered
 test does not count). Add the regression with a fix, and keep the old-fails /
 new-passes evidence. Native cases remain required but cannot pass from this
-public workflow; the current runtime merge rule stays closed until a trusted
-Mac runner reports those results for the exact proposed release.
+public workflow; the runtime merge rule stays closed unless the trusted Mac reporter
+posts a pass for every required case on the exact proposed merge commit.
