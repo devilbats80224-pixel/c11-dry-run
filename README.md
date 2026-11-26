@@ -17,3 +17,11 @@ admitted closed 1m candle and its derived bars atomically, reject conflicting
 raw rows without partial writes, keep 5m/15m off the wire, and prove the original
 strategy receives the candidate in the intended window. Include partial, absent,
 and stale checkpoints; do not substitute a component test for full replay.
+
+Keep known failure modes in `release_regressions/required_cases.json`. The
+required PR job checks that existing cases have not been removed or changed
+and verifies that each portable case actually passed (a skipped or undiscovered
+test does not count). Add the regression with a fix, and keep the old-fails /
+new-passes evidence. Native cases remain required but cannot pass from this
+public workflow; the current runtime merge rule stays closed until a trusted
+Mac runner reports those results for the exact proposed release.
