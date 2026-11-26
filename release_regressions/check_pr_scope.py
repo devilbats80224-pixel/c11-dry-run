@@ -4,6 +4,8 @@ All unclassified paths are treated as execution-affecting. The public
 workflow intentionally has no access to private native replay data or to a
 trusted replay verifier yet; until it does, those changes fail closed.
 """
+import json
+from pathlib import Path
 import subprocess
 import sys
 
@@ -12,6 +14,8 @@ PORTABLE = frozenset({
     ".github/workflows/c11-ci.yml",
     "README.md",
     "release_regressions/check_pr_scope.py",
+    "release_regressions/required_cases.json",
+    "release_regressions/run_required_cases.py",
     "release_regressions/test_one_minute_ci_portable.py",
 })
 
@@ -36,6 +40,9 @@ def main():
         print("NATIVE_WORKER_REPLAY_REQUIRED: portable CI cannot approve this PR")
         for path in blocked:
             print(ascii(path))
+        manifest = json.loads(Path(__file__).with_name("required_cases.json").read_bytes())
+        for case in sorted(manifest["native"]):
+            print(f"NATIVE_RESULT_REQUIRED {case}")
         return 2
     print("PORTABLE_ONLY_PR")
     return 0

@@ -109,5 +109,19 @@ class MergeGateChecks(unittest.TestCase):
             self.assertIn('worker.py', result.stdout)
 
 
+class RegistryChecks(unittest.TestCase):
+    def test_missing_or_skipped_test_fails(self):
+        verify = runpy.run_path(str(HERE / 'run_required_cases.py'))['unverified']
+        cases = {'passed': 'Existing.test_passed', 'skipped': 'Existing.test_skipped'}
+        self.assertEqual(verify(cases, {'test_one_minute_ci_portable.Existing.test_passed'}), ['skipped'])
+
+    def test_baseline_cases_cannot_disappear_or_change(self):
+        verify = runpy.run_path(str(HERE / 'run_required_cases.py'))['changed_cases']
+        baseline = {'portable': {'bad_wire': 'Wire.test_five_minute'},
+                    'native': {'cold': 'Actual cold replay'}}
+        proposed = {'portable': {}, 'native': {'cold': 'Test different behavior'}}
+        self.assertEqual(verify(baseline, proposed), ['portable:bad_wire', 'native:cold'])
+
+
 if __name__ == '__main__':
     unittest.main()
