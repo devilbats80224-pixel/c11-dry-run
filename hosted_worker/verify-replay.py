@@ -18,17 +18,25 @@ assert no_listing == "no" or (cached == remote == prepared == "no" and mode == "
 background = sys.argv[7] if len(sys.argv) >= 8 else "no"
 assert background in {"yes", "no"} and (background == "no" or (cached == "yes" and mode == "yes"))
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial", "yes"}
-def failure_summary(actual, phase, reason, *, age=None):
+case_name = "unseeded-no-listing" if no_listing == "yes" else (
+    "background-blank" if background == "yes" else mode
+)
+
+def failure_summary(actual, phase, reason, *, age=None, persisted=None):
     detail = (f"Expected original 5m VETO in the target cycle; actual {actual}; "
               f"phase={phase}; reason={reason}")
     if age is not None:
         detail += f"; observed_after_close_ms={age}"
+    if no_listing == "yes":
+        detail += "; no saved checkpoint or pinned cache; historical archives disabled by this fixture"
+    if type(persisted) is int and 0 <= persisted <= 100_000:
+        detail += f"; confirmed 1m pages stored: {persisted}"
     if os.environ.get("GITHUB_ACTIONS") == "true":
-        print(f"::error title=C11 replay ({mode})::{detail}")
+        print(f"::error title=C11 replay ({case_name})::{detail}")
     if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
         try:
             with Path(summary_path).open("a", encoding="utf-8") as summary:
-                print(f"### C11 Worker replay: {mode}", "", detail, "", sep="\n", file=summary)
+                print(f"### C11 Worker replay: {case_name}", "", detail, "", sep="\n", file=summary)
         except OSError:
             print("C11_JOB_SUMMARY_UNAVAILABLE")
 
@@ -130,7 +138,7 @@ if status == "JCT_REPLAY_HELD":
     else:
         reason, age = first_persist or "UNCONFIRMED", None
         print("C11_HOSTED_PREFIX_DIAGNOSTIC", mode, f"phase={phase}", f"first={reason}")
-    failure_summary("JCT_REPLAY_HELD", phase, reason, age=age)
+    failure_summary("JCT_REPLAY_HELD", phase, reason, age=age, persisted=stages.get("PERSISTED"))
     # Only emit machine status tokens, not any wire data, paths, or IDs.
     import re
     for field in ("entry_gate_statuses", "entry_advice_statuses", "entry_primary", "entry_rpd_checks"):
@@ -192,6 +200,7 @@ elif background == "yes":
                for start,stop,_,_ in r["shared_1m_requests"]), "BACKGROUND_REQUEST_BEFORE_RECENT_WINDOW"
     assert callback_native_veto, "BACKGROUND_ORIGINAL_CALLBACK_NOT_PROVEN"
 elif no_listing == "yes":
+    assert r.get("discovery_configured") is False, "UNSEEDED_LISTING_DISCOVERY_UNEXPECTEDLY_ENABLED"
     assert r["archive_public_receipts"] == 0
     assert r["shared_1m_requests"], "UNSEEDED_MINUTE_REPAIR_NOT_PROVEN"
     assert all(r["replay_boundary"] - (260 * 15 + 45) * 60_000 <= start < stop <= r["replay_boundary"]
@@ -201,7 +210,7 @@ else:
     assert optional_native_veto or callback_native_veto, "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
 print("C11_HOSTED_ORIGINAL_PROOF", mode, "ENTRY_CALLBACK_5M_VETO" if callback_native_veto else "ORIGINAL_5M_FILTER_VETO")
 assert r.get("automatic_archive") is (mode != "reviewed-partial")
-if mode != "reviewed-partial" and cached == remote == "no":
+if no_listing == "no" and mode != "reviewed-partial" and cached == remote == "no":
     assert r.get("discovery_configured") is True, "UNSEEDED_DISCOVERY_NOT_ENABLED"
     assert r.get("archive_public_receipts") == 74, "UNSEEDED_PUBLIC_ARCHIVE_NOT_VERIFIED"
 assert r.get("automatic_stale_repair") is (mode == "auto-stale")
