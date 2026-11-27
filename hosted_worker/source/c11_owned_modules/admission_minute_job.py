@@ -4,14 +4,12 @@ from native_cold_minute_page import PAGE,Q,M,resolve_range
 import re
 
 MAX_ANALYZER_QUARTERS=260
-# Distinct from the strategy's indicator window: permit resumable repair of
-# an authenticated checkpoint for one archive review interval. A missing
-# cursor or a years-old cursor must never initiate a listing-history crawl.
-MAX_VERIFIED_BRIDGE_QUARTERS=7*24*4
-
+# Checkpoint age alone does not invalidate a compatible native recurrence.
+# The owner verifies symbol, contract origin, and observation time separately;
+# physical work remains one bounded page per authorized shared-queue job.
 def repairable_checkpoint(fact,cursor):
     return (type(cursor) is int and fact.origin<cursor
-            and cursor//Q*Q>=max(fact.origin,fact.boundary-MAX_VERIFIED_BRIDGE_QUARTERS*Q))
+            and cursor//Q*Q>=fact.origin)
 
 @dataclass(frozen=True)
 class MinuteHistoryJob:
@@ -30,7 +28,7 @@ class MinuteHistoryJob:
         return (type(now) is int and self.end<=now<self.end+Q
             and self.end%Q==self.start%Q==self.stop%Q==0
             and 0<self.origin<=self.start<self.stop<=self.end-Q
-            and self.stop-self.start<=PAGE and self.start>=self.end-MAX_VERIFIED_BRIDGE_QUARTERS*Q
+            and self.stop-self.start<=PAGE
             and self.generation>0 and type(self.symbol) is str and self.symbol.endswith('USDT')
             and type(self.ticket) is str and bool(re.fullmatch('[0-9a-f]{32}',self.ticket)))
     def child(self):

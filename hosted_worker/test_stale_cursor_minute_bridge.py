@@ -13,9 +13,9 @@ ORIGIN = T - 365 * 96 * Q
 
 
 
-def owner_replay(*, five_day_restart=False):
+def owner_replay(*, gap_quarters=None):
     symbol = '陌生候選USDT'
-    first = T - (5 * 96 if five_day_restart else 300) * Q
+    first = T - (300 if gap_quarters is None else gap_quarters) * Q
     origin = first - Q
     wall = T + 1000
     fact = N(symbol=symbol, origin=origin, boundary=T, generation=8)
@@ -57,20 +57,21 @@ def owner_replay(*, five_day_restart=False):
     loop.cycle_headroom = lambda: True
     try:
         loop.enroll_cold([fact])
-        if five_day_restart:
+        if gap_quarters is not None:
             cutoff=T-Q  # the live original Worker owns the terminal close
-            for _ in range(40):
+            expected_pages=((gap_quarters-1)*Q+PAGE-1)//PAGE
+            for _ in range(2*expected_pages+2):
                 loop.tick([fact])
                 payload,=store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
                 if RpdState.restore(payload).next_open==cutoff:
                     break
-            assert len(calls)==15 and calls[0][0]==first and calls[-1][1]==cutoff
+            assert len(calls)==expected_pages and calls[0][0]==first and calls[-1][1]==cutoff
             assert all(stop==following_start for (_,stop),(following_start,_) in zip(calls,calls[1:]))
             assert all(0<stop-start<=PAGE for start,stop in calls)
-            assert sum(stop-start for start,stop in calls)==5*24*60*M-Q
+            assert sum(stop-start for start,stop in calls)==(gap_quarters-1)*Q
             assert RpdState.restore(payload).next_open==cutoff
             assert not store.range(symbol,M,cutoff,T,wall)
-            print('C11_FIVE_DAY_RESTART_EXACT_RETAINED_CURSOR_TO_TERMINAL_HANDOFF')
+            print('C11_RESTART_EXACT_RETAINED_CURSOR_TO_TERMINAL_HANDOFF',gap_quarters,expected_pages)
         else:
             loop.tick([fact])
             loop.tick([fact])
@@ -99,10 +100,17 @@ def main():
         following = make_job(fact, job.stop, (T - 230 * Q,), T + 2, TOKEN)
         assert following is not None and following.start == job.stop
         assert make_job(fact, ORIGIN, (), T + 1, TOKEN) is None
-        assert make_job(fact, T - 2000 * Q, (), T + 1, TOKEN) is None
+        for age in (7*96 - 1, 7*96, 7*96 + 1, 14*96):
+            old=T-age*Q
+            continued=make_job(fact,old,(),T+1,TOKEN)
+            assert continued is not None, 'C11_COMPATIBLE_DURABLE_CURSOR_REJECTED_BY_AGE'
+            assert continued.start==old and continued.stop==old+PAGE
+        assert make_job(fact, ORIGIN-Q, (), T+1, TOKEN) is None
+        assert make_job(fact, T, (), T+1, TOKEN) is None
         assert make_job(fact, None, (), T + 1, TOKEN) is None
     owner_replay()
-    owner_replay(five_day_restart=True)
+    for gap in (5*96, 7*96+1, 14*96):
+        owner_replay(gap_quarters=gap)
     print('C11_STALE_VERIFIED_CURSOR_AUTO_MINUTE_BRIDGE_PASS')
 
 
