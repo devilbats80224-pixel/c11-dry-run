@@ -59,10 +59,12 @@ EARLY_ROSTER=os.environ.get('C11_JCT_EARLY_ROSTER')=='yes'
 assert not EARLY_ROSTER or ROSTER_RETURN
 AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
 CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
+PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
-assert not CACHED or (AUTO_MODE and not (HAN_MODE or INIT_MODE or EARLY_EXPECT))
+assert not (CACHED and PINNED_REMOTE)
+assert not (CACHED or PINNED_REMOTE) or (AUTO_MODE and not (HAN_MODE or INIT_MODE or EARLY_EXPECT))
 assert EARLY_EXPECT is None or (AUTO_MODE and not (ROSTER_RETURN or HAN_MODE or INIT_MODE) and EARLY_EXPECT in ('deliver','hold','start','no-start'))
 assert not (AUTO_MODE and REPLAY_MODE)
 assert not REVIEWED_PARTIAL or not (AUTO_MODE or REPLAY_MODE)
@@ -538,13 +540,15 @@ else:
                     lambda _self,fact,cancel:start(_self,fact,cancel,grid_shift=SHIFT)))
                 sources={}
                 cache_origins={}
-                if CACHED:
+                if CACHED or PINNED_REMOTE:
                     from dataclasses import replace
                     from cold_archive_release import installed_sources
-                    cache_origins=installed_sources(runtime,run.wall(),verify_content=True)
+                    cache_origins=installed_sources(runtime,run.wall(),verify_content=CACHED)
                     assert cache_origins and SYMBOL in cache_origins
-                    sources={name:replace(src, origin=src.origin+SHIFT,cutoff=src.cutoff+SHIFT)
-                             for name,src in cache_origins.items()}
+                    sources=({name:replace(src,download_only=True) for name,src in cache_origins.items()}
+                             if PINNED_REMOTE else
+                             {name:replace(src,origin=src.origin+SHIFT,cutoff=src.cutoff+SHIFT)
+                              for name,src in cache_origins.items()})
                 h.archive_prep=plan(runtime,sources,run.wall,HISTORY_PREP_ENABLED)
                 h.cold_prefix=h.archive_prep.cold_admission(run.wall)
                 if CACHED:
@@ -555,6 +559,13 @@ else:
                     def deny_archive_download(*_args):
                         raise AssertionError('C11_CACHED_RECOVERY_USED_ARCHIVE_NETWORK')
                     patches.enter_context(patch.object(OfficialArchiveHTTP,'get',deny_archive_download))
+                if PINNED_REMOTE:
+                    assert not h.cold_prefix.reviewed.sources
+                    # A reviewed URL/hash catalogue authorizes the fixture
+                    # reader. No cached archive body or checkpoint is read.
+                    def deny_cached(*_args):
+                        raise AssertionError('C11_PINNED_RECOVERY_USED_RAW_CACHE')
+                    h.cold_prefix.reviewed.prepare=deny_cached
                 auto_lane=h.cold_prefix.public
             else:
                 auto=AutomaticArchive(TapeHTTP(),run.wall)
@@ -773,7 +784,7 @@ else:
                    original_entry_advice=advice_sources,
                    initial_cold_start_age_ms=first_cold_start[0] if first_cold_start else None,
                    uncovered_tape_requests=len(uncovered_tape),
-                   automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
+                   automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,pinned_remote=PINNED_REMOTE,automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
                    retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)))),flush=True)
             raise Done
         if cycle_count>=36:

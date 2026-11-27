@@ -27,3 +27,9 @@ requirement executable in the repository, use independent GitHub status checks,
 then verify and deploy after merge. Factor the candle ingest/repair and this
 procedure for reuse by other strategies without copying C11 signal logic or
 binding another strategy's deployment to C11.
+
+### 已驗證清單、沒有原始快取的重建路徑
+
+清單可明確指定 `pinned_official_download`。這個設定和原有純本機快取不同：只封存已審核的合約、截止時間、每個官方檔案的 URL、長度及 SHA-256；需要時才由原有背景程式讀取官方原始檔，再用原策略重算。官方回傳的校驗檔也必須符合封存指紋，不能代替原封存指紋。不延長候選有效期間，不掃描上市歷史作為預設，不以近期行情冒充狀態。
+
+GitHub 保留「原始快取可用」、「只有驗過清單」、「沒有快取也沒有可信清單」三類情境；前兩者可在相同來源重建，最後一類不是前兩者的成功證據。草稿中的測試封存只覆蓋該測試合約；不能當成現役全市場已有清單或已完成部署。

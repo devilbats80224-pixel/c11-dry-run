@@ -17,6 +17,9 @@ set --
 if [ "${C11_REPLAY_VERIFIED_RAW_CACHE:-no}" = yes ]; then
     set -- -e C11_JCT_REVIEWED_CACHE=yes
 fi
+if [ "${C11_REPLAY_PINNED_REMOTE:-no}" = yes ]; then
+    set -- "$@" -e C11_JCT_REVIEWED_REMOTE=yes
+fi
 if [ "$automatic" = roster-return ] || [ "$automatic" = early-roster-return ]; then
     if [ "$automatic" = early-roster-return ]; then
         set -- "$@" -e C11_JCT_EARLY_ROSTER=yes

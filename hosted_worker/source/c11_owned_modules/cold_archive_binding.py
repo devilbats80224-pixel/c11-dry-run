@@ -10,8 +10,9 @@ PUBLIC_MODE='BINANCE_PUBLIC_CLOSED_1M_V1'
 class ColdSourceAdmission:
     """Prefer reviewed local sources; only one prefix preparation at a time."""
     def __init__(self,reviewed,wall):
-        self.reviewed=ColdPrefixAdmission(reviewed,wall)
-        archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall)
+        self.reviewed=ColdPrefixAdmission({s:v for s,v in reviewed.items() if not v.download_only},wall)
+        remote={s:v for s,v in reviewed.items() if v.download_only}
+        archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall,reviewed_remote=remote)
         self.public=AutoColdAdmission(wall,archive.start)
 
     def offer(self,fact):
@@ -64,6 +65,8 @@ def plan(runtime,sources,wall,history_enabled):
     mode=runtime.get(MODE_KEY)
     if MODE_KEY in runtime and (mode!=PUBLIC_MODE or history_enabled is not True):
         raise ValueError('C11_PUBLIC_COLD_ARCHIVE_MODE_OR_HISTORY_SCOPE')
+    if any(source.download_only for source in sources.values()) and mode!=PUBLIC_MODE:
+        raise ValueError('C11_REVIEWED_DOWNLOAD_REQUIRES_PUBLIC_HISTORY')
     if not sources and mode is None:
         return None
     return ArchivePrepLane({},wall,cold_prefix_sources=sources,public_cold_archive=mode==PUBLIC_MODE)

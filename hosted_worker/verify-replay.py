@@ -4,7 +4,9 @@ from pathlib import Path
 import sys
 
 mode, log = sys.argv[1:3]
-cached = sys.argv[3] if len(sys.argv) == 4 else "no"
+cached = sys.argv[3] if len(sys.argv) >= 4 else "no"
+remote = sys.argv[4] if len(sys.argv) >= 5 else "no"
+assert remote in {"yes", "no"} and not (cached == remote == "yes")
 assert cached in {"yes", "no"}
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial"}
 records = []
@@ -56,6 +58,9 @@ for row in r.get("reply_refusals", [])[:10]:
             print("C11_HOSTED_REPLAY_SCOPE_DIAGNOSTIC", mode, scope["lane"], ",".join(reasons))
 assert status == "JCT_ORIGINAL_5M_VETO" and r.get("zero_orders") is True
 assert bool(r.get("verified_raw_archive_cache")) == (cached == "yes")
+assert bool(r.get("pinned_remote")) == (remote == "yes")
+if remote == "yes":
+    assert r["archive_public_receipts"] > 0, "PINNED_SOURCE_BYTES_NOT_FETCHED"
 if cached == "yes":
     assert r["archive_public_receipts"] == 0, "CACHE_REOPENED_ARCHIVE_NETWORK"
 assert any(item.get("status") == "VETO" and item.get("method") == "record_verified_veto"

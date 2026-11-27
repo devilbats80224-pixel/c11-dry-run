@@ -31,6 +31,7 @@ class ClosedPrefixSource:
     origin: int
     cutoff: int
     review_expires_ms: int | None = None
+    download_only: bool = False
 
 
 @dataclass(frozen=True)

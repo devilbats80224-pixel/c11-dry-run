@@ -52,9 +52,10 @@ def record(raw, pin, now):
     require(type(data) is dict and set(data)=={'schema','sources'} and data['schema']==SCHEMA
             and type(data['sources']) is dict,'C11_COLD_CATALOG_SHAPE')
     for symbol,src in data['sources'].items():
+        keys={'origin_ms','cutoff_ms','contract_sha256','manifest_sha256','reviewed_at_ms','use_until_ms'}
         require(quote_contract_shape(symbol) and type(src) is dict
-                and set(src)=={'origin_ms','cutoff_ms','contract_sha256','manifest_sha256',
-                               'reviewed_at_ms','use_until_ms'}, 'C11_COLD_SOURCE_SHAPE')
+                and (set(src)==keys or set(src)==keys|{'transport'} and
+                     src['transport']=='pinned_official_download'), 'C11_COLD_SOURCE_SHAPE')
         origin,cutoff,reviewed,expires=(src[k] for k in ('origin_ms','cutoff_ms','reviewed_at_ms','use_until_ms'))
         require(all(type(x) is int for x in (origin,cutoff,reviewed,expires))
                 and origin%Q==cutoff%Q==0 and 0<origin<cutoff<=reviewed<=now<expires,
@@ -118,7 +119,7 @@ def verified_catalog(root, pin, now, read_file, *, verify_content):
         base=root/symbol
         checked_contract(read_file(base/'contract.json',4096),symbol,src)
         parts=checked_parts(read_file(base/'manifest.json',128*1024),symbol,src)
-        if verify_content:
+        if verify_content and src.get('transport')!='pinned_official_download':
             for part in parts:
                 name=part['name']
                 content=read_file(base/name,part['bytes'])
@@ -160,5 +161,6 @@ def installed_sources(verified_manifest, now, *, verify_content=False):
     sources,_=verified_catalog(ROOT,pin,now,lambda path,n:read_bounded(path,n,immutable=True),
                                verify_content=verify_content)
     return {symbol:ClosedPrefixSource(ROOT/symbol,src['manifest_sha256'],src['origin_ms'],
-                                      src['cutoff_ms'],review_expires_ms=src['use_until_ms'])
+                                      src['cutoff_ms'],review_expires_ms=src['use_until_ms'],
+                                      download_only=src.get('transport')=='pinned_official_download')
             for symbol,src in sources.items()}

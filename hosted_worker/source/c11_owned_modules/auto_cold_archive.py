@@ -15,12 +15,13 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 from zipfile import BadZipFile
 
 from cold_prefix import (ArchiveRecurrence, ColdPrefixAdmission, ClosedPrefixSource,
-                         QUARTER, verify_archive_blob)
+                         QUARTER, archive_item, verify_archive_blob)
 from primary_only_route import NW_WARM
 from stale_state_install import snapshot
 from rpd_checkpoint import RpdState
 from exact_symbol import quote_contract_shape
 from cold_archive_identity import archive_location, official_archive_url
+from cold_archive_release import read_bounded, checked_parts
 
 DAY=86_400_000
 ANALYSIS=NW_WARM*QUARTER
@@ -165,12 +166,43 @@ def windows(symbol,origin,boundary):
 
 
 class AutomaticArchive:
-    def __init__(self,transport,wall,*,max_bytes=MAX_BYTES):
+    def __init__(self,transport,wall,*,max_bytes=MAX_BYTES,reviewed_remote=None):
         if not 0<max_bytes<=MAX_BYTES:
             raise ValueError('AUTO_ARCHIVE_CONFIG')
         self.transport,self.wall,self.max_bytes=transport,wall,max_bytes
+        self.reviewed_remote=dict(reviewed_remote or {})
+        if any(type(src) is not ClosedPrefixSource or not src.download_only
+               for src in self.reviewed_remote.values()):
+            raise ValueError('AUTO_ARCHIVE_REVIEWED_SOURCE')
+
+    def reviewed_progress(self,f,source,shift):
+        cutoff=source.cutoff
+        expires=source.review_expires_ms
+        if ((source.origin+shift)!=f.origin or not f.boundary-ANALYSIS<=cutoff+shift<=f.boundary-QUARTER
+                or type(expires) is not int or self.wall()>=expires):
+            raise Hold('AUTO_ARCHIVE_REVIEWED_SCOPE')
+        try:
+            raw=read_bounded(source.directory/'manifest.json',128*1024,immutable=True)
+            reviewed=checked_parts(raw,f.symbol,dict(manifest_sha256=source.manifest_sha,
+                  origin_ms=source.origin,cutoff_ms=cutoff,reviewed_at_ms=self.wall()))
+            if sum(item['bytes'] for item in reviewed)>self.max_bytes:
+                raise Hold('AUTO_ARCHIVE_BUDGET')
+            parts=[]
+            for item in reviewed:
+                name,size,digest=archive_item(f.symbol,item)
+                date=re.search(r'-(\d{4}-\d{2}(?:-\d{2})?)\.zip$',name)[1]
+                day=datetime.strptime(date,'%Y-%m-%d' if len(date)==10 else '%Y-%m').replace(tzinfo=timezone.utc)
+                stop=(day+timedelta(days=1) if len(date)==10 else
+                      day.replace(year=day.year+(day.month==12),month=day.month%12+1))
+                parts.append((name,item['url'],min(cutoff,int(stop.timestamp()*1000)),digest,size))
+        except (ValueError,KeyError,TypeError,IndexError,OSError) as exc:
+            raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
+        return ArchiveProgress(self,f.symbol,source.origin,cutoff,shift,parts,reviewed=source)
 
     def start(self,f,cancel,*,grid_shift=0):
+        reviewed=self.reviewed_remote.get(f.symbol)
+        if reviewed is not None:
+            return self.reviewed_progress(f,reviewed,grid_shift).resume(cancel)
         if not inside_recent_window(f):
             raise Hold(RECENT_PROOF_REQUIRED)
         origin,boundary=f.origin-grid_shift,f.boundary-grid_shift
@@ -187,14 +219,14 @@ class AutomaticArchive:
 
 class ArchiveProgress:
     """Job-local authenticated cursor. Never publishes partial strategy state."""
-    def __init__(self,archive,symbol,origin,cutoff,grid_shift,parts):
+    def __init__(self,archive,symbol,origin,cutoff,grid_shift,parts,*,reviewed=None):
         self.archive,self.origin,self.cutoff,self.shift=archive,origin,cutoff,grid_shift
-        self.parts=parts
+        self.parts,self.reviewed=parts,reviewed
         self.recurrence=ArchiveRecurrence(symbol,origin,grid_shift)
         self.ledger=[]
         self.max_received=0
 
-    def fetch(self,name,url,closed_at,limit,cancel):
+    def fetch(self,name,url,closed_at,limit,cancel,*,pin=None):
         checksum=self.archive.transport.get(url+'.CHECKSUM',512,cancel)
         try:
             expected,spelling=checksum.body.decode('utf-8').split()
@@ -202,8 +234,14 @@ class ArchiveProgress:
             raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
         if not re.fullmatch('[a-f0-9]{64}',expected) or spelling not in (name,'*'+name):
             raise Hold('AUTO_ARCHIVE_UNVERIFIED')
-        zipped=self.archive.transport.get(url,limit,cancel)
+        if pin is not None and expected!=pin[0]:
+            raise Hold('AUTO_ARCHIVE_UNVERIFIED')
+        if pin is not None and pin[1]>limit:
+            raise Hold('AUTO_ARCHIVE_BUDGET')
+        zipped=self.archive.transport.get(url,limit if pin is None else pin[1],cancel)
         size=len(zipped.body)
+        if pin is not None and size!=pin[1]:
+            raise Hold('AUTO_ARCHIVE_UNVERIFIED')
         if size>limit:
             raise Hold('AUTO_ARCHIVE_BUDGET')
         if not size:
@@ -215,7 +253,9 @@ class ArchiveProgress:
 
     def resume(self,event):
         cancel=JobLimit(event)
-        budget=self.archive.max_bytes
+        if self.reviewed is not None and self.archive.wall()>=self.reviewed.review_expires_ms:
+            raise Hold('AUTO_ARCHIVE_REVIEWED_SCOPE')
+        budget=self.archive.max_bytes-(sum(item['bytes'] for item in self.ledger) if self.reviewed else 0)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
             if len(self.ledger)==len(self.parts):
@@ -225,9 +265,9 @@ class ArchiveProgress:
             try:
                 if cancel.is_set():
                     raise Hold('AUTO_ARCHIVE_CANCELLED')
-                name,url,closed_at=self.parts[len(self.ledger)]
+                name,url,closed_at,*pin=self.parts[len(self.ledger)]
                 try:
-                    zipped,item=self.fetch(name,url,closed_at,min(budget,MAX_FILE_BYTES),cancel)
+                    zipped,item=self.fetch(name,url,closed_at,min(budget,MAX_FILE_BYTES),cancel,pin=pin or None)
                     available=max(zipped.received_ms,closed_at+self.shift)
                     if available>self.archive.wall():
                         raise Hold('AUTO_ARCHIVE_NOT_AVAILABLE')
@@ -265,8 +305,12 @@ class ArchiveProgress:
         if len(self.ledger)<len(self.parts):
             return self
         raw=json.dumps(self.ledger,sort_keys=True,separators=(',',':')).encode()
-        source=ClosedPrefixSource(Path('/unused-automatic-download'),sha256(raw).hexdigest(),
-                                  self.origin+self.shift,self.cutoff+self.shift)
+        if self.reviewed is not None and self.archive.wall()>=self.reviewed.review_expires_ms:
+            raise Hold('AUTO_ARCHIVE_REVIEWED_SCOPE')
+        source=ClosedPrefixSource(Path('/unused-automatic-download'),
+                                  self.reviewed.manifest_sha if self.reviewed else sha256(raw).hexdigest(),
+                                  self.origin+self.shift,self.cutoff+self.shift,
+                                  self.reviewed.review_expires_ms if self.reviewed else None)
         return source,self.recurrence.finish(self.cutoff,self.max_received)
 
 
@@ -386,7 +430,7 @@ class AutoColdAdmission(ColdPrefixAdmission):
         except Hold as exc:
             slot.status=exc.status
             slot.failures+=1
-            if exc.status in (RECENT_PROOF_REQUIRED,'AUTO_ARCHIVE_BUDGET','AUTO_ARCHIVE_NO_VERIFIED_ORIGIN','AUTO_ARCHIVE_UNVERIFIED',
+            if exc.status in (RECENT_PROOF_REQUIRED,'AUTO_ARCHIVE_REVIEWED_SCOPE','AUTO_ARCHIVE_BUDGET','AUTO_ARCHIVE_NO_VERIFIED_ORIGIN','AUTO_ARCHIVE_UNVERIFIED',
                               'AUTO_ARCHIVE_ORIGIN_GAP','AUTO_ARCHIVE_CONTINUITY_GAP'):
                 # This unchanged identity/window needs different verified
                 # evidence or budget. Do not spin on every owner cycle.

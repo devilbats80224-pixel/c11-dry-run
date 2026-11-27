@@ -1,5 +1,7 @@
 """Separate sufficient recent prices from proof of original recurrence."""
 import sys
+from hashlib import sha256
+from threading import Event
 from types import SimpleNamespace as Ns
 from unittest.mock import patch
 
@@ -7,7 +9,7 @@ sys.path[:0] = [
     "/opt/c11_owned_modules", "/opt/c11_worker", "/opt/c11_worker/ports",
     "/opt/c11_background_review", "/freqtrade",
 ]
-from auto_cold_archive import AutomaticArchive, Hold, RECENT_PROOF_REQUIRED
+from auto_cold_archive import ArchiveProgress, AutomaticArchive, Hold, Receipt, RECENT_PROOF_REQUIRED
 from causal_bars import ClosedBar, FIVE, QUARTER
 from native_primary_lane import NativePrimaryLane
 from primary_only_route import NW_WARM
@@ -71,7 +73,28 @@ def identical_suffix_cannot_identify_original_state():
     assert left.long_score is None and right.long_score == 80.
 
 
+def reviewed_download_rejects_changed_checksum():
+    body = b"fixture bytes"
+    pin = sha256(body).hexdigest()
+    name = "EXAMPLEUSDT-1m-2026-11-25.zip"
+    url = "https://example.invalid/" + name
+    calls = []
+    def fetch(target, limit, cancel):
+        calls.append(target)
+        return Receipt((("f"*64)+"  "+name).encode() if target.endswith(".CHECKSUM") else body, 100)
+    archive=AutomaticArchive(Ns(get=fetch),lambda:100)
+    p=ArchiveProgress(archive,"EXAMPLEUSDT",1,2,0,())
+    try:
+        p.fetch(name,url,100,1000,Event(),pin=(pin,len(body)))
+    except Hold as exc:
+        assert exc.status == "AUTO_ARCHIVE_UNVERIFIED"
+    else:
+        raise AssertionError("C11_CHANGED_PROVIDER_CHECKSUM_ACCEPTED")
+    assert calls == [url+".CHECKSUM"]
+
+
 if __name__ == "__main__":
     boundary_cases()
+    reviewed_download_rejects_changed_checksum()
     identical_suffix_cannot_identify_original_state()
     print("C11_UNCACHED_PROVENANCE_CONTROLS_PASS")
