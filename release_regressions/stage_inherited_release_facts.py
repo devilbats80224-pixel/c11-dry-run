@@ -32,11 +32,19 @@ def carry(source, destination, pins, verifier):
         raise ValueError("C11_REJECTED_INHERITED_RELEASE_PATH")
     for name in names:
         src = source / name
-        if not stat.S_ISREG(src.lstat().st_mode):
+        try:
+            mode = src.lstat().st_mode
+        except FileNotFoundError as exc:
+            raise ValueError("C11_RELEASE_FILE_MISSING") from exc
+        if not stat.S_ISREG(mode):
             raise ValueError("C11_REJECTED_INHERITED_RELEASE_FILE")
     with TemporaryDirectory(prefix=".c11-release-facts-", dir=destination.parent) as temp:
         tmp = Path(temp) / "release"
         (tmp / "receipts").mkdir(parents=True)
+        # Private assembly may use umask 077. The two final image directories
+        # still have to be traversable by container UID 1000.
+        tmp.chmod(0o755)
+        (tmp / "receipts").chmod(0o755)
         for name in names:
             shutil.copyfile(source / name, tmp / name)
             (tmp / name).chmod(0o444)
