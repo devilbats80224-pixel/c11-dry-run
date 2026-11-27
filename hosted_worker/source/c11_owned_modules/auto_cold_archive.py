@@ -1,6 +1,6 @@
 """Bounded public archive preparation after reviewed owner startup."""
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
 from zipfile import BadZipFile
 
-from cold_prefix import (ArchiveRecurrence, ColdPrefixAdmission, ClosedPrefixSource,
+from cold_prefix import (ArchiveRecurrence, ColdPrefixAdmission, ClosedPrefixSource, PreparedPrefix,
                          QUARTER, archive_item, verify_archive_blob)
 from primary_only_route import NW_WARM
 from stale_state_install import snapshot
@@ -359,6 +359,42 @@ class ArchiveProgress:
         return source,self.recurrence.finish(self.cutoff,self.max_received)
 
 
+def retained_minute_prefix(f,rows,captured,expires,cancel):
+    """Derive from a bounded immutable copy of canonical owner 1m data."""
+    from atr_er_state import advance,new_atr
+    from causal_bars import FIVE,MINUTE,SegmentStart
+    from closed_minute_basis import project_closed_minutes
+
+    origin,cutoff=f.origin,f.boundary-QUARTER
+    class SavedMinutes:
+        def range(self,symbol,width,start,end,as_of):
+            if (symbol,width,start,end,as_of)==(f.symbol,MINUTE,origin,cutoff,captured):
+                return rows
+            return ()
+    if cancel.is_set():
+        raise Hold('AUTO_ARCHIVE_CANCELLED')
+    basis=SavedMinutes()
+    rpd=RpdState.start(SegmentStart(f.symbol,origin,captured))
+    states=[]
+    for width in (FIVE,QUARTER):
+        bars=project_closed_minutes(basis,f.symbol,width,origin,cutoff,captured)
+        if not bars:
+            raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP')
+        indicator=new_atr()
+        for bar in bars:
+            if cancel.is_set():
+                raise Hold('AUTO_ARCHIVE_CANCELLED')
+            advance(indicator,bar,width)
+            if width==FIVE:
+                rpd.advance(bar,captured)
+        states.append((width,indicator))
+    proof=sha256(json.dumps(['owner-verified-minutes-v1',f.symbol,origin,cutoff,
+                             [astuple(bar) for bar in rows]],separators=(',',':'),
+                            allow_nan=False).encode()).hexdigest()
+    return (ClosedPrefixSource(Path('/unused-retained-native-minutes'),proof,origin,cutoff,expires),
+            PreparedPrefix(rpd,tuple(states),bars))
+
+
 @dataclass
 class Slot:
     fact: object
@@ -368,6 +404,7 @@ class Slot:
     failures: int = 0
     result: tuple | None = None
     continuation: ArchiveProgress | None = None
+    retained: tuple | None = None
 
 
 class AutoColdAdmission(ColdPrefixAdmission):
@@ -428,6 +465,37 @@ class AutoColdAdmission(ColdPrefixAdmission):
             self.repair_prior.pop(f.symbol,None)
             return 'AUTO_ARCHIVE_NO_VERIFIED_ORIGIN'
         slot.fact,slot.seen_ms=f,now
+        return slot.status
+
+    def offer_retained(self,owner,f):
+        from causal_bars import MINUTE
+        now=self.wall()
+        if (get_ident()!=self.thread or self.active is not None or not owner.tap.current(f)
+                or not quote_contract_shape(f.symbol) or f.pair!=f.symbol[:-4]+'/USDT:USDT'
+                or not inside_recent_window(f) or f.origin%QUARTER or f.origin>=f.boundary-QUARTER):
+            return None
+        existing=self.pending.get(f.symbol)
+        if (existing is not None and (existing.result is not None or existing.continuation is not None)
+                or any(s.retained is not None for s in self.pending.values())):
+            return None
+        owner.check_store()
+        store=owner.store
+        if (store.segment(f.symbol) is not None or store.db.execute(
+                'SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()):
+            return None
+        cutoff=f.boundary-QUARTER
+        # Full native continuity from the observed contract origin is needed.
+        # An arbitrary tail of an older contract never reaches this query.
+        rows=store.range(f.symbol,MINUTE,f.origin,cutoff,now)
+        if not rows or not owner.tap.current(f):
+            return None
+        self.offer(f)
+        slot=self.pending.get(f.symbol)
+        if slot is None:
+            return None
+        slot.retained=(f,rows,now,f.boundary+QUARTER)
+        slot.due_ms=now
+        slot.status='AUTO_RETAINED_MINUTES_QUEUED'
         return slot.status
 
     def offer_existing(self,owner,f):
@@ -556,7 +624,11 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 continue
             cancel=Event()
             slot.status='AUTO_ARCHIVE_FETCHING'
-            if slot.continuation is None:
+            if slot.retained is not None:
+                retained=slot.retained
+                slot.retained=None
+                future=self.pool.submit(retained_minute_prefix,*retained,cancel)
+            elif slot.continuation is None:
                 future=self.pool.submit(self.prepare,slot.fact,cancel)
             else:
                 future=self.pool.submit(slot.continuation.resume,cancel)

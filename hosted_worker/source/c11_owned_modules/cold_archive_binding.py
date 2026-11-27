@@ -24,6 +24,11 @@ class ColdSourceAdmission:
             return self.reviewed.offer(fact)
         return self.public.offer(fact)
 
+    def offer_retained(self,owner,fact):
+        if fact.symbol not in self.reviewed.sources:
+            return self.public.offer_retained(owner,fact)
+        return None
+
     def offer_existing(self,owner,fact):
         if fact.symbol in self.reviewed.sources:
             return self.reviewed.offer_existing(owner,fact)

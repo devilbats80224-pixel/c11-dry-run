@@ -53,7 +53,9 @@ class MinuteAdmissionLoop:
                 segment=o.store.segment(f.symbol)
                 row=o.store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()
                 if segment is None and row is None:
-                    status=lane.offer(f)
+                    retained=getattr(lane,'offer_retained',None)
+                    status=retained(o,f) if callable(retained) else None
+                    status=status or lane.offer(f)
                 elif segment is not None and segment.open_ms==f.origin and (row is None or
                         not repairable_checkpoint(f,RpdState.restore(row[0]).next_open)):
                     status=self.offer_reviewed_repair(f)
