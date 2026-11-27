@@ -545,7 +545,8 @@ else:
                 phase='temporarily_absent'
                 qualified=False
         elif (INIT_MODE and phase=='cold' and generation==7 and cursor==base['end_ms']+SHIFT
-                and any(e.get('stage_reason') in ('STALE_SCOPE','STALE_SCOPE_OR_DELIVERY')
+                and any(e.get('stage_reason') in ('STALE_SCOPE','STALE_SCOPE_OR_DELIVERY',
+                                                       'SCOPE_INVALID_AT_READ','SCOPE_AND_PARENT_DELIVERY_EXPIRED')
                         and e.get('symbol')==SYMBOL for e in loop_trace)):
             # A later fixture generation authorizes a real retry; it cannot
             # make the previous stale receipt admissible.

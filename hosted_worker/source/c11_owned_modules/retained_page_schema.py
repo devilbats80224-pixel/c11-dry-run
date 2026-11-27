@@ -29,7 +29,8 @@ STAGES = {
     'GRANT_QUEUED': (),
     'GRANT_WRITTEN': (),
     'REPLY_ACCEPTED': (),
-    'REPLY_REJECTED': ('STALE_SCOPE_OR_DELIVERY', 'PROTOCOL', 'HTTP_STATUS', 'NO_HTTP_RECEIPT',
+    'REPLY_REJECTED': ('STALE_SCOPE_OR_DELIVERY', 'SCOPE_INVALID_AT_READ', 'PARENT_DELIVERY_EXPIRED',
+                       'SCOPE_AND_PARENT_DELIVERY_EXPIRED', 'PROTOCOL', 'HTTP_STATUS', 'NO_HTTP_RECEIPT',
                        'NOT_DISPATCHED_BY_CHILD', 'WEIGHT_HEADER', 'RECEIPT_TIME', 'ROW_COUNT'),
     'EXPIRED': ('STALE_SCOPE', 'NO_REPLY', 'NO_READY'),
     'PEER_ENDED': ('WITHOUT_REPLY', 'BEFORE_GRANT'),
@@ -39,6 +40,7 @@ STAGES = {
 PAGE_KEYS = frozenset(('schema', 'symbol', 'generation', 'end_ms', 'page_start_ms',
                        'page_end_ms', 'requested_rows', 'stage', 'at_ms'))
 METADATA = {
+    "parent_delivery_margin_ms": (-600000, 600000),
     'grant_ms': (0, 2**63-1), 'wire_ms': (0, 2**63-1), 'response_ms': (0, 2**63-1),
     'http_status': (0, 599), 'reply_rows': (0, 4096),
 }

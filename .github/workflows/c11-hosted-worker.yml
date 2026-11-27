@@ -16,6 +16,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -I -B hosted_worker/test_stage_archive_cache.py
+      - run: python3 -I -B hosted_worker/test_history_rejection.py
       - run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker" build "$RUNNER_TEMP/c11-artifact"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

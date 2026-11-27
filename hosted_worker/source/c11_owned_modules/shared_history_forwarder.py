@@ -146,8 +146,14 @@ class SharedHistoryForwarder:
                       response_ms=received if type(received) is int else None)
         if valid_keys and x['status'] in (418,429):
             self.budget.optional_wire_fault(x['status'],60000)
-        if not lane.authority(job) or monotonic()>=delivery_until:
-            self.audit(job,'REPLY_REJECTED','STALE_SCOPE_OR_DELIVERY',**evidence)
+        authority = lane.authority(job)
+        parent_now = monotonic()
+        if not authority or parent_now >= delivery_until:
+            reason = ('SCOPE_AND_PARENT_DELIVERY_EXPIRED' if not authority and parent_now >= delivery_until
+                      else 'SCOPE_INVALID_AT_READ' if not authority else 'PARENT_DELIVERY_EXPIRED')
+            margin_ms = round((delivery_until-parent_now)*1000)
+            self.audit(job,'REPLY_REJECTED',reason,
+                       parent_delivery_margin_ms=max(-600000,min(600000,margin_ms)),**evidence)
             self.finish(tag,None,cancel=True);return
         if set(x)=={'ready','abi'} and sent is None and type(x['abi']) is int and x['abi']>=3:
             self.audit(job,'READY_READ')

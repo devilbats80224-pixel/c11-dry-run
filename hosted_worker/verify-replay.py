@@ -32,7 +32,8 @@ print("C11_HOSTED_REPLAY", mode, status, "lacks_state", recent, "cache_required"
       "replies_rejected", int(stages.get("REPLY_REJECTED", 0)),
       "budget_held", int(stages.get("BUDGET_HELD", 0)),
       "tape_windows_missing", missing_count)
-safe_refusals = {"STALE_SCOPE_OR_DELIVERY", "PROTOCOL", "HTTP_STATUS", "NO_HTTP_RECEIPT",
+safe_refusals = {"STALE_SCOPE_OR_DELIVERY", "SCOPE_INVALID_AT_READ", "PARENT_DELIVERY_EXPIRED",
+                 "SCOPE_AND_PARENT_DELIVERY_EXPIRED", "PROTOCOL", "HTTP_STATUS", "NO_HTTP_RECEIPT",
                  "NOT_DISPATCHED_BY_CHILD", "WEIGHT_HEADER", "RECEIPT_TIME", "ROW_COUNT"}
 refusals = sorted({row.get("stage_reason") for row in r.get("reply_refusals", [])
                    if isinstance(row, dict) and row.get("stage_reason") in safe_refusals})
