@@ -2,6 +2,7 @@
 from collections import Counter
 from types import SimpleNamespace
 
+from primary_only_route import PrimaryMinuteJob
 from retained_page_schema import accepted_history_trace
 from shared_native_budget import SharedNativeBudget
 
@@ -69,6 +70,37 @@ def main():
     assert not meter.claim_history_send(token, ticket)
     assert meter.last_history_hold == "HISTORY_BUDGET_WEIGHT_COUNT"
     assert meter.costs == (71, 143)
+    # Seven fully cold candidates (eight exact pages each) sharing the
+    # actual IP meter with native requests. Data-only preservation must not
+    # eat the direct request cap or extend any signal's lease.
+    meter = make_meter((28, 70))
+    for sym in range(7):
+        right = E
+        for k in range(8):
+            minutes = 495 if k < 7 else 435
+            left = right - minutes * 60_000
+            job = PrimaryMinuteJob(f"SYNTH{sym}USDT", GENERATION, E, E+60_000, left, right,
+                                   f"{100 + sym * 8 + k:032x}")
+            assert job.valid(clock)
+            token = meter.try_reserve_history(job)
+            assert token is not None, ("C11_DATA_ONLY_REPLAY_STARVED", sym, k, meter.last_history_hold)
+            assert not meter.claim_send(token, job), "HISTORY_TOKEN_CANNOT_ENTER_DIRECT_LANE"
+            assert meter.claim_history_send(token, job)
+            right = left
+        assert right == E - 260 * 900_000
+    assert meter.costs == (84, 182) and meter.history_costs == (56, 112)
+    direct = SimpleNamespace(native_task=None, ticket="f"*32, deadline=E+60_000, weight=2,
+                             generation=GENERATION, end=E)
+    native = meter.try_reserve(direct)
+    assert native is not None and meter.claim_send(native, direct), "DATA_ONLY_USED_DIRECT_CAP"
+    late = PrimaryMinuteJob("SYNTHUSDT", GENERATION, E, E+60_000,
+                            E-900_000, E, "d"*32)
+    assert meter.try_reserve_history(late) is not None
+    meter.note_authoritative_ip_header(clock, 1190, 2400)
+    another = PrimaryMinuteJob("SYNTHUSDT", GENERATION, E, E+60_000,
+                               E-900_000, E, "e"*32)
+    assert meter.try_reserve_history(another) is None
+    assert meter.last_history_hold == "HISTORY_BUDGET_IP_RESERVE"
     print("C11_MIXED_CLOSE_PRESSURE_REASON_AND_GRANT_ACCOUNTING_PASS")
 
 
