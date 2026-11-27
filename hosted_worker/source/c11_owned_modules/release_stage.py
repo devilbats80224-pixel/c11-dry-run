@@ -82,7 +82,9 @@ def activate():
     assert stat.S_ISREG(m.st_mode) and m.st_nlink==1 and (m.st_uid,m.st_gid)==(0,0) and stat.S_IMODE(m.st_mode)==0o444 and 0<m.st_size<=16384 and os.statvfs(manifest).f_flag&os.ST_RDONLY
     data=manifest.read_bytes()
     now=lambda:time.time_ns()//1_000_000
-    if not validate_baked(data,AUTH_SHA,RUNTIME_SHA,CATALOG_SHA,now()):return 2
+    if not validate_baked(data,AUTH_SHA,RUNTIME_SHA,CATALOG_SHA,now()):
+       print('C11_BAKED_OWNER_SCOPE_OR_REVIEWED_PREDECESSOR_MISMATCH',file=sys.stderr,flush=True)
+       return 2
     from cold_archive_release import installed_sources
     sources=installed_sources(verified_manifest,now())
     from c11_v4_pin import STAGE_ONLY, REVIEWED_MOUNT, REVIEWED_SCOPE, RELEASE_SHA256
