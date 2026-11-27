@@ -61,7 +61,8 @@ AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
 CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
 PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
-LEASE_CLOCK = REVIEWED_PARTIAL or EARLY_ROSTER or AUTO_STALE
+EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE
+LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
 assert not (CACHED and PINNED_REMOTE)
@@ -261,7 +262,7 @@ else:
             return dict(nonce=self.nonce,status='FRESH' if left>0 else 'STALE',source=entry_feed.SOURCE,
                 query_sha256=entry_feed.QUERY,offset=0,page_size=60,generation=generation,left_ms=max(left,0),
                 received_at=source.isoformat(),lease_until=lease.isoformat(),rows=roster)
-    feed=entry_feed.EntryFeed(Wire(pinned_generation=REVIEWED_PARTIAL),1)
+    feed=entry_feed.EntryFeed(Wire(pinned_generation=EXACT_CALLBACK_CLOCK),1)
     feed.classification=N(verified={SYMBOL:PAIR},received_monotonic_ns=time.monotonic_ns())
     if LEASE_CLOCK:
         # Moving the replay across closed boundaries also ages metadata.
@@ -695,7 +696,7 @@ else:
         # original async READY/GO/REPLY stages. The 950 ms GO deadline and all
         # production authority checks remain in force. Live owner polling
         # stays unmodified; this only controls the fixture's market-time jump.
-        pending_replay_wire=REVIEWED_PARTIAL and bool(
+        pending_replay_wire=EXACT_CALLBACK_CLOCK and bool(
             history.shared_minute.waiting or history.primary_admission.pending.pending
             or history.minute_admission.pending.pending)
         if phase=='temporarily_absent':
@@ -707,7 +708,7 @@ else:
             next_now=now+1000
             next_generation+=1
         elif phase=='cold' and not pending_replay_wire and (cursor==END-3*Q or
-                (REVIEWED_PARTIAL and cursor in (END-2*Q,END-Q))):
+                (EXACT_CALLBACK_CLOCK and cursor in (END-2*Q,END-Q))):
             # Polls observe committed state, not every intermediate cursor.
             # In this reviewed case the independent accepted path can catch
             # up again before the fixture observes the preceding quarter.
@@ -720,7 +721,7 @@ else:
                     native_requests=shared_requests,writer_lock=lock_identity,
                     second_writer_refused=True)),flush=True)
                 raise Done
-            next_now=END-Q+(5_000 if (EARLY_ROSTER or REVIEWED_PARTIAL) else 65_000); next_generation+=1; phase='carry'
+            next_now=END-Q+(5_000 if (EARLY_ROSTER or EXACT_CALLBACK_CLOCK) else 65_000); next_generation+=1; phase='carry'
             if ROSTER_RETURN:
                 previous_roster_state=state_receipt(history.store.db)
                 phase='temporarily_absent'
@@ -745,7 +746,7 @@ else:
             # fixture generation stays expired; it cannot authorize a second page.
             next_now+=5000
             next_generation+=1
-        elif phase=='carry' and not pending_replay_wire and (cursor==END-2*Q or (REVIEWED_PARTIAL and cursor==END-Q)):
+        elif phase=='carry' and not pending_replay_wire and (cursor==END-2*Q or (EXACT_CALLBACK_CLOCK and cursor==END-Q)):
             # Accepted pages are committed asynchronously. The original
             # worker may advance one additional closed quarter before the
             # fixture observes a cursor. Do not strand the replay on the
@@ -778,7 +779,7 @@ else:
         # before the data-only fallback writes its separate feature marker.
         # Prove the real exact-end VETO happened inside that native callback
         # and the returned last row does not request entry; no inferred VETO.
-        strategy_native_veto=(REVIEWED_PARTIAL and len(original_calls)==1
+        strategy_native_veto=(EXACT_CALLBACK_CLOCK and len(original_calls)==1
             and original_calls[0].get('last_enter_long')==0
             and any(d['status']=='VETO' and d.get('boundary')==END
                     and d.get('inside_original_target_callback') is True
@@ -875,9 +876,9 @@ else:
             in_target_callback=True
             try:return callback()
             finally:in_target_callback=False
-        result=actual_consume(self,pair,end,frame,witness_original if REVIEWED_PARTIAL else callback)
+        result=actual_consume(self,pair,end,frame,witness_original if EXACT_CALLBACK_CLOCK else callback)
         event=dict(status=result[0],age_ms=now-END)
-        if REVIEWED_PARTIAL and result[0]=='ORIGINAL_NATIVE_CALLBACK':
+        if EXACT_CALLBACK_CLOCK and result[0]=='ORIGINAL_NATIVE_CALLBACK':
             frame=result[1]
             if frame is not None and 'enter_long' in frame and len(frame):
                 event['last_enter_long']=int(frame['enter_long'].iloc[-1])
@@ -957,7 +958,7 @@ else:
                 # warmup share the same captured clock as the Worker. Do not
                 # let the runner wall clock mark archived state "from the future".
                 *(([(native_candles,'time',clock),(feature_warmup,'time',clock),
-                    (native_refresh_cycle,'time',clock)]) if REVIEWED_PARTIAL else []),
+                    (native_refresh_cycle,'time',clock)]) if EXACT_CALLBACK_CLOCK else []),
                 (UnifiedScheduler,'consume_ready_only',observe_consume),
                 (NativePrimaryLane,'record_verified_veto',observed_veto),
                 (shared_history_child,'millis',lambda:now),(async_native_ccxt,'time_ns',clock.time_ns),

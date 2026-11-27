@@ -141,7 +141,7 @@ optional_native_veto = any(
     d.get("status") == "VETO" and d.get("method") == "record_verified_veto" for d in decisions
 )
 callback_native_veto = False
-if mode == "reviewed-partial" and r.get("strategy_native_veto") is True:
+if mode in {"reviewed-partial", "auto-stale"} and r.get("strategy_native_veto") is True:
     calls = [item for item in r.get("original_entry_advice", [])
              if item.get("status") == "ORIGINAL_NATIVE_CALLBACK"]
     callback_native_veto = (
