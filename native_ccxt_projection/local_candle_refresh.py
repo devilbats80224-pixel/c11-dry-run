@@ -2,7 +2,7 @@
 from math import isfinite
 from pandas import DataFrame, to_datetime
 from freqtrade.enums import CandleType
-from causal_bars import FIVE, QUARTER
+from causal_bars import FIVE, MINUTE, QUARTER
 from closed_minute_basis import project_closed_minutes
 
 WIDTHS = {'5m': FIVE, '15m': QUARTER}
@@ -27,6 +27,18 @@ def _exact_direct_15m(frame, start, end):
     except (TypeError,ValueError):
         return None
     return result
+
+
+def _only_terminal_minute_missing(store, symbol, start, end, observed):
+    # A legacy wider candle does not establish minute coverage. Only defer the
+    # backup when the stored, admitted minutes before the terminal one are
+    # exact and contiguous. The shared native owner still owns the refill.
+    terminal = end - MINUTE
+    if terminal <= start or store.range(symbol, MINUTE, terminal, end, observed):
+        return False
+    prefix = store.range(symbol, MINUTE, start, terminal, observed)
+    return (len(prefix) == (terminal - start) // MINUTE
+            and all(row.open_ms == start + i * MINUTE for i, row in enumerate(prefix)))
 
 
 def refresh_with_local_basis(*, native_refresh, cache_view, store, market_id, now_ms,
@@ -61,7 +73,8 @@ def refresh_with_local_basis(*, native_refresh, cache_view, store, market_id, no
             # Release acceptance must verify the caller's missing-data behavior.
             if cache:
                 cache_view.pop(key,None)
-            if allow_native_15m_fallback and timeframe=='15m' and symbol and start<end:
+            if (allow_native_15m_fallback and timeframe == '15m' and symbol and start < end
+                    and not _only_terminal_minute_missing(store, symbol, start, end, observed)):
                 fallback[key]=(start,end)
             continue
         frame = DataFrame(
