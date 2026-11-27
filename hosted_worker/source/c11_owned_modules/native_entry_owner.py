@@ -3,7 +3,7 @@ from threading import get_ident
 from analyzed_frame import exact_analyzed_ohlcv
 
 PROVISIONAL=frozenset(('HOLD_NO_OWNED_SCOPE','HOLD_NOT_READY','HOLD_NO_UNUSED_RECONFIRM_CHAIN',
-    'HOLD_NATIVE_MINUTE_NOT_COMMITTED',
+    'HOLD_NATIVE_MINUTE_NOT_COMMITTED','HOLD_UNPROVEN_ANALYZED_FRAME',
     # Claimed corrected history is never judged via ordinary inputs. This
     # initial refusal keeps exactly one existing same-scope revisit, not a
     # canonical fallback or new permission.
@@ -23,6 +23,7 @@ class NativeEntryAdviceMixin:
         lane=getattr(self,'_c11_native_entry_owner',None)
         if lane is None or self.process_only_new_candles is not True:
             return original(pair)
+        lane.remember_missing_analysis(self,pair)
         if not lane.one_public_revisit(self,pair):
             return original(pair)
         prior=vars(self).get('process_only_new_candles',MISSING)
@@ -65,6 +66,23 @@ class NativeEntryOwner:
         self.discard_revisit_frame=discard_revisit_frame
         self.holds={}
         self.spent=set()
+
+    def remember_missing_analysis(self,strategy,pair):
+        # An empty analyzed cache is not a decision frame. The current original
+        # OHLCV cache can identify the boundary only; the same-scope scheduler
+        # and all existing data / protection checks still own the revisit.
+        if (get_ident()!=self.thread or type(pair) is not str or pair in self.holds
+                or not callable(self.provisional) or strategy.timeframe!='15m'
+                or strategy.config.get('dry_run') is not True):
+            return
+        try:
+            if not strategy.dp.get_analyzed_dataframe(pair,strategy.timeframe)[0].empty:
+                return
+            frame=strategy.dp.ohlcv(pair,strategy.timeframe,copy=False,candle_type=strategy.config['candle_type_def'])
+            end=exact_frame_end(frame)
+        except (KeyError,AttributeError,ValueError,TypeError,IndexError):
+            return
+        self._record_provisional(pair,end,'HOLD_UNPROVEN_ANALYZED_FRAME')
 
     def one_public_revisit(self,strategy,pair):
         if (get_ident()!=self.thread or type(pair) is not str or not callable(self.revisit_ready)
@@ -139,6 +157,7 @@ class NativeEntryOwner:
             end=exact_frame_end(dataframe)
         except (ValueError,TypeError,AttributeError,IndexError):
             self.record(pair,'HOLD_UNPROVEN_ANALYZED_FRAME')
+            self.remember_missing_analysis(strategy,pair)
             return no_primary()
         # Scheduler contract currently intentionally unbound in deployment.
         # It must route to stable original owner receipts, not send/fetch here.

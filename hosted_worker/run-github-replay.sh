@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|warm|early-roster-return|auto-stale|reviewed-partial|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale) ;; *) exit 64;; esac
+case "$2" in build|warm|warm-missing-analysis|early-roster-return|auto-stale|reviewed-partial|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -74,19 +74,25 @@ if [ "$2" = build ]; then
 fi
 warm() {
     pin=$runtime_pin
+    missing=no
+    if [ "$2" = warm-missing-analysis ]; then missing=yes; fi
     docker run --rm --pull never --network none --read-only --user 1000:2000 \
       --cpus 1 --memory 768m --pids-limit 64 --cap-drop ALL --security-opt=no-new-privileges \
       --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
       --tmpfs /c11-paper:rw,nosuid,nodev,uid=1000,gid=2000,mode=0700 \
       --mount "type=bind,src=$out/warm/warm_fixture,dst=/fixture,readonly" \
       --mount "type=bind,src=$out/warm,dst=/proof,readonly" \
-      -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e C11_EXACT_FINAL_RUNTIME_SHA="$pin" \
+      -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e C11_WARM_MISSING_ANALYSIS_CASE="$missing" -e C11_EXACT_FINAL_RUNTIME_SHA="$pin" \
       -e C11_ARCHIVE_CATALOG_CHECK_MS=1795773600000 -e C11_OFFLINE_EXPECT_BAKED_SCOPE=no -e C11_FUNCTIONAL_TRIAL=yes -e C11_INTENT_CASE=flat \
       --entrypoint python "$image" -B /proof/warm_acceptance.py >"$out/warm-runtime.log" 2>&1 &&
       grep -Fx C11_LEGACY_WIDE_DID_NOT_MASK_RAW_MINUTE_GAP "$out/warm-runtime.log" &&
       grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" &&
       grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
+    if [ "$missing" = yes ]; then
+      grep -Fx ACTUAL_ANALYZED_FRAME_MISSING "$out/warm-runtime.log"
+      grep -Fx C11_RAW_REFILL_AND_ORIGINAL_CALLBACK_WITH_MISSING_ANALYZED_CACHE "$out/warm-runtime.log"
+    fi
 }
 cold() {
     remote=no
@@ -116,4 +122,4 @@ cold() {
     fi
     return 1
 }
-if [ "$2" = warm ]; then warm; else cold "$2"; fi
+case "$2" in warm|warm-missing-analysis) warm "$@";; *) cold "$2";; esac

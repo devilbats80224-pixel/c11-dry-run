@@ -16,7 +16,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 HOSTED_CASES = frozenset({
     "exact_15m_fallback_preserves_base_history", "historic_minutes_not_saved",
     "partial_checkpoint", "blank_checkpoint", "independent_delivery",
-    "legacy_wide_masks_base_gap",
+    "legacy_wide_masks_base_gap", "base_refill_blocked_by_missing_analyzed_frame",
 })
 
 

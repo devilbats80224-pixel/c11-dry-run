@@ -501,6 +501,7 @@ def main(outer):
                     close_fds=True,env={},cwd='/tmp',start_new_session=True).result(1)
             assert cold.stdout.readline().startswith(b'WARM_NO_AUTHORITY_CONFIRMED_ABI_')
             assert cold.poll() is None
+        missing_analysis_case=os.environ.get('C11_WARM_MISSING_ANALYSIS_CASE')=='yes'
         for i in range(3):
           clock[0]=E+2000+5000*i
           if i==0:
@@ -538,7 +539,21 @@ def main(outer):
                 assert w.freqtrade.hard_guard.db.execute('SELECT count(*) FROM hard').fetchone()[0]==1
           print('ORIGINAL_PAPERBOT_PROCESS_ENTER',i,clock[0],flush=True)
           in_post_dispatch[0]=False
-          w.freqtrade.process()
+          if i==0 and missing_analysis_case:
+            dp=w.freqtrade.dataprovider
+            store_analysis=dp._set_cached_df
+            withheld=[]
+            def without_candidate(pair,tf,*args,**kwargs):
+                if pair==PAIR and tf=='15m':
+                    withheld.append(1)
+                    return
+                return store_analysis(pair,tf,*args,**kwargs)
+            with patch.object(dp,'_set_cached_df',side_effect=without_candidate):
+                w.freqtrade.process()
+            assert withheld and dp.get_analyzed_dataframe(PAIR,'15m')[0].empty
+            print('ACTUAL_ANALYZED_FRAME_MISSING',flush=True)
+          else:
+            w.freqtrade.process()
           if i==1:
             assert w.freqtrade._owned_revisit_no_positions is (intent_case not in ('orphan_entry','orphan_exit'))
             assert w.freqtrade._owned_revisit_reconciled is (intent_case!='orphan_entry')
@@ -565,7 +580,9 @@ def main(outer):
                 lane.spent.discard((PAIR,E))
                 x=w.freqtrade.dataprovider.get_analyzed_dataframe(PAIR,'15m')[0]
                 lane.advise(w.freqtrade.strategy,lambda frame,_meta:frame,x,{'pair':PAIR})
-                assert (2000,PAIR,'HOLD_NATIVE_MINUTE_NOT_COMMITTED') in advice,advice
+                expected_hold=('HOLD_UNPROVEN_ANALYZED_FRAME' if missing_analysis_case
+                               else 'HOLD_NATIVE_MINUTE_NOT_COMMITTED')
+                assert (2000,PAIR,expected_hold) in advice,advice
                 print('DELAYED_MINUTE_FIRST_ANALYSIS_HELD',flush=True)
             for x in sc.adapter.capture.records.values():
                 print('ACTUAL_OWNER_CAPTURE_GRADE',x['timeframe'],x['capture_grade'],x['reported_http'],len(x['raw_kline_rows']),flush=True)
@@ -599,6 +616,8 @@ def main(outer):
         assert 0<=ready_at<60_000, 'C11_UNREADY_PEER_DELAYED_SAME_CLOSE'
         print('C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK',ready_at,flush=True)
         print('C11_LEGACY_WIDE_DID_NOT_MASK_RAW_MINUTE_GAP',flush=True)
+        if missing_analysis_case:
+            print('C11_RAW_REFILL_AND_ORIGINAL_CALLBACK_WITH_MISSING_ANALYZED_CACHE',flush=True)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)
         print('PACKAGED_WARM_ROUTE_ORIGINAL_CALLBACK',json.dumps(exact_requests),flush=True)
         return
