@@ -173,11 +173,17 @@ class NativeStatusChecks(unittest.TestCase):
                        'direct_wide_data_fetch': 'missing', 'exact_package_and_entry': 'missing'}
         combine = e['merge_hosted_evidence']
         expected = dict(outstanding)
-        del expected['blank_checkpoint']
+        for case in ('blank_checkpoint','direct_wide_data_fetch','exact_package_and_entry'):
+            del expected[case]
         self.assertEqual(combine(outstanding, merge, merge, True), expected)
         self.assertEqual(combine(outstanding, merge, 'b' * 40, True), outstanding)
         self.assertEqual(combine(outstanding, merge, merge, False), outstanding)
         self.assertEqual(combine({'stale_checkpoint': 'missing'}, merge, merge, True), {})
+        # An external green status does not substitute for the PR build.
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'GITHUB_ACTIONS': 'true', 'HOSTED_WORKER_RESULT': 'failure',
+                                      'HOSTED_VERIFIED_MERGE_SHA': merge}, clear=True):
+            self.assertEqual(e['verify'](['stale_checkpoint'], merge), {'stale_checkpoint': 'missing'})
 
     def test_native_gate_diagnostics_keep_missing_proof_distinct_from_failure(self):
         scope = runpy.run_path(str(HERE / 'check_pr_scope.py'))

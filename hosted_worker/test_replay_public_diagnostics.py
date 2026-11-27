@@ -114,11 +114,13 @@ class PublicDiagnosticsTest(unittest.TestCase):
                      "early-roster-return",str(log),"no","no","no","no","no","no",
                      "yes" if outage else "no","no" if outage else "yes"],
                     capture_output=True,text=True,check=False)
-            official={**valid,"discovery_configured":True,"archive_public_receipts":74}
+            official={**valid,"discovery_configured":True,"archive_public_receipts":74,
+                      "verified_archive_minute_only":True,"retained_stages":{"PERSISTED":1}}
             passed=on_demand(official)
             self.assertEqual(passed.returncode,0,passed.stderr)
             for invalid in ({"archive_public_receipts":0},{"discovery_configured":False},{"original_entry_advice":[]},
-                            {"verified_raw_archive_cache":True}):
+                            {"verified_raw_archive_cache":True},{"verified_archive_minute_only":False},
+                            {"shared_1m_requests":[]},{"retained_stages":{"PERSISTED":0}}):
                 with self.subTest(invalid=invalid):
                     self.assertNotEqual(on_demand({**official,**invalid}).returncode,0)
             outage=dict(status="JCT_ARCHIVE_OUTAGE_HELD",archive_public_receipts=1,

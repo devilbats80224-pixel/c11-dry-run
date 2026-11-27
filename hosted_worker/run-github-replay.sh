@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|early-roster-return|auto-stale|reviewed-partial|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank) ;; *) exit 64;; esac
+case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -110,6 +110,29 @@ runpy.run_path("/provenance-test.py", run_name="__main__")'
     done
     exit 0
 fi
+package_entry() {
+    mkdir -m 700 "$out/launch-paper"
+    sandbox="$(cd "$out/launch-paper" && pwd -P)"
+    inspect_launch() {
+        cid=$(docker create --network none --read-only --cap-drop ALL --security-opt=no-new-privileges \
+            --mount "type=bind,src=$sandbox,dst=/c11-paper,readonly" "$@" "$image")
+        docker inspect "$cid" >"$out/launch.json"
+        docker rm "$cid" >/dev/null
+    }
+    validate_launch() {
+        python3 -I -B "$d/../release_regressions/check_ci_package_launch.py" \
+            "$image" "$(cat "$artifact/source.sha")" "$sandbox" <"$out/launch.json"
+    }
+    inspect_launch
+    validate_launch || return 1
+    inspect_launch --entrypoint /bin/sh
+    result="$(validate_launch || true)"
+    test "$result" = C11_CI_LAUNCH_WRONG_IMAGE_OR_ENTRY || return 1
+    inspect_launch --mount "type=bind,src=$sandbox,dst=/opt/c11_worker,readonly"
+    result="$(validate_launch || true)"
+    test "$result" = C11_CI_LAUNCH_CODE_SHADOW || return 1
+    echo C11_CI_LAUNCH_NEGATIVE_WRONG_ENTRY_AND_CODE_SHADOW_REJECTED
+}
 warm() {
     pin=$runtime_pin
     missing=no
@@ -178,6 +201,31 @@ warm() {
       grep -Fx C11_UNICODE_ORIGINAL_CONTRACT_IN_PROVIDER_AND_NATIVE_WIRE "$out/warm-runtime.log"
     fi
 }
+reviewed_opg() {
+    docker run --rm --pull never --network none --read-only --user 1000:2000 \
+      --cpus 1 --memory 768m --pids-limit 64 --cap-drop ALL --security-opt=no-new-privileges \
+      --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+      --tmpfs /c11-paper:rw,nosuid,nodev,uid=1000,gid=2000,mode=0700 \
+      --mount "type=bind,src=$d/fixtures/reviewed-opg-public,dst=/fixture,readonly" \
+      --mount "type=bind,src=$d/reviewed_opg_acceptance.py,dst=/replay-opg.py,readonly" \
+      --mount "type=bind,src=$out/warm/warm_fixture,dst=/original,readonly" \
+      -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e C11_ARCHIVE_CATALOG_CHECK_MS=1795773600000 \
+      --entrypoint python "$image" -B /replay-opg.py >"$out/opg-replay.log" 2>&1 &&
+      grep -Fq 'PASS_WHOLE_RECONFIRMED_OPG_WORKER_CORRECTED_NATIVE_CALLBACK_ONCE' "$out/opg-replay.log" || {
+        reason=ORIGINAL_CORRECTION_CALLBACK_NOT_PROVEN
+        if grep -q 'Permission denied' "$out/opg-replay.log"; then
+            reason=FIXTURE_NOT_READABLE
+        elif grep -q 'RUNTIME_MANIFEST_PIN' "$out/opg-replay.log"; then
+            reason=IMAGE_PIN_INVALID
+        fi
+        echo "C11_HOSTED_WORKER_CASE_FAILED reviewed-opg $reason"
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            printf '### Reviewed OPG history\n- Expected: original callback once and preserved canonical rows.\n- Actual: %s.\n- Last successful stage: exact artifact and pinned inputs selected.\n' "$reason" >>"$GITHUB_STEP_SUMMARY"
+        fi
+        return 1
+    }
+    echo 'C11_REVIEWED_OLD_CORRECTIONS_AND_ORIGINAL_STRATEGY_PASS'
+}
 cold() {
     remote=no
     prepared=no
@@ -219,4 +267,4 @@ cold() {
     fi
     return 1
 }
-case "$2" in warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback) warm "$@";; *) cold "$2";; esac
+case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback) warm "$@";; reviewed-opg) reviewed_opg;; *) cold "$2";; esac

@@ -922,6 +922,8 @@ else:
                    original_entry_advice=advice_sources,strategy_native_veto=strategy_native_veto,
                    initial_cold_start_age_ms=first_cold_start[0] if first_cold_start else None,
                    uncovered_tape_requests=len(uncovered_tape),
+                   verified_archive_minute_only=(bool(archive_wire)
+                       and all('/1m/' in urlsplit(url).path for url,_ in archive_wire)),
                    automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,pinned_remote=PINNED_REMOTE,
                    discovery_configured=bool(getattr(history.archive_prep,'discover_unseeded',False)),automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
                    stale_cursor_age_ms=stale_cursor_age_ms,

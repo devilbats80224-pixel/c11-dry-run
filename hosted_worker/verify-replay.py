@@ -238,6 +238,11 @@ elif background == "yes":
 elif on_demand == "yes":
     assert r.get("discovery_configured") is True, "ON_DEMAND_DISCOVERY_SWITCHED_OFF"
     assert r["archive_public_receipts"] > 0, "ON_DEMAND_REAL_OFFICIAL_BYTES_NOT_READ"
+    if (r.get("verified_archive_minute_only") is not True or not r.get("shared_1m_requests")
+            or int(stages.get("PERSISTED", 0)) < 1):
+        failure_summary("raw minute-only backfill was not proven", "original market-data owner",
+                        "NORMAL_1M_BACKFILL_NOT_PROVEN")
+        raise AssertionError("NORMAL_1M_BACKFILL_NOT_PROVEN")
     if not callback_native_veto:
         failure_summary("automatic acquisition completed but original callback absent", "strategy handoff",
                         "ON_DEMAND_ORIGINAL_CALLBACK_NOT_PROVEN")
