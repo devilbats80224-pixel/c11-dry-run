@@ -188,7 +188,7 @@ class ArchiveRecurrence:
 
 
 class ColdPrefixAdmission:
-    def __init__(self, sources, wall, *, prepare=derive):
+    def __init__(self, sources, wall, *, prepare=derive, prewarm_idle=False):
         if any(type(source) is not ClosedPrefixSource for source in sources.values()):
             raise ValueError('COLD_EXACT_SOURCE_REQUIRED')
         self.sources = dict(sources)
@@ -199,6 +199,35 @@ class ColdPrefixAdmission:
         self.ready = {}
         self.failed = set()
         self.repair_prior = {}
+        self.prewarm_idle=prewarm_idle
+        self.prewarming=None
+        self.prewarmed={}
+
+    def _start(self,symbol,*,idle=False):
+        cancel=Event()
+        future=self.pool.submit(self.prepare,symbol,self.sources[symbol],self.wall,cancel)
+        self.active=symbol,cancel,future
+        self.prewarming=symbol if idle else None
+
+    def cancel_idle(self):
+        if (self.active is not None and self.prewarming is not None and
+                self.prewarming not in self.pending):
+            self.active[1].set()
+
+    def _idle_source(self,now):
+        # Only already-reviewed, locally cached raw archive material. No
+        # exchange request, roster manufacture, new worker or owner write.
+        boundary=now//QUARTER*QUARTER
+        def ready_for_preparation(s):
+            return (not s.download_only and s.prepared_sha256 is None
+                    and (s.reviewed_at_ms is None or s.reviewed_at_ms<=now)
+                    and (s.review_expires_ms is None or now<s.review_expires_ms)
+                    and boundary-NW_WARM*QUARTER<=s.cutoff<=boundary-QUARTER)
+        self.prewarmed={sym:value for sym,value in self.prewarmed.items()
+                        if ready_for_preparation(self.sources[sym])}
+        return next((sym for sym,s in sorted(self.sources.items())
+                    if sym not in self.failed and sym not in self.prewarmed
+                    and ready_for_preparation(s)),None)
 
     def offer(self, fact):
         source = self.sources.get(fact.symbol)
@@ -212,6 +241,8 @@ class ColdPrefixAdmission:
         if fact.symbol in self.failed:
             return 'COLD_PREFIX_REFUSED'
         self.pending[fact.symbol] = fact
+        if fact.symbol in self.prewarmed:
+            self.ready[fact.symbol]=self.prewarmed[fact.symbol]
         return 'COLD_PREFIX_QUEUED'
 
     def offer_existing(self,owner,fact):
@@ -268,22 +299,27 @@ class ColdPrefixAdmission:
             if old is not None and old.origin==f.origin and old.pair==f.pair and owner.tap.current(f):
                 self.pending[f.symbol]=f
 
-    def tick(self, owner, *, ready_only=False, prepare_only=False):
+    def tick(self, owner, *, ready_only=False, prepare_only=False, allow_idle=True):
         allowed=owner.cold_delivery_window if ready_only or prepare_only else owner.phase_allows
         if get_ident()!=self.thread or not allowed():
             return
         if self.active is not None:
             symbol,cancel,future = self.active
             if future.done():
-                self.active = None
+                idle=self.prewarming==symbol
+                self.active=None
+                self.prewarming=None
                 try:
                     result=future.result()
-                    if not cancel.is_set() and symbol in self.pending:
-                        self.ready[symbol]=result
-                except (ValueError,OSError,TypeError,KeyError,RuntimeError) as error:
+                    if not cancel.is_set():
+                        if idle and type(result) is PreparedPrefix:
+                            self.prewarmed[symbol]=result
+                        if symbol in self.pending:
+                            self.ready[symbol]=result
+                except (Refused,ValueError,OSError,TypeError,KeyError,RuntimeError) as error:
                     self.pending.pop(symbol,None)
                     self.repair_prior.pop(symbol,None)
-                    if error.args not in (('COLD_NOT_YET_AVAILABLE',),('COLD_GRID_NOT_AVAILABLE',)):
+                    if not cancel.is_set() and error.args not in (('COLD_NOT_YET_AVAILABLE',),('COLD_GRID_NOT_AVAILABLE',)):
                         self.failed.add(symbol)
         for symbol,f in tuple(self.pending.items()):
             if ready_only and (symbol not in self.ready or not owner.cold_delivery_allows(f)):
@@ -317,10 +353,13 @@ class ColdPrefixAdmission:
                     self.repair_prior.pop(symbol,None)
                 return True
             if not ready_only and self.active is None and allowed():
-                cancel = Event()
-                future = self.pool.submit(self.prepare,symbol,self.sources[symbol],self.wall,cancel)
-                self.active = symbol,cancel,future
+                self._start(symbol)
                 return
+        if (allow_idle and self.prewarm_idle and not ready_only and not self.pending
+                and self.active is None and owner.phase_allows()):
+            symbol=self._idle_source(self.wall())
+            if symbol is not None:
+                self._start(symbol,idle=True)
 
     def install(self, owner, f, prefix, *, early=False):
         allowed=(lambda:owner.cold_delivery_allows(f)) if early else owner.phase_allows

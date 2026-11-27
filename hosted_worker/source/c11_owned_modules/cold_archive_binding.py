@@ -12,7 +12,8 @@ DISCOVERY_MODE='BOUNDED_OFFICIAL_ARCHIVE_V1'
 class ColdSourceAdmission:
     """Prefer reviewed local sources; only one prefix preparation at a time."""
     def __init__(self,reviewed,wall,*,discover_unseeded=False):
-        self.reviewed=ColdPrefixAdmission({s:v for s,v in reviewed.items() if not v.download_only},wall)
+        self.reviewed=ColdPrefixAdmission(
+            {s:v for s,v in reviewed.items() if not v.download_only},wall,prewarm_idle=True)
         remote={s:v for s,v in reviewed.items() if v.download_only}
         archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall,reviewed_remote=remote,
                                  discover_unseeded=discover_unseeded)
@@ -55,7 +56,9 @@ class ColdSourceAdmission:
             self.public.tick(owner,**flags)
             return
         self.public.retire_stale()
-        self.reviewed.tick(owner,**flags)
+        if self.public.pending:
+            self.reviewed.cancel_idle()
+        self.reviewed.tick(owner,allow_idle=not self.public.pending,**flags)
         if self.reviewed.active is None:
             self.public.tick(owner,**flags)
 

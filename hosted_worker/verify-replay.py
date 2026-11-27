@@ -15,6 +15,8 @@ assert prepared in {"yes", "no"} and (prepared == "no" or cached == "yes")
 no_listing = sys.argv[6] if len(sys.argv) >= 7 else "no"
 assert no_listing in {"yes", "no"}
 assert no_listing == "no" or (cached == remote == prepared == "no" and mode == "early-roster-return")
+background = sys.argv[7] if len(sys.argv) >= 8 else "no"
+assert background in {"yes", "no"} and (background == "no" or (cached == "yes" and mode == "yes"))
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial", "yes"}
 def failure_summary(actual, phase, reason, *, age=None):
     detail = (f"Expected original 5m VETO in the target cycle; actual {actual}; "
@@ -182,6 +184,13 @@ if prepared == "yes":
                                      "HOLD_UNPROVEN_ANALYZED_FRAME"} else "UNCONFIRMED"
         failure_summary("original filter reached but full original callback absent", "strategy handoff", reason)
         raise AssertionError("PREPARED_CHECKPOINT_ORIGINAL_CALLBACK_NOT_PROVEN")
+elif background == "yes":
+    assert "C11_RAW_ONLY_STATE_READY_BEFORE_CANDIDATE" in lines, "BACKGROUND_CHECKPOINT_NOT_READY"
+    assert r["archive_public_receipts"] == 0
+    assert r["shared_1m_requests"], "BACKGROUND_MINUTE_CATCHUP_NOT_PROVEN"
+    assert all(r["replay_boundary"] - (260 * 15 + 45) * 60_000 <= start < stop <= r["replay_boundary"]
+               for start,stop,_,_ in r["shared_1m_requests"]), "BACKGROUND_REQUEST_BEFORE_RECENT_WINDOW"
+    assert callback_native_veto, "BACKGROUND_ORIGINAL_CALLBACK_NOT_PROVEN"
 elif no_listing == "yes":
     assert r["archive_public_receipts"] == 0
     assert r["shared_1m_requests"], "UNSEEDED_MINUTE_REPAIR_NOT_PROVEN"

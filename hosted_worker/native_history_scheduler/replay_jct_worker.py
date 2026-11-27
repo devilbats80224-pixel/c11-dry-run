@@ -63,9 +63,11 @@ PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
 PREPARED_CHECKPOINT=os.environ.get('C11_JCT_PREPARED_CHECKPOINT')=='yes'
 NO_LISTING_ORIGIN=os.environ.get('C11_JCT_NO_LISTING_ORIGIN')=='yes'
+BACKGROUND_REVIEWED=os.environ.get('C11_JCT_BACKGROUND_REVIEWED')=='yes'
+assert not BACKGROUND_REVIEWED or (CACHED and AUTO_MODE and not PREPARED_CHECKPOINT)
 assert not NO_LISTING_ORIGIN or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT))
 assert not PREPARED_CHECKPOINT or (CACHED and AUTO_MODE)
-EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT
+EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT or BACKGROUND_REVIEWED
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
@@ -572,7 +574,7 @@ else:
                 if CACHED or PINNED_REMOTE:
                     from dataclasses import replace
                     from cold_archive_release import installed_sources
-                    cache_origins=installed_sources(runtime,run.wall(),verify_content=CACHED)
+                    cache_origins=installed_sources(runtime,run.wall(),verify_content=CACHED and not BACKGROUND_REVIEWED)
                     assert cache_origins and SYMBOL in cache_origins
                     if not PREPARED_CHECKPOINT:
                         # Keep the independent raw-cache/remote path regressions.
@@ -596,12 +598,31 @@ else:
                         patches.enter_context(patch.object(cold_prefix,'derive_records',refuse_listing_origin))
                     def read_on_fixture_clock(sym,_spec,wall,cancel):
                         # Only the original pinned public cassette uses the shifted clock.
+                        if BACKGROUND_REVIEWED:
+                            assert cache_origins[sym].prepared_sha256 is None
                         prefix=derive(sym,cache_origins[sym],wall,cancel,grid_shift=SHIFT)
                         if PREPARED_CHECKPOINT:
                             assert prefix.rpd.next_open==base['end_ms']+SHIFT and prefix.rpd.origin==ORIGIN
                             print('C11_RECOVERY_REUSED_PREPARED_CHECKPOINT',flush=True)
                         return prefix
                     h.cold_prefix.reviewed.prepare=read_on_fixture_clock
+                    if BACKGROUND_REVIEWED:
+                        # The owner starts with no history candidate or
+                        # strategy checkpoint. Release the recorded roster
+                        # only after the same real background lane is ready.
+                        original_history_facts=h.tap.facts
+                        background_released=[False]
+                        def staged_candidates():
+                            if not background_released[0]:
+                                if SYMBOL not in h.cold_prefix.reviewed.prewarmed:
+                                    return ()
+                                assert not h.cold_prefix.reviewed.pending
+                                assert h.store.segment(SYMBOL) is None
+                                background_released[0]=True
+                                print('C11_RAW_ONLY_STATE_READY_BEFORE_CANDIDATE',flush=True)
+                            return original_history_facts()
+                        h.tap.facts=staged_candidates
+
                     # A cache-only recovery may not silently reopen the listing scan.
                     def deny_archive_download(*_args):
                         raise AssertionError('C11_CACHED_RECOVERY_USED_ARCHIVE_NETWORK')
@@ -815,7 +836,7 @@ else:
                     and d['owner_code']=='causal_bars.py' and d['method']=='inputs'
                     and d['age_ms']==original_calls[0]['age_ms'] for d in decision_origins))
         observed_veto=('VETO' in exact_join and veto==('VETO',)) or strategy_native_veto
-        if (EARLY_ROSTER or PREPARED_CHECKPOINT) and observed_veto and not original_calls and now<END+54_000:
+        if (EARLY_ROSTER or PREPARED_CHECKPOINT or BACKGROUND_REVIEWED) and observed_veto and not original_calls and now<END+54_000:
             return result
         primary_no_signal=(HAN_MODE or INIT_MODE) and phase=='entry' and primary==('PRIMARY_NO_SIGNAL',)
         if observed_veto or primary_no_signal:

@@ -14,8 +14,11 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -m 755 "$out"
 cp "$root/native_history_scheduler/replay_jct_worker.py" "$root/native_ccxt_projection/current_locked_startup_check.py" "$out/"
 set --
+if [ "${C11_REPLAY_BACKGROUND_REVIEWED:-no}" = yes ]; then
+    set -- -e C11_JCT_BACKGROUND_REVIEWED=yes
+fi
 if [ "${C11_REPLAY_NO_LISTING_ORIGIN:-no}" = yes ]; then
-    set -- -e C11_JCT_NO_LISTING_ORIGIN=yes
+    set -- "$@" -e C11_JCT_NO_LISTING_ORIGIN=yes
 fi
 if [ "${C11_REPLAY_PREPARED_CHECKPOINT:-no}" = yes ]; then
     set -- "$@" -e C11_JCT_PREPARED_CHECKPOINT=yes
