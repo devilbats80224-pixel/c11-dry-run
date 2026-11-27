@@ -76,7 +76,7 @@ jobs:
         env:
           FT_IMAGE: docker.io/freqtradeorg/freqtrade@sha256:956c03780934eeb93734a1f352e7e150b73becdafa3767a947a25ad2422fba2e
         run: |
-          for test in test_native_15m_fallback.py test_local_candle_refresh.py test_retain_warm_minutes.py; do
+          for test in test_native_15m_fallback.py test_local_candle_refresh.py test_retain_warm_minutes.py test_native_projection_roundtrip.py; do
             docker run --rm --pull never --network none --read-only \
               --tmpfs /tmp:rw,noexec,nosuid,size=64m --cap-drop ALL \
               --security-opt=no-new-privileges --entrypoint python --workdir /freqtrade \
