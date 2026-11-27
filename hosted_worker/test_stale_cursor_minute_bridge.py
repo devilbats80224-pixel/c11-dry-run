@@ -13,9 +13,9 @@ ORIGIN = T - 365 * 96 * Q
 
 
 
-def owner_replay():
+def owner_replay(*, five_day_restart=False):
     symbol = '陌生候選USDT'
-    first = T - 300 * Q
+    first = T - (5 * 96 if five_day_restart else 300) * Q
     origin = first - Q
     wall = T + 1000
     fact = N(symbol=symbol, origin=origin, boundary=T, generation=8)
@@ -57,15 +57,30 @@ def owner_replay():
     loop.cycle_headroom = lambda: True
     try:
         loop.enroll_cold([fact])
-        loop.tick([fact])
-        loop.tick([fact])
-        assert calls == [(first,first+PAGE),(first+PAGE,first+2*PAGE)]
-        assert len(store.range(symbol,M,first,first+PAGE,wall)) == 495
-        payload, = store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
-        assert RpdState.restore(payload).next_open == first + PAGE
-        roster.clear()
-        loop.tick([fact])
-        assert not store.range(symbol,M,first+PAGE,first+2*PAGE,wall)
+        if five_day_restart:
+            cutoff=T-Q  # the live original Worker owns the terminal close
+            for _ in range(40):
+                loop.tick([fact])
+                payload,=store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
+                if RpdState.restore(payload).next_open==cutoff:
+                    break
+            assert len(calls)==15 and calls[0][0]==first and calls[-1][1]==cutoff
+            assert all(stop==following_start for (_,stop),(following_start,_) in zip(calls,calls[1:]))
+            assert all(0<stop-start<=PAGE for start,stop in calls)
+            assert sum(stop-start for start,stop in calls)==5*24*60*M-Q
+            assert RpdState.restore(payload).next_open==cutoff
+            assert not store.range(symbol,M,cutoff,T,wall)
+            print('C11_FIVE_DAY_RESTART_EXACT_RETAINED_CURSOR_TO_TERMINAL_HANDOFF')
+        else:
+            loop.tick([fact])
+            loop.tick([fact])
+            assert calls == [(first,first+PAGE),(first+PAGE,first+2*PAGE)]
+            assert len(store.range(symbol,M,first,first+PAGE,wall)) == 495
+            payload, = store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
+            assert RpdState.restore(payload).next_open == first + PAGE
+            roster.clear()
+            loop.tick([fact])
+            assert not store.range(symbol,M,first+PAGE,first+2*PAGE,wall)
     finally:
         loop.close()
         store.db.close()
@@ -87,6 +102,7 @@ def main():
         assert make_job(fact, T - 2000 * Q, (), T + 1, TOKEN) is None
         assert make_job(fact, None, (), T + 1, TOKEN) is None
     owner_replay()
+    owner_replay(five_day_restart=True)
     print('C11_STALE_VERIFIED_CURSOR_AUTO_MINUTE_BRIDGE_PASS')
 
 

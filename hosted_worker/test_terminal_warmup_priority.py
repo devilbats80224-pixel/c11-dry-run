@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 sys.path[:0]=["/opt/c11_owned_modules","/opt/c11_worker","/opt/c11_worker/ports"]
 from feature_warmup import FeatureWarmup
+from native_minute_admission_loop import MinuteAdmissionLoop
 
 def exercise():
     a,b,c=(SimpleNamespace(symbol=s,pair=s+'/USDT:USDT',expires_ns=30) for s in ('A','B','C'))
@@ -17,7 +18,7 @@ def exercise():
     service.next_attempt_ns=999
     terminal=1_795_773_600_000
     # All available ranking rows are passed; buy or protected paths are not used.
-    with patch.object(service,'_background_batch',create=True), patch('feature_warmup.time.monotonic_ns',return_value=10), patch(
+    with patch('feature_warmup.time.monotonic_ns',return_value=10), patch(
         'feature_warmup.time.time_ns',return_value=(terminal+1000)*1_000_000):
         hints={(b.pair,b.symbol,terminal),(c.pair,c.symbol,terminal),(a.pair,a.symbol,terminal-900000)}
         service.after_protection(bot,verified_cycle_rows=(a,b,c),due_terminal=hints)
@@ -31,22 +32,36 @@ def exercise():
             requests.clear()
             service.after_protection(bot,verified_cycle_rows=roster,due_terminal=hints)
             assert requests==[(row.symbol,terminal) for row in roster],requests
-    visited=[]
-    def background(_bot,_policy,_pair,symbol,end,_errors):
-        visited.append((symbol,end))
-        return ((),(),SimpleNamespace(status='KNOWN')), SimpleNamespace(known=True)
+    duplicate_calls=[]
+    def duplicate(*_args):
+        duplicate_calls.append(1)
+        return ((),(),None),None
     service=FeatureWarmup()
-    roster=tuple(SimpleNamespace(symbol=f'BG{i}',pair=f'BG{i}/USDT:USDT',expires_ns=30) for i in range(20))
-    with patch('feature_warmup.readiness',side_effect=background), patch(
-            'feature_warmup.time.monotonic_ns',return_value=10), patch(
-            'feature_warmup.time.time_ns',return_value=(terminal+1000)*1_000_000):
-        service.after_protection(bot,verified_cycle_rows=roster[:10])
-        assert visited==[(item.symbol,terminal) for item in roster[:10]],visited
-        service.after_protection(bot,verified_cycle_rows=roster)
-        assert visited==[(item.symbol,terminal) for item in roster],visited
-        service.after_protection(bot,verified_cycle_rows=roster)
-        assert len(visited)==20,visited
-    print('C11_BACKGROUND_BATCH_NO_FIXED_SYMBOL_CAP_AND_COMPLETED_ROWS_NOT_REISSUED')
+    with patch('feature_warmup.readiness',side_effect=duplicate), patch('feature_warmup.time.monotonic_ns',return_value=10):
+        service.after_protection(bot,verified_cycle_rows=(a,b,c))
+    assert not duplicate_calls, 'AUTHENTICATED_HISTORY_BYPASSED_SHARED_OWNER'
+
+    class BlankReadOnly:
+        def segment(self,_symbol):
+            return None
+        class db:
+            @staticmethod
+            def execute(*_args):
+                return SimpleNamespace(fetchone=lambda:None)
+    for size in (10,20):
+        observed=[]
+        roster=tuple(SimpleNamespace(symbol=f'BG{i}') for i in range(size))
+        owner=SimpleNamespace(
+            store=BlankReadOnly(), check_store=lambda:None,
+            cold_delivery_window=lambda:True, tap=SimpleNamespace(current=lambda f:f in roster),
+            cold_prefix=SimpleNamespace(offer=lambda f:observed.append(f.symbol) or 'QUEUED'))
+        loop=MinuteAdmissionLoop(owner,lambda _:None)
+        try:
+            loop.enroll_cold(roster)
+            assert observed==[f.symbol for f in roster],observed
+        finally:
+            loop.close()
+    print('C11_BACKGROUND_BATCH_NO_FIXED_SYMBOL_CAP_AND_SINGLE_NATIVE_OWNER')
     print('C11_SECOND_RANKED_DUE_MINUTE_BYPASSES_BACKGROUND_TIMER_ONLY')
 
 if __name__=='__main__':

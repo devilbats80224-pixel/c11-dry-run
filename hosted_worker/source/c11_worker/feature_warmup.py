@@ -60,10 +60,6 @@ class FeatureWarmup:
     def __init__(self):
         self.next_attempt_ns=0
         self.last_symbol=None
-        self.background_boundary=None
-        self.background_attempts={}
-        self.background_complete=set()
-        self.background_sequence=0
 
     def after_protection(self,bot,*,verified_cycle_rows=None,due_terminal=()):
         from standalone_policy import INPUT_ERRORS
@@ -86,7 +82,9 @@ class FeatureWarmup:
                 except INPUT_ERRORS+(sqlite3.Error,):
                     continue
         if verified_cycle_rows is not None:
-            self._background_batch(bot,verified_cycle_rows,INPUT_ERRORS)
+            # The installed history owner already receives this batch through
+            # its native scheduler. Do not send a second synchronous 5m/15m
+            # request or advance an RPD that the original owner is handling.
             return
         # Keep the unchanged compatibility path when no authenticated owner
         # is installed. It is never used for the active owner's candidate batch.
@@ -112,31 +110,3 @@ class FeatureWarmup:
             except INPUT_ERRORS+(sqlite3.Error,):
                 pass
             return
-
-
-    def _background_batch(self,bot,rows,errors):
-        now=time.time_ns()//1_000_000
-        boundary=now//QUARTER*QUARTER
-        if boundary!=self.background_boundary:
-            self.background_boundary=boundary
-            self.background_attempts.clear()
-            self.background_complete.clear()
-            self.background_sequence=0
-        deadline=getattr(bot,'_owned_original_cycle_deadline_ns',None)
-        # Real owner time and existing transport limits bound the cycle, not
-        # a fixed number of candidates. Unvisited work leads the next cycle.
-        for candidate in sorted(rows,key=lambda c:self.background_attempts.get(c.symbol,-1)):
-            tick=time.monotonic_ns()
-            if deadline is None or tick>=deadline:
-                return
-            if (candidate.symbol in self.background_complete
-                    or tick>=candidate.expires_ns or not bot.observed_ranked(candidate)):
-                continue
-            self.background_attempts[candidate.symbol]=self.background_sequence
-            self.background_sequence+=1
-            try:
-                (_,_,nw),state=readiness(bot,bot.policy,candidate.pair,candidate.symbol,boundary,errors)
-            except errors+(sqlite3.Error,):
-                continue
-            if nw is not None and nw.status!='UNKNOWN' and state is not None and state.known:
-                self.background_complete.add(candidate.symbol)

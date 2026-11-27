@@ -554,8 +554,13 @@ def main(outer):
                 count,=reader.execute('SELECT count(*) FROM candle WHERE symbol=? AND width=? AND open_ms>=? AND open_ms<?',
                                       ('STBLUSDT',MINUTE,start,E)).fetchone()
                 assert count==3900,count
-                widths=tuple(reader.execute('SELECT symbol,count(*) FROM candle WHERE width=? GROUP BY symbol',(QUARTER,)))
-                assert any(symbol in ('STBLUSDT',MISSING) and n==260 for symbol,n in widths),widths
+                # This path proves persisted raw 1m plus the actual native
+                # derived market view above. It must not rely on the old
+                # parallel background writer to seed independent 15m rows.
+                # Atomic derived persistence is asserted in the owner replay.
+                last,=reader.execute('SELECT COUNT(*) FROM candle WHERE symbol=? AND width=? AND open_ms=?',
+                                     ('STBLUSDT',MINUTE,E-MINUTE)).fetchone()
+                assert last==1,last
             if terminal_gap_case:
                 print('C11_TERMINAL_GAP_WORKER_ONLY_1M_AND_DURABLE',flush=True)
             else:
