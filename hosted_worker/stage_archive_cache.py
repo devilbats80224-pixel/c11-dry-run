@@ -8,6 +8,10 @@ import json
 from pathlib import Path
 import re
 import sys
+from runpy import run_path
+
+quote_contract_shape = run_path(str(
+    Path(__file__).parent / "source/c11_worker/exact_symbol.py"))["quote_contract_shape"]
 
 
 def copy_archives(source, output):
@@ -15,7 +19,7 @@ def copy_archives(source, output):
     contract = (source / "contract.json").read_bytes()
     payload = json.loads(contract)
     symbol = payload["payload"]["symbol"]
-    assert re.fullmatch(r"[A-Z0-9]+USDT", symbol)
+    assert quote_contract_shape(symbol)
     assert payload["source"] == "https://fapi.binance.com/fapi/v1/exchangeInfo"
     origin = payload["payload"]["onboardDate"]
     manifest_bytes = (source / "jct_official_archives/manifest.json").read_bytes()
