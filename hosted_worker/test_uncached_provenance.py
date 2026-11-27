@@ -9,7 +9,7 @@ sys.path[:0] = [
     "/opt/c11_owned_modules", "/opt/c11_worker", "/opt/c11_worker/ports",
     "/opt/c11_background_review", "/freqtrade",
 ]
-from auto_cold_archive import ArchiveProgress, AutomaticArchive, Hold, Receipt, RECENT_PROOF_REQUIRED
+from auto_cold_archive import AutoColdAdmission, ArchiveProgress, AutomaticArchive, Hold, Receipt, RECENT_PROOF_REQUIRED
 from causal_bars import ClosedBar, FIVE, QUARTER
 from native_primary_lane import NativePrimaryLane
 from primary_only_route import NW_WARM
@@ -207,8 +207,40 @@ def missing_month_finds_daily_without_a_catalogue():
     pinned=ArchiveProgress(archive,symbol,origin,cutoff,0,(),reviewed=Ns())
     assert not pinned.substitute_closed_days(symbol+'-1m-2026-10.zip',cutoff)
 
+
+def expired_completed_source_cannot_block_ready_peer():
+    now=1795773605000
+    end=now//QUARTER*QUARTER
+    origin=end-8*QUARTER
+    blocked=Ns(symbol='EXPIREDUSDT',pair='EXPIRED/USDT:USDT',origin=origin,boundary=end)
+    peer=Ns(symbol='陌生候選USDT',pair='陌生候選/USDT:USDT',origin=origin,boundary=end)
+    owner=Ns(cold_delivery_window=lambda:True,cold_delivery_allows=lambda f:f in (blocked,peer))
+    def unexpected_fetch(*_):
+        raise AssertionError('C11_READY_DELIVERY_STARTED_IO')
+    lane=AutoColdAdmission(lambda:now,unexpected_fetch)
+    try:
+        for fact,expires in ((blocked,now),(peer,now+5_000)):
+            lane.offer(fact)
+            lane.pending[fact.symbol].result=(Ns(cutoff=end-QUARTER,review_expires_ms=expires),fact)
+        attempts=[]
+        def install(_owner,fact,prefix,*,early):
+            assert early and prefix is fact
+            attempts.append(fact.symbol)
+            return lane.sources[fact.symbol].review_expires_ms>now
+        with patch.object(lane,'install',side_effect=install):
+            lane.tick(owner,ready_only=True)
+            assert attempts==[peer.symbol],'C11_EXPIRED_READY_SOURCE_STARVES_VALID_PEER'
+            assert peer.symbol not in lane.pending
+            held=lane.pending[blocked.symbol]
+            assert held.result is None and held.status=='AUTO_ARCHIVE_REVIEWED_SCOPE'
+            lane.tick(owner,ready_only=True)
+            assert attempts==[peer.symbol]
+    finally:
+        lane.close()
+
 if __name__ == "__main__":
     missing_month_finds_daily_without_a_catalogue()
+    expired_completed_source_cannot_block_ready_peer()
     boundary_cases()
     discovered_archives_use_existing_bounds()
     reviewed_download_rejects_changed_checksum()

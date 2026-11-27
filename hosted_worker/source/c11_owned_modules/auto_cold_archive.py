@@ -516,6 +516,16 @@ class AutoColdAdmission(ColdPrefixAdmission):
         for symbol,slot in tuple(self.pending.items()):
             if slot.result is not None and (owner.cold_delivery_allows(slot.fact) if ready_only else owner.tap.current(slot.fact)):
                 source,prefix=slot.result
+                if (source.review_expires_ms is not None
+                        and self.wall()>=source.review_expires_ms):
+                    # Refreshing roster membership never extends source review.
+                    # Retire this result before it can take the owner's turn.
+                    slot.result=None
+                    slot.continuation=None
+                    slot.status='AUTO_ARCHIVE_REVIEWED_SCOPE'
+                    slot.due_ms=2**63-1
+                    self.repair_prior.pop(symbol,None)
+                    continue
                 if source.cutoff<slot.fact.boundary-ANALYSIS:
                     if ready_only:continue
                     slot.result=None
