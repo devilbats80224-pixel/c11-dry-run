@@ -115,6 +115,11 @@ class NativePrimaryLane:
             try:
                 if known is None and self.classify_if_ready(f,s):
                     known=self.recorded[f.symbol]
+                if known=='PRIMARY_NO_SIGNAL':
+                    # The original same-close primary has already settled.
+                    # Skip speculative projection refill; separate background
+                    # continuity and the position protection lanes are unchanged.
+                    continue
                 if not headroom():
                     self.gate('NO_PID_HEADROOM',f)
                     continue
