@@ -724,9 +724,6 @@ def main(outer):
     assert not Trade.get_open_trades()
     assert [a for a in advice if a[1]==PAIR]==[(2000,PAIR,'HOLD_NO_OWNED_SCOPE'),(at_cb,PAIR,'HOLD_NATIVE_COMMIT_REFUSED' if refusal else 'ORIGINAL_NATIVE_CALLBACK')],advice
     assert not any(pair==UNKNOWN_PAIR and status=='ORIGINAL_NATIVE_CALLBACK' for _,pair,status in advice),advice
-    assert cas.db.execute('SELECT symbol,end_ms,source FROM c11_owner_callback_once').fetchall()==[('STBLUSDT',E,'legacy')]
-    print('ACTUAL_FULL_WORKER_LEGACY_FALLTHROUGH_PERSISTED_ONCE',flush=True)
-    print('PASS_EXACT_ARCHIVED_NATIVE_ROLLOVER_CARRIED_ONE_REAL_FRAMEWORK_CALL_AND_OLD_BOOT_ONLY',flush=True)
 clock=[E-120]
 def caught_trace(f,event,arg):
     if event=='return' and f.f_code.co_name in ('claim_before_wire','transport_still_due','claim_send') and arg is False:

@@ -23,6 +23,20 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Install pinned lint and type-check tools
+        run: |
+          python3 -m pip install ruff==0.17.6
+          npm install --global pyright@1.1.414
+      - name: Lint repository source
+        run: ruff check .
+      - name: Check Python types
+        run: pyright --project pyrightconfig.json
       - name: Verify CI shell syntax
         run: |
           sh -n release_regressions/build_and_run_one_minute_ci.sh

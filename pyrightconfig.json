@@ -1,0 +1,12 @@
+{
+  "include": [
+    "hosted_worker/stage_archive_cache.py",
+    "release_regressions/check_effective_launch.py",
+    "release_regressions/check_one_minute_image.py",
+    "release_regressions/check_pr_scope.py",
+    "release_regressions/check_public_tracked_files.py",
+    "release_regressions/native_replay_status.py"
+  ],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "standard"
+}
