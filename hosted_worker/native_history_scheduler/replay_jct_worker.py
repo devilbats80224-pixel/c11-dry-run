@@ -679,7 +679,12 @@ else:
             phase='carry'
             next_now=now+1000
             next_generation+=1
-        elif phase=='cold' and cursor==END-3*Q:
+        elif phase=='cold' and (cursor==END-3*Q or
+                (REVIEWED_PARTIAL and cursor in (END-2*Q,END-Q))):
+            # Polls observe committed state, not every intermediate cursor.
+            # In this reviewed case the independent accepted path can catch
+            # up again before the fixture observes the preceding quarter.
+            assert now<END-Q
             if RESTART=='prepare':
                 assert len(archive_wire)==56 and not Trade.get_open_trades()
                 assert [r[2] for r in shared_requests]==[285]
