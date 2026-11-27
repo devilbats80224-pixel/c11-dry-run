@@ -514,6 +514,15 @@ def main(outer):
                 policy.bars.record('STBLUSDT',width,prefix)
             assert policy.bars.range('STBLUSDT',900000,E-260*900000,E-900000,clock[0])==()
             assert policy.bars.range('STBLUSDT',FIVE,E-3*QUARTER,E-QUARTER,clock[0])==()
+            # A legacy wide candle must not masquerade as any raw constituent.
+            from causal_bars import MINUTE
+            archived15=next(a for a in W['actual_public_receipts'] if a['timeframe']=='15m')
+            row=next(r for r in archived15['raw_kline_rows'] if r[0]==E-QUARTER)
+            assert archived15['receive_ms']<=clock[0]
+            legacy=ClosedBar(row[0],archived15['receive_ms'],*(float(row[j]) for j in (1,2,3,4,5,7)))
+            policy.bars.record('STBLUSDT',QUARTER,(legacy,))
+            assert policy.bars.range('STBLUSDT',QUARTER,E-QUARTER,E,clock[0])==(legacy,)
+            assert policy.bars.range('STBLUSDT',MINUTE,E-45*MINUTE,E,clock[0])==()
           if i==1:
             assert not Trade.get_open_trades()
             if intent_case=='orphan_entry':
@@ -589,6 +598,7 @@ def main(outer):
         (ready_at,)=tuple(t for t,pair,status in advice if (pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK'))
         assert 0<=ready_at<60_000, 'C11_UNREADY_PEER_DELAYED_SAME_CLOSE'
         print('C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK',ready_at,flush=True)
+        print('C11_LEGACY_WIDE_DID_NOT_MASK_RAW_MINUTE_GAP',flush=True)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)
         print('PACKAGED_WARM_ROUTE_ORIGINAL_CALLBACK',json.dumps(exact_requests),flush=True)
         return

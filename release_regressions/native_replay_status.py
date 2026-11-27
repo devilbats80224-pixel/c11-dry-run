@@ -10,12 +10,13 @@ PREFIX = "c11/native/v1/"
 SHA = re.compile(r"[0-9a-f]{40}")
 
 # Each name is asserted by the hosted image, not inferred from job count:
-# warm native exact fallback; build-time 45/9/3 storage rollback controls;
+# warm native exact fallback and verified old-wide/new-minute separation; build-time 45/9/3 storage rollback controls;
 # reviewed-partial and early-roster-return original Worker cases. Stale
 # release proof remains due where the criterion excludes listing-origin history.
 HOSTED_CASES = frozenset({
     "exact_15m_fallback_preserves_base_history", "historic_minutes_not_saved",
     "partial_checkpoint", "blank_checkpoint", "independent_delivery",
+    "legacy_wide_masks_base_gap",
 })
 
 
