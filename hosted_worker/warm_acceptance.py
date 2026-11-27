@@ -41,6 +41,8 @@ ROOT=Path('/c11-paper')
 PAIR='STBL/USDT:USDT'
 unicode_case=os.environ.get('C11_WARM_UNICODE_CASE')=='yes'
 ready_basis_case=os.environ.get('C11_WARM_READY_BASIS_CASE')=='yes'
+divergent_fallback_case=os.environ.get('C11_WARM_DIVERGENT_FALLBACK_CASE')=='yes'
+divergent_fallback=[]
 unknown_base='牛来' if unicode_case else 'ON'
 UNKNOWN_PAIR=unknown_base+'/USDT:USDT'
 assert version('freqtrade')=='2026.10' and version('ccxt')=='4.5.90'
@@ -121,6 +123,16 @@ def valid(q):
           source=u['raw_kline_rows']+source
         rows=[r for r in source if start<=r[0]<=end][-lim:]
         if tf=='1m' and lim==45: assert len(rows)==45 and rows[0][0]==E-45*60000
+        if divergent_fallback_case and fields['symbol']==['STBLUSDT'] and tf=='15m' and lim==499:
+          assert rows and rows[-1][0]==E-900000
+          # Alter just the synthetic fallback's terminal price. Prior history
+          # and the actual 1m receipt tape retain their original bytes.
+          rows=[list(row) for row in rows]
+          last=rows[-1]
+          value=Decimal(last[4])*Decimal('1.03')
+          divergent_fallback.append((last[0],Decimal(last[4]),value))
+          last[4]=str(value)
+          last[2]=str(max(Decimal(last[2]),value))
         print('ARCHIVED_PUBLIC_SEND',tf,start,end,lim,len(rows),clock[0]-E,x['receive_ms']-E,flush=True)
         if incident and fields['symbol']==['STBLUSDT'] and tf=='5m' and lim==21:
           # Recorded failure modality only, not historical source or OPG live tape.
@@ -668,6 +680,14 @@ def main(outer):
             print('C11_UNICODE_ORIGINAL_CONTRACT_IN_PROVIDER_AND_NATIVE_WIRE',flush=True)
         if missing_analysis_case:
             print('C11_RAW_REFILL_AND_ORIGINAL_CALLBACK_WITH_MISSING_ANALYZED_CACHE',flush=True)
+        if divergent_fallback_case:
+            assert divergent_fallback and all(at==E-QUARTER and old!=new for at,old,new in divergent_fallback)
+            archived_minute=next(x for x in W['actual_public_receipts'] if x['timeframe']=='1m')
+            source_close=float(archived_minute['raw_kline_rows'][-1][4])
+            actual=policy.bars.range('STBLUSDT',MINUTE,E-MINUTE,E,clock[0])
+            assert len(actual)==1 and actual[0].close==source_close
+            assert all(float(new)!=source_close for _,_,new in divergent_fallback)
+            print('C11_DIVERGENT_FALLBACK_DID_NOT_BLOCK_ORIGINAL_DECISION',flush=True)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)
         print('PACKAGED_WARM_ROUTE_ORIGINAL_CALLBACK',json.dumps(exact_requests),flush=True)
         return

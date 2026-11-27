@@ -28,6 +28,12 @@ then verify and deploy after merge. Factor the candle ingest/repair and this
 procedure for reuse by other strategies without copying C11 signal logic or
 binding another strategy's deployment to C11.
 
+### 正常 1m 與已授權的備援不是同一案例
+
+`direct_wide_data_fetch` 的正常路徑檢查看的是原本應從 1m 補齊／刷新時，不用直抓大週期代替。它不取消另列的 `exact_15m_fallback_preserves_base_history`。1m 仍為主；若原始基礎不夠，現有同輪備援可留用，不覆寫已接納的原始分鐘。多拿到備援資料不等於一定要採用，也不單以兩來源的價差否定原策略。已核准的 OPG 歷史複核另有可追查的原始規則，不因這項日常行情備援更動。
+
+三類證據分別記：完整已接納 1m 的來源選擇、確需補缺時的請求和實際原生判斷、以及啟用備援的同輪原策略與 1m 保留。不可把已齊資料的零取數測試當成缺資料的補建證據；不可把備援可用測試當成一般路徑只有 1m 的證據。
+
 ### 已驗證清單、沒有原始快取的重建路徑
 
 清單可明確指定 `pinned_official_download`。這個設定和原有純本機快取不同：只封存已審核的合約、截止時間、每個官方檔案的 URL、長度及 SHA-256；需要時才由原有背景程式讀取官方原始檔，再用原策略重算。官方回傳的校驗檔也必須符合封存指紋，不能代替原封存指紋。不延長候選有效期間，不掃描上市歷史作為預設，不以近期行情冒充狀態。

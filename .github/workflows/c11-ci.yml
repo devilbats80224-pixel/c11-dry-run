@@ -150,7 +150,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [warm, warm-missing-analysis, warm-unicode, warm-ready-basis, early-roster-return, auto-stale, reviewed-partial, cached-blank, cached-stale, pinned-remote-blank, pinned-remote-stale]
+        case: [warm, warm-missing-analysis, warm-unicode, warm-ready-basis, warm-divergent-fallback, early-roster-return, auto-stale, reviewed-partial, cached-blank, cached-stale, pinned-remote-blank, pinned-remote-stale]
     steps:
       - name: Check out candidate merge
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
