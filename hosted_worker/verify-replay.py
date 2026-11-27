@@ -63,7 +63,7 @@ for row in r.get("reply_refusals", [])[:10]:
 if status == "JCT_REPLAY_HELD":
     # Only emit machine status tokens, not any wire data, paths, or IDs.
     import re
-    for field in ("entry_gate_statuses", "entry_advice_statuses", "entry_primary"):
+    for field in ("entry_gate_statuses", "entry_advice_statuses", "entry_primary", "entry_rpd_checks"):
         values = r.get(field) or []
         if isinstance(values, str):
             values = [values]

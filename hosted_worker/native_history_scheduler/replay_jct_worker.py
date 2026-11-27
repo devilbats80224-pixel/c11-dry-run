@@ -261,12 +261,12 @@ else:
         raise AssertionError('NO_ORDER_ALLOWED_IN_JCT_REPLAY')
 
     earlier_minutes={}
-    if EARLY_ROSTER:
+    if EARLY_ROSTER or REVIEWED_PARTIAL:
         # Fill only the missing replay cassette, not the worker database.
         # Restore genuine closed rows from the same hashed official archive.
         import csv,io,zipfile
         from cold_prefix import verify_archive_blob
-        path=Path('/archive-wire')
+        path=DATA/'jct_official_archives' if REVIEWED_PARTIAL else Path('/archive-wire')
         grid=base['end_ms']
         days={datetime.fromtimestamp((grid-i*24*60*M)/1000,timezone.utc).strftime('%Y-%m-%d')
               for i in range(1,5)}
@@ -301,7 +301,7 @@ else:
             start=int(q.get('startTime',['0'])[0])
             limit=int(q.get('limit',['500'])[0])
             assert 0 < limit <= 1500
-            rowmap=earlier_minutes if EARLY_ROSTER and shared and width==M else rows_by_width[width]
+            rowmap=earlier_minutes if (EARLY_ROSTER or REVIEWED_PARTIAL) and shared and width==M else rows_by_width[width]
             rows=[rowmap[t] for t in sorted(rowmap) if start<=t<stop and t+width<=min(now,stop)][-limit:]
             if shared:
                 if HAN_MODE:
@@ -816,6 +816,7 @@ else:
                      if x.get('end_ms')==END and isinstance(x.get('reason'),str)}),
                   entry_advice_statuses=sorted({x['status'] for x in advice_sources}),
                   entry_primary=primary[0] if primary else None,
+                  entry_rpd_checks=sorted(rpd_entry_checks),
                   reply_refusals=[x for x in loop_trace if x.get('stage')=='REPLY_REJECTED'])),flush=True)
             raise RuntimeError('JCT_NO_ORIGINAL_VETO_RECEIPT')
         return result
@@ -827,6 +828,38 @@ else:
         if end==END and pair==PAIR:
             advice_sources.append(dict(status=result[0],age_ms=now-END))
         return result
+
+    rpd_entry_checks=set()
+    original_veto=NativePrimaryLane.record_verified_veto
+    def observed_veto(lane,f,s):
+        if REVIEWED_PARTIAL and s.end==END and f.symbol==SYMBOL:
+            store=lane.owner.store
+            witness=lane.terminal_five.get(f.symbol)
+            rec=store.db.execute("SELECT payload FROM rpd_checkpoint WHERE symbol=?",(f.symbol,)).fetchone()
+            proof=store.segment(f.symbol)
+            state=RpdState.restore(rec[0]) if rec else None
+            if witness is None:
+                rpd_entry_checks.add("NO_TERMINAL_MINUTE_WITNESS")
+            elif witness[:2]!=(s.generation,s.end):
+                rpd_entry_checks.add("TERMINAL_WITNESS_SCOPE_MISMATCH")
+            if state is None or proof is None:
+                rpd_entry_checks.add("NO_STATE_OR_SEGMENT")
+            elif state.observed>now:
+                rpd_entry_checks.add("STATE_OBSERVATION_AFTER_REPLAY_CLOCK")
+            elif not s.end-2*Q<=state.next_open<=s.end-Q:
+                rpd_entry_checks.add("STATE_CURSOR_NOT_ON_TERMINAL_WINDOW")
+            elif witness is not None:
+                five={bar.open_ms:bar for bar in witness[2]}
+                for opening in range(state.next_open,s.end,FIVE):
+                    rows=store.range(f.symbol,FIVE,opening,opening+FIVE,now)
+                    candidate=five.get(opening)
+                    if not rows and candidate is None:
+                        rpd_entry_checks.add("MISSING_FIVE_MINUTE_INPUT")
+                    elif rows and candidate is not None:
+                        dims=('op','high','low','close','volume','quote')
+                        if any(getattr(rows[0],k)!=getattr(candidate,k) for k in dims):
+                            rpd_entry_checks.add("STORED_AND_SYNTHESIZED_FIVE_MINUTE_MISMATCH")
+        return original_veto(lane,f,s)
 
     import causal_bars
     original_join=causal_bars.join
@@ -862,6 +895,7 @@ else:
                 (native,'OWNED_SCHEDULER_EXPECTED_SEAL',RUNTIME_SHA),(native.PaperWorker,'_worker',cycle),
                 (native,'time',clock),(standalone_policy,'time',clock),(installed,'time_ns',clock.time_ns),
                 (UnifiedScheduler,'consume_ready_only',observe_consume),
+                (NativePrimaryLane,'record_verified_veto',observed_veto),
                 (shared_history_child,'millis',lambda:now),(async_native_ccxt,'time_ns',clock.time_ns),
                 (causal_bars,'join',observed_join),(native_primary_lane,'join',observed_join),
                 (Exchange,'_load_async_markets',seed_for_jct),(Exchange,'check_time_offset',lambda _:None),
