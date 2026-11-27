@@ -52,14 +52,19 @@ echo "C11_EXACT_REPLAY_IMAGE $image $runtime_pin"
 # dates; only this network-disabled test sets the review clock. The default
 # image entry below still has no activation authorization and checks real time.
 docker run --rm --pull never --network none --read-only --cap-drop ALL \
-    --security-opt=no-new-privileges --entrypoint python "$image" -B -c '
-import os,sys,time
+    --security-opt=no-new-privileges \
+    --mount "type=bind,src=$d/../release_regressions/check_effective_launch.py,dst=/launch-checker.py,readonly" \
+    --entrypoint python "$image" -B -c '
+import os,runpy,sys,time
 # The real absolute-path entry has this script directory automatically.
 # Recreate only that entry directory for the inline check, not PYTHONPATH.
 sys.path.insert(0, "/opt/c11_owned_modules")
 from history_startup_receipt import Hold,_env_guard
 from release_stage import check
 _env_guard(os.environ)
+profile=runpy.run_path("/launch-checker.py")["startup_environment"]
+assert profile([key+"="+value for key,value in os.environ.items()])=="pinned"
+assert profile(["PYTHONPATH=/opt/unreviewed"])=="rejected"
 try:
     _env_guard(dict(os.environ, PYTHONPATH="/opt/unreviewed"))
 except Hold as e:

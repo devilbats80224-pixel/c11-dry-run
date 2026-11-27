@@ -48,7 +48,7 @@ class LaunchChecks(unittest.TestCase):
     def setUp(self):
         self.verify = runpy.run_path(str(HERE / 'check_effective_launch.py'))['verify']
         self.launch = dict(Image='sha256:'+'0'*64,Path='python',
-            Args=['-B','/opt/c11_owned_modules/release_stage.py'],
+            Args=['-B','/opt/c11_owned_modules/release_stage.py'], StartupEnvironment='pinned',
             Mounts=[dict(Type='volume',Name='fixture-paper',Destination='/c11-paper',RW=True)])
         self.receipt = dict(remote_merge='1'*40,local_worker_source='2'*40,tested_launch=self.launch)
 
@@ -71,6 +71,27 @@ class LaunchChecks(unittest.TestCase):
             receipt={**self.receipt,'tested_launch':changed}
             with self.subTest(destination=destination):
                 self.assertEqual(self.verify(receipt,changed),'MOUNT_SHADOWS_TESTED_CODE')
+
+    def test_effective_startup_environment_must_be_reviewed(self):
+        changed=deepcopy(self.launch)
+        changed.pop('StartupEnvironment')
+        self.assertEqual(self.verify(self.receipt,changed),'STARTUP_ENVIRONMENT_NOT_ATTESTED')
+        changed['StartupEnvironment']='rejected'
+        self.assertEqual(self.verify(self.receipt,changed),'STARTUP_ENVIRONMENT_REJECTED')
+        self.assertEqual(self.verify({**self.receipt,'tested_launch':changed},changed),
+                         'STARTUP_ENVIRONMENT_REJECTED')
+        changed['StartupEnvironment']='absent'
+        self.assertEqual(self.verify(self.receipt,changed),'STARTUP_ENVIRONMENT_MISMATCH')
+
+    def test_startup_environment_capture_uses_no_secret_values(self):
+        capture = runpy.run_path(str(HERE / 'check_effective_launch.py'))['startup_environment']
+        valid='/freqtrade:/opt/c11_worker:/opt/c11_worker/ports:/opt/c11_worker/sizing:/opt/c11_worker/strategy:/opt/c11:/opt/c11/transport'
+        self.assertEqual(capture(['ORDINARY=example-sensitive-value','PYTHONPATH='+valid]),'pinned')
+        self.assertEqual(capture(['ORDINARY=example-sensitive-value']),'absent')
+        for entries in (['PYTHONPATH=/opt/unreviewed'],['C11_HISTORY_EXTRA=example-sensitive-value'],
+                        ['FREQTRADE__MOCK=example-sensitive-value'],['PYTHONHOME=/opt/unreviewed'],
+                        ['PYTHONPATH='+valid,'PYTHONPATH='+valid]):
+            self.assertEqual(capture(entries),'rejected')
 
     def test_wrong_image_or_paper_volume_is_not_same_release(self):
         changed=deepcopy(self.launch)
