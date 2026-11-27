@@ -61,7 +61,7 @@ AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
 CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
 PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
-EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE
+EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
@@ -795,7 +795,13 @@ else:
                                   if e.get('stage')=='GRANT_WRITTEN'}
                 assert {7,8}<=sent_generations, 'C11_NO_FRESH_GENERATION_RETRY_REQUEST'
             assert not Trade.get_open_trades()
-            assert (cursor<=END if original_calls else cursor<END), 'UNWITNESSED_VETO_CURSOR_ADVANCE'
+            exact_optional_veto=(veto==('VETO',) and any(
+                d['status']=='VETO' and d.get('boundary')==END
+                and d['owner_code']=='native_primary_lane.py' and d['method']=='record_verified_veto'
+                and 0<=d['age_ms']<60_000 for d in decision_origins))
+            # An exact admitted terminal veto is a real original 5m judgment,
+            # even when full entry advice is blocked by that filter.
+            assert (cursor<=END if original_calls or exact_optional_veto else cursor<END), 'UNWITNESSED_VETO_CURSOR_ADVANCE'
             if REVIEWED_PARTIAL or AUTO_STALE:
                 recovered=history.store.db.execute(
                     'SELECT cutoff,manifest_sha,previous_state FROM c11_state_recovery_history WHERE symbol=?',

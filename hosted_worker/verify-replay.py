@@ -138,10 +138,13 @@ if cached == "yes":
     assert r["archive_public_receipts"] == 0, "CACHE_REOPENED_ARCHIVE_NETWORK"
 decisions = r.get("decision_sources", [])
 optional_native_veto = any(
-    d.get("status") == "VETO" and d.get("method") == "record_verified_veto" for d in decisions
+    d.get("status") == "VETO" and d.get("method") == "record_verified_veto"
+    and d.get("owner_code") == "native_primary_lane.py"
+    and type(r.get("replay_boundary")) is int and d.get("boundary") == r["replay_boundary"]
+    and type(d.get("age_ms")) is int and 0 <= d["age_ms"] < 60_000 for d in decisions
 )
 callback_native_veto = False
-if mode in {"reviewed-partial", "auto-stale"} and r.get("strategy_native_veto") is True:
+if mode in {"reviewed-partial", "auto-stale", "early-roster-return"} and r.get("strategy_native_veto") is True:
     calls = [item for item in r.get("original_entry_advice", [])
              if item.get("status") == "ORIGINAL_NATIVE_CALLBACK"]
     callback_native_veto = (
@@ -154,6 +157,7 @@ if mode in {"reviewed-partial", "auto-stale"} and r.get("strategy_native_veto") 
                 and d.get("age_ms") == calls[0]["age_ms"] for d in decisions)
     )
 assert optional_native_veto or callback_native_veto, "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
+print("C11_HOSTED_ORIGINAL_PROOF", mode, "ENTRY_CALLBACK_5M_VETO" if callback_native_veto else "ORIGINAL_5M_FILTER_VETO")
 assert r.get("automatic_archive") is (mode != "reviewed-partial")
 if mode != "reviewed-partial" and cached == remote == "no":
     assert r.get("discovery_configured") is True, "UNSEEDED_DISCOVERY_NOT_ENABLED"

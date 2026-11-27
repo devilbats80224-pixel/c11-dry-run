@@ -67,5 +67,30 @@ class PublicDiagnosticsTest(unittest.TestCase):
         self.assertNotIn("secret payload", result.stdout + result.stderr + md)
 
 
+    def test_optional_veto_must_be_from_exact_close_and_original_producer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "replay.log"
+            tagged = dict(status="VETO", method="record_verified_veto", owner_code="native_primary_lane.py",
+                          age_ms=4250, boundary=1795773600000)
+            receipt = dict(status="JCT_ORIGINAL_5M_VETO", zero_orders=True,
+                           verified_raw_archive_cache=True, pinned_remote=False, archive_public_receipts=0,
+                           automatic_archive=True, automatic_stale_repair=False, reviewed_partial_repair=False,
+                           roster_drop_return_verified=True, initial_cold_start_age_ms=5000,
+                           observed_replay_age_ms=54750, replay_boundary=1795773600000)
+            def run(veto):
+                log.write_text(json.dumps({**receipt, "decision_sources": [veto]}), encoding="utf-8")
+                return subprocess.run(
+                    [sys.executable, "-I", "-B", str(Path(__file__).with_name("verify-replay.py")),
+                     "early-roster-return", str(log), "yes", "no"],
+                    capture_output=True, text=True, check=False,
+                )
+            self.assertEqual(run(tagged).returncode, 0)
+            for wrong in ({"boundary": 1795772700000}, {"age_ms": 60000}, {"owner_code": "synthetic.py"}):
+                with self.subTest(wrong=wrong):
+                    result = run({**tagged, **wrong})
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
