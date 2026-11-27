@@ -104,7 +104,7 @@ class SharedNativeBudget:
             if status==418:self.optional_banned=True
             elif status==429:self.optional_pause_until=max(self.optional_pause_until,at+max(60_000,retry_ms))
 
-    def _denial(self,weight,count=1,*,cold_end=None):
+    def _denial(self,weight,count=1,*,cold_end=None,history_detail=False):
         now=self.wall()
         end=now//900_000*900_000
         if cold_end is None:
@@ -118,11 +118,15 @@ class SharedNativeBudget:
             ready=cold_end==end and (self.marker is None or self.marker[1]<end)
         pending=tuple(self.pending.values())
         extra=sum(t.weight for t in pending)
-        if not ready or self.optional_banned or now<self.optional_pause_until:return 'submit_rate'
+        def rate(reason):
+            return reason if history_detail else 'submit_rate'
+        if not ready:return rate('HISTORY_BUDGET_WINDOW_NOT_READY')
+        if self.optional_banned or now<self.optional_pause_until:return rate('HISTORY_BUDGET_PAUSED')
         if unknown:return 'submit_incumbent_unknown'
         if self.meta is None or self.meta[0]!=now//60000:return 'submit_rate_header_missing'
-        if (n+len(pending)+self.escrow+count>96 or w+extra+self.escrow+weight>144 or
-                self.meta[1]+w+extra+self.escrow+weight+1200>self.meta[2]):return 'submit_rate'
+        if n+len(pending)+self.escrow+count>96:return rate('HISTORY_BUDGET_REQUEST_COUNT')
+        if w+extra+self.escrow+weight>144:return rate('HISTORY_BUDGET_WEIGHT_COUNT')
+        if self.meta[1]+w+extra+self.escrow+weight+1200>self.meta[2]:return rate('HISTORY_BUDGET_IP_RESERVE')
         return None
     def _allow(self,weight,count=1):
         return self._denial(weight,count) is None
@@ -203,16 +207,20 @@ class SharedNativeBudget:
             return False,None
         return True,j.end
 
+    @staticmethod
+    def _history_reason(denial):
+        return {'submit_rate_header_missing':'HISTORY_SHARED_METER_STALE',
+                'submit_incumbent_unknown':'HISTORY_SHARED_METER_UNKNOWN'}.get(denial,denial)
+
     def try_reserve_history(self,j,*,cold_current=None):
         with self.lock:
             accepted,end=self._history_admission(j,cold_current)
             self.last_history_hold='HISTORY_MARKER_OR_CURRENT_REFUSED'
             if not accepted or j.ticket in self.sent or j.ticket in self.pending:
                 return None
-            denial=self._denial(j.weight,cold_end=end)
+            denial=self._denial(j.weight,cold_end=end,history_detail=True)
             if denial:
-                self.last_history_hold={'submit_rate_header_missing':'HISTORY_SHARED_METER_STALE',
-                    'submit_incumbent_unknown':'HISTORY_SHARED_METER_UNKNOWN'}.get(denial,'HISTORY_SHARED_LIMIT')
+                self.last_history_hold=self._history_reason(denial)
                 return None
             self.last_history_hold=None
             t=Token((j.generation,j.end),j.ticket,j.weight)
@@ -221,12 +229,17 @@ class SharedNativeBudget:
 
     def claim_history_send(self,t,j,*,cold_current=None):
         with self.lock:
+            self.last_history_hold='HISTORY_MARKER_OR_CURRENT_REFUSED'
             if self.pending.get(t.ticket) is not t:return False
             del self.pending[t.ticket]
             accepted,end=self._history_admission(j,cold_current)
-            if (not accepted or t.marker!=(j.generation,j.end)
-                    or t.ticket!=j.ticket or t.weight!=j.weight or self._denial(j.weight,cold_end=end)):
+            if not accepted or t.marker!=(j.generation,j.end) or t.ticket!=j.ticket or t.weight!=j.weight:
                 return False
+            denial=self._denial(j.weight,cold_end=end,history_detail=True)
+            if denial is not None:
+                self.last_history_hold=self._history_reason(denial)
+                return False
+            self.last_history_hold=None
             if end is None:
                 n,w=self.costs;self.costs=(n+1,w+t.weight)
             else:

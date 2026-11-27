@@ -1,0 +1,75 @@
+"""Exercise the installed shared meter with a reproducible mixed-close pressure tape."""
+from collections import Counter
+from types import SimpleNamespace
+
+from retained_page_schema import accepted_history_trace
+from shared_native_budget import SharedNativeBudget
+
+E = 1795822200000
+GENERATION = 1
+SYMBOL = "SYNTHUSDT"
+clock = E + 5000
+
+
+def make_meter(costs=(0, 0), used=20):
+    budget = SharedNativeBudget(lambda: clock)
+    budget.set_scope(GENERATION, E)
+    budget.costs = costs
+    budget.note_authoritative_ip_header(clock, used, 2400)
+    return budget
+
+
+def page(k, weight=2):
+    return SimpleNamespace(ticket=f"{k:032x}", generation=GENERATION, end=E, weight=weight)
+
+
+def assert_reason(reason, meter):
+    assert meter.try_reserve_history(page(1)) is None
+    assert meter.last_history_hold == reason, (
+        "C11_MIXED_CLOSE_BUDGET_REASON", reason, meter.last_history_hold
+    )
+    # Previously all three ceilings collapsed into one unhelpful token.
+    for stage in ("RESERVE_REJECTED", "GRANT_REJECTED"):
+        assert accepted_history_trace(dict(
+            schema="c11-shared-history-page-v1", symbol=SYMBOL, end_ms=E,
+            generation=GENERATION, page_start_ms=E-900000, page_end_ms=E,
+            requested_rows=15, stage=stage, at_ms=clock, stage_reason=reason,
+        )), (stage, reason)
+
+
+def main():
+    assert_reason("HISTORY_BUDGET_REQUEST_COUNT", make_meter((96, 96)))
+    assert_reason("HISTORY_BUDGET_WEIGHT_COUNT", make_meter((73, 143)))
+    assert_reason("HISTORY_BUDGET_IP_RESERVE", make_meter((24, 24), used=1175))
+    paused = make_meter()
+    paused.optional_wire_fault(429, 60000)
+    assert_reason("HISTORY_BUDGET_PAUSED", paused)
+
+    # The mix is deliberately synthetic; it is not a claim about which
+    # particular ceiling the production run hit.
+    meter = make_meter((28, 70))
+    counts = Counter()
+    for i in range(1, 57):  # seven cold candidates, eight pages each
+        job = page(i)
+        token = meter.try_reserve_history(job)
+        if token is None:
+            counts[meter.last_history_hold] += 1
+        else:
+            assert meter.claim_history_send(token, job)
+            counts["SENT"] += 1
+    assert counts == {"SENT": 37, "HISTORY_BUDGET_WEIGHT_COUNT": 19}, counts
+    assert meter.costs == (65, 144)
+    assert meter.last_reserve_status is None
+
+    meter = make_meter((70, 141))
+    ticket = page(57)
+    token = meter.try_reserve_history(ticket)
+    assert token is not None
+    meter.account_incumbent_before_wire(2)
+    assert not meter.claim_history_send(token, ticket)
+    assert meter.last_history_hold == "HISTORY_BUDGET_WEIGHT_COUNT"
+    assert meter.costs == (71, 143)
+    print("C11_MIXED_CLOSE_PRESSURE_REASON_AND_GRANT_ACCOUNTING_PASS")
+
+
+main()
