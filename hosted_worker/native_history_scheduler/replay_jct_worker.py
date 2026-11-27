@@ -61,7 +61,9 @@ AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
 CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
 PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
-EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER
+PREPARED_CHECKPOINT=os.environ.get('C11_JCT_PREPARED_CHECKPOINT')=='yes'
+assert not PREPARED_CHECKPOINT or (CACHED and AUTO_MODE)
+EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
@@ -278,7 +280,7 @@ else:
         raise AssertionError('NO_ORDER_ALLOWED_IN_JCT_REPLAY')
 
     earlier_minutes={}
-    if EARLY_ROSTER or REVIEWED_PARTIAL or AUTO_STALE:
+    if EXACT_CALLBACK_CLOCK:
         # Fill only the missing replay cassette, not the worker database.
         # Restore genuine closed rows from the same hashed official archive.
         import csv,io,zipfile
@@ -318,13 +320,13 @@ else:
             start=int(q.get('startTime',['0'])[0])
             limit=int(q.get('limit',['500'])[0])
             assert 0 < limit <= 1500
-            rowmap=earlier_minutes if (EARLY_ROSTER or REVIEWED_PARTIAL or AUTO_STALE) and shared and width==M else rows_by_width[width]
+            rowmap=earlier_minutes if EXACT_CALLBACK_CLOCK and shared and width==M else rows_by_width[width]
             rows=[rowmap[t] for t in sorted(rowmap) if start<=t<stop and t+width<=min(now,stop)][-limit:]
             if shared:
                 if HAN_MODE:
                     assert 'symbol=%E7%89%9B%E6%9D%A5USDT' in u.query
                 assert width==M and stop<=now
-                if (EARLY_ROSTER or REVIEWED_PARTIAL or PINNED_REMOTE or AUTO_STALE) and len(rows)!=limit:
+                if (EXACT_CALLBACK_CLOCK or PINNED_REMOTE) and len(rows)!=limit:
                     # Optional primary reads can precede the captured tape.
                     # Return the actual short body so the original row-count
                     # guard handles it. Never synthesize rows or raise in IPC.
@@ -571,8 +573,21 @@ else:
                 h.cold_prefix=h.archive_prep.cold_admission(run.wall)
                 if CACHED:
                     from cold_prefix import derive
-                    h.cold_prefix.reviewed.prepare=lambda sym,_spec,wall,cancel: derive(
-                        sym,cache_origins[sym],wall,cancel,grid_shift=SHIFT)
+                    if PREPARED_CHECKPOINT:
+                        from threading import Event
+                        # Independent setup constructs the trusted checkpoint
+                        # before recovery, not inside the measured candidate path.
+                        prefix=derive(SYMBOL,cache_origins[SYMBOL],run.wall,Event(),grid_shift=SHIFT)
+                        assert prefix.rpd.next_open==base['end_ms']+SHIFT and prefix.rpd.origin==ORIGIN
+                        def prepared_only(sym,spec,wall,cancel):
+                            assert sym==SYMBOL and spec.cutoff==prefix.rpd.next_open
+                            assert prefix.rpd.observed<=wall() and not cancel.is_set()
+                            print('C11_RECOVERY_REUSED_PREPARED_CHECKPOINT',flush=True)
+                            return prefix
+                        h.cold_prefix.reviewed.prepare=prepared_only
+                    else:
+                        h.cold_prefix.reviewed.prepare=lambda sym,_spec,wall,cancel: derive(
+                            sym,cache_origins[sym],wall,cancel,grid_shift=SHIFT)
                     # A cache-only recovery may not silently reopen the listing scan.
                     def deny_archive_download(*_args):
                         raise AssertionError('C11_CACHED_RECOVERY_USED_ARCHIVE_NETWORK')
@@ -786,7 +801,7 @@ else:
                     and d['owner_code']=='causal_bars.py' and d['method']=='inputs'
                     and d['age_ms']==original_calls[0]['age_ms'] for d in decision_origins))
         observed_veto=('VETO' in exact_join and veto==('VETO',)) or strategy_native_veto
-        if EARLY_ROSTER and observed_veto and not original_calls and now<END+54_000:
+        if (EARLY_ROSTER or PREPARED_CHECKPOINT) and observed_veto and not original_calls and now<END+54_000:
             return result
         primary_no_signal=(HAN_MODE or INIT_MODE) and phase=='entry' and primary==('PRIMARY_NO_SIGNAL',)
         if observed_veto or primary_no_signal:

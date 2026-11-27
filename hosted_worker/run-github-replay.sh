@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-divergent-fallback|early-roster-return|auto-stale|reviewed-partial|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale) ;; *) exit 64;; esac
+case "$2" in build|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-divergent-fallback|early-roster-return|auto-stale|reviewed-partial|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|prepared-blank|prepared-stale|prepared-return) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -149,16 +149,20 @@ warm() {
 }
 cold() {
     remote=no
+    prepared=no
     case "$1" in
+        prepared-blank) mode=yes; cached=yes; prepared=yes;;
+        prepared-stale) mode=auto-stale; cached=yes; prepared=yes;;
+        prepared-return) mode=early-roster-return; cached=yes; prepared=yes;;
         cached-blank) mode=early-roster-return; cached=yes;;
         cached-stale) mode=auto-stale; cached=yes;;
         pinned-remote-blank) mode=early-roster-return; cached=no; remote=yes;;
         pinned-remote-stale) mode=auto-stale; cached=no; remote=yes;;
         *) mode=$1; cached=no;;
     esac
-    if C11_REPLAY_PINNED_REMOTE="$remote" C11_REPLAY_VERIFIED_RAW_CACHE="$cached" sh "$d/native_history_scheduler/run_jct_worker_review.sh" "$image" "$out/fixture/jct" \
+    if C11_REPLAY_PINNED_REMOTE="$remote" C11_REPLAY_VERIFIED_RAW_CACHE="$cached" C11_REPLAY_PREPARED_CHECKPOINT="$prepared" sh "$d/native_history_scheduler/run_jct_worker_review.sh" "$image" "$out/fixture/jct" \
         "$out/fixture/stopped-paper-only.tgz" "$out/$mode" no "$mode" >"$out/$mode.log" 2>&1; then
-        if python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log" "$cached" "$remote"; then
+        if python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log" "$cached" "$remote" "$prepared"; then
             return 0
         fi
     fi
@@ -171,7 +175,7 @@ cold() {
     elif grep -q 'docker: ' "$out/$mode.log"; then
         echo "C11_REPLAY_DOCKER_START_ERROR $mode"
     else
-        python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log" "$cached" "$remote" || true
+        python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log" "$cached" "$remote" "$prepared" || true
     fi
     return 1
 }

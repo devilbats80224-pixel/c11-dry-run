@@ -10,7 +10,9 @@ cached = sys.argv[3] if len(sys.argv) >= 4 else "no"
 remote = sys.argv[4] if len(sys.argv) >= 5 else "no"
 assert remote in {"yes", "no"} and not (cached == remote == "yes")
 assert cached in {"yes", "no"}
-assert mode in {"early-roster-return", "auto-stale", "reviewed-partial"}
+prepared = sys.argv[5] if len(sys.argv) >= 6 else "no"
+assert prepared in {"yes", "no"} and (prepared == "no" or cached == "yes")
+assert mode in {"early-roster-return", "auto-stale", "reviewed-partial", "yes"}
 def failure_summary(actual, phase, reason, *, age=None):
     detail = (f"Expected original 5m VETO in the target cycle; actual {actual}; "
               f"phase={phase}; reason={reason}")
@@ -144,7 +146,7 @@ optional_native_veto = any(
     and type(d.get("age_ms")) is int and 0 <= d["age_ms"] < 60_000 for d in decisions
 )
 callback_native_veto = False
-if mode in {"reviewed-partial", "auto-stale", "early-roster-return"} and r.get("strategy_native_veto") is True:
+if mode in {"reviewed-partial", "auto-stale", "early-roster-return", "yes"} and r.get("strategy_native_veto") is True:
     calls = [item for item in r.get("original_entry_advice", [])
              if item.get("status") == "ORIGINAL_NATIVE_CALLBACK"]
     callback_native_veto = (
@@ -156,7 +158,21 @@ if mode in {"reviewed-partial", "auto-stale", "early-roster-return"} and r.get("
                 and d.get("inside_original_target_callback") is True
                 and d.get("age_ms") == calls[0]["age_ms"] for d in decisions)
     )
-assert optional_native_veto or callback_native_veto, "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
+if prepared == "yes":
+    assert "C11_RECOVERY_REUSED_PREPARED_CHECKPOINT" in lines
+    assert r["archive_public_receipts"] == 0
+    assert r.get("shared_1m_requests"), "NATIVE_MINUTE_REPAIR_NOT_EXERCISED"
+    assert all(r["replay_boundary"] - (260 * 15 + 45) * 60_000 <= start < stop <= r["replay_boundary"]
+               for start, stop, _, _ in r["shared_1m_requests"]), "REQUEST_OUTSIDE_RECENT_STRATEGY_WINDOW"
+    if not callback_native_veto:
+        advice = r.get("original_entry_advice", [])
+        first = advice[0].get("status") if advice and isinstance(advice[0], dict) else None
+        reason = first if first in {"HOLD_NO_OWNED_SCOPE", "HOLD_NOT_READY",
+                                     "HOLD_UNPROVEN_ANALYZED_FRAME"} else "UNCONFIRMED"
+        failure_summary("original filter reached but full original callback absent", "strategy handoff", reason)
+        raise AssertionError("PREPARED_CHECKPOINT_ORIGINAL_CALLBACK_NOT_PROVEN")
+else:
+    assert optional_native_veto or callback_native_veto, "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
 print("C11_HOSTED_ORIGINAL_PROOF", mode, "ENTRY_CALLBACK_5M_VETO" if callback_native_veto else "ORIGINAL_5M_FILTER_VETO")
 assert r.get("automatic_archive") is (mode != "reviewed-partial")
 if mode != "reviewed-partial" and cached == remote == "no":
