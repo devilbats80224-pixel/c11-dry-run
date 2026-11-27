@@ -1,0 +1,62 @@
+"""Build a source-only, non-activatable C11 replay candidate."""
+from hashlib import sha256
+import json
+from pathlib import Path
+import re
+import shutil
+import sys
+
+def dump(path, obj):
+    path.write_text(json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n")
+    return sha256(path.read_bytes()).hexdigest()
+
+source, out = map(Path, sys.argv[1:3])
+pinned = sys.argv[3]
+assert re.fullmatch("sha256:[0-9a-f]{64}", pinned)
+out.mkdir(mode=0o700, parents=False)
+tree = out / "opt"
+tree.mkdir()
+roots = {"c11", "c11_owned_modules", "c11_worker", "c11_background_review", "c11_observer_state_v1"}
+files = {}
+projection = source.parent.parent / "native_ccxt_projection"
+overlay = [(f, Path("c11_owned_modules") / f.name) for f in sorted(projection.glob("*.py"))]
+inputs = [(f, f.relative_to(source)) for f in sorted(source.rglob("*.py"))]
+assert len(overlay) == 6
+for f, rel in inputs + overlay:
+    assert not f.is_symlink() and rel.parts[0] in roots and "__pycache__" not in rel.parts
+    if rel.as_posix() == "c11_owned_modules/stage_pin.py":
+        continue
+    target = tree / rel
+    target.parent.mkdir(exist_ok=True, parents=True)
+    assert not target.exists(), rel
+    shutil.copyfile(f, target)
+    files["/opt/" + rel.as_posix()] = sha256(target.read_bytes()).hexdigest()
+assert len(files) > 150
+cold = tree / "c11-reviewed-cold-prefix"
+cold.mkdir()
+files["/opt/c11-reviewed-cold-prefix/catalog.json"] = dump(cold / "catalog.json", {
+    "schema": "c11-reviewed-cold-prefix-v1", "sources": {}
+})
+seeds = tree / "c11-reviewed-seeds"
+seeds.mkdir()
+catalog = dump(seeds / "review.json", {"fixture_catalog": True})
+owner = tree / "c11_owned_modules"
+runtime = dump(owner / "release_stage_runtime.json", {
+    "release_enabled": False,
+    "cold_archive_preparation": "BINANCE_PUBLIC_CLOSED_1M_V1",
+    "files": files,
+})
+(owner / "stage_pin.py").write_text(
+    f"RUNTIME_SHA={runtime!r}\nCATALOG_SHA={catalog!r}\nAUTH_SHA=None\n"
+    "HISTORY_PREP_ENABLED=True\nDURABLE_REVISIT_ANALYSIS_ENABLED=True\n"
+)
+(out / "Dockerfile").write_text(f"""FROM docker.io/freqtradeorg/freqtrade@{pinned}
+USER 0:0
+COPY --chown=0:0 opt /opt
+RUN find /opt/c11* -type f -exec chmod 0444 {{}} + && groupadd -f -g 2000 replay
+WORKDIR /freqtrade
+ENV PYTHONPATH=/freqtrade:/opt/c11_owned_modules:/opt/c11_worker:/opt/c11_worker/ports:/opt/c11_worker/sizing:/opt/c11_worker/strategy:/opt/c11:/opt/c11/transport:/opt/c11_background_review
+USER 1000:2000
+ENTRYPOINT ["python","-B","/opt/c11_owned_modules/release_stage.py"]
+""")
+print("DISABLED_CI_IMAGE_STAGE", len(files), runtime)

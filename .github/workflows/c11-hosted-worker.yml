@@ -1,0 +1,20 @@
+name: C11 hosted Worker replay
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: c11-hosted-worker-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  hosted-worker:
+    name: ARM64 full C11 Worker replay
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 24
+    steps:
+      - name: Check out candidate merge
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build and run packaged C11 against closed replay inputs
+        run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker"

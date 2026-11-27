@@ -1,0 +1,685 @@
+"""Locked Freqtrade Worker, isolated paper state and pinned retrospective public tape."""
+import asyncio
+from collections import Counter
+from concurrent.futures import Future
+from contextlib import ExitStack, asynccontextmanager, contextmanager
+from datetime import datetime, timezone
+from decimal import Decimal
+from hashlib import sha256
+import json
+import os
+from pathlib import Path
+import runpy
+import socket
+import subprocess
+import sys
+from threading import Thread, get_ident
+import time
+from types import SimpleNamespace as N
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
+
+sys.path[:0]=['/opt/c11_owned_modules','/opt/c11_worker','/opt/c11_worker/ports',
+              '/opt/c11_background_review','/freqtrade']
+
+import aiohttp
+import async_native_ccxt
+from causal_bars import FIVE, MINUTE as M, QUARTER as Q
+from c11_paper_exchange import C11PaperExchange
+import entry_feed
+from freqtrade.exchange import Binance, Exchange
+from freqtrade.persistence import Trade
+import installed_build_inputs as installed
+from minute_rollup import roll
+from multidict import CIMultiDict
+from native_minute_admission_loop import MinuteAdmissionLoop
+from native_primary_lane import NativePrimaryLane
+import native_worker as native
+import native_primary_lane
+from paper_runtime import PaperState, verify_state_file
+from prepared_owner_history import BoundOwnerHistory
+from rpd_checkpoint import RpdState
+from shared_history_forwarder import SharedHistoryForwarder
+import shared_history_child
+import standalone_policy
+import requests
+import v4_entry
+from stage_pin import AUTH_SHA, RUNTIME_SHA
+
+HAN_MODE=os.environ.get('C11_HAN_AUTO_ARCHIVE')=='yes'
+INIT_MODE=os.environ.get('C11_INIT_AUTO_ARCHIVE')=='yes'
+assert not (HAN_MODE and INIT_MODE)
+SYMBOL='牛来USDT' if HAN_MODE else 'INITUSDT' if INIT_MODE else 'JCTUSDT'
+PAIR=SYMBOL[:-4]+'/USDT:USDT'
+SHIFT=24*60*M
+REPLAY_MODE=os.environ.get('C11_JCT_BASELINE')=='yes'
+REVIEWED_PARTIAL=os.environ.get('C11_JCT_REVIEWED_PARTIAL')=='yes'
+ROSTER_RETURN=os.environ.get('C11_JCT_ROSTER_RETURN')=='yes'
+EARLY_ROSTER=os.environ.get('C11_JCT_EARLY_ROSTER')=='yes'
+assert not EARLY_ROSTER or ROSTER_RETURN
+AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
+AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
+assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
+EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
+assert EARLY_EXPECT is None or (AUTO_MODE and not (ROSTER_RETURN or HAN_MODE or INIT_MODE) and EARLY_EXPECT in ('deliver','hold','start','no-start'))
+assert not (AUTO_MODE and REPLAY_MODE)
+assert not REVIEWED_PARTIAL or not (AUTO_MODE or REPLAY_MODE)
+assert not ROSTER_RETURN or (AUTO_MODE and not (HAN_MODE or INIT_MODE or REVIEWED_PARTIAL))
+RESTART=os.environ.get('C11_HAN_RESTART_PHASE')
+assert RESTART is None or (HAN_MODE and AUTO_MODE and RESTART in ('prepare','resume'))
+ROOT=Path('/c11-paper')
+DATA=Path('/jct')
+
+def data(name, pin):
+    raw=(DATA/name).read_bytes()
+    assert sha256(raw).hexdigest()==pin,name
+    return json.loads(raw)
+
+if HAN_MODE or INIT_MODE:
+    fixture_pins=json.loads((DATA/'input-pins.json').read_bytes())
+    witness=data('receipt.json',fixture_pins['receipt.json'])
+    tail=data('jct-after-archive.native.json',fixture_pins['jct-after-archive.native.json'])
+else:
+    witness=data('receipt.json','3be7ed2d6706c62084a6ac4598a05bd69f3f0ff1a2d51acdd0f37ce89732095c')
+    tail=data('jct-after-archive.native.json','57265967efa958cd734e8ed4070ea91f1d703e445deef5fec32385de35df729e')
+if AUTO_MODE:
+    assert not (DATA/'jct-base.local.json').exists()
+    contract=data('contract.json',fixture_pins['contract.json'] if HAN_MODE or INIT_MODE else 'bfdc80389259bc21d7b291b3cd98cd3325d450887842e124616e526fa8bc1f37')
+    assert contract['source']=='https://fapi.binance.com/fapi/v1/exchangeInfo'
+    captured=contract['payload']
+    expected_origin=1788089400000 if HAN_MODE else 1744785000000 if INIT_MODE else 1762770600000
+    assert captured==dict(symbol=SYMBOL,baseAsset=SYMBOL[:-4],quoteAsset='USDT',marginAsset='USDT',
+                          contractType='PERPETUAL',onboardDate=expected_origin,status='TRADING')
+    base=dict(symbol=captured['symbol'],origin_ms=captured['onboardDate'],
+              end_ms=tail[0]['start'],known_ms=contract['actual_received_ms'])
+else:
+    base=data('jct-base.local.json','d4ebd00dda2fa2f8a0d59fea224869e93e7e3e6d60f57c95376e0e8caad3ce07')
+END=witness['end']+SHIFT
+ORIGIN=base['origin_ms']+SHIFT
+assert witness['symbol']==base['symbol']==SYMBOL
+assert base['known_ms']<END-Q and all(t['actual_received_ms']<END-Q for t in tail)
+counts=[330] if HAN_MODE else [105,435] if INIT_MODE else [495,105]
+assert [(p['count'],p['stop']-p['start']) for p in tail]==[(count,count*M) for count in counts]
+
+def translated(row):
+    result=list(row)
+    for i in (0,6):
+        result[i]+=SHIFT
+    return result
+
+bars={x[0]:x for p in tail for raw in p['rows'] if (x:=translated(raw))}
+assert len(bars)==sum(counts)
+terminal=[r for r in witness['rows'] if r[0]==M]
+assert all(list(map(float,[bars[r[1]+SHIFT][i] for i in (1,2,3,4,5,7)]))==
+           list(map(float,r[3:])) for r in terminal)
+rows_by_width={M:bars, FIVE:{}, Q:{}}
+for width in (FIVE,Q):
+    for start in range(base['end_ms']+SHIFT,END,width):
+        rows_by_width[width][start]=roll([bars[t] for t in range(start,start+width,M)],start,width)
+
+def candle_row(r):
+    _,t,_,op,hi,lo,cl,vol,quote=r
+    return [t+SHIFT,*(format(Decimal(str(x)),'f') for x in (op,hi,lo,cl,vol)),
+            t+SHIFT+Q-1,format(Decimal(str(quote)),'f'),0,'0','0','0']
+
+for r in witness['rows']:
+    if r[0]==Q and r[1]+SHIFT not in rows_by_width[Q]:
+        q=candle_row(r)
+        rows_by_width[Q][q[0]]=q
+
+def state_receipt(db):
+    segment=db.execute('SELECT * FROM segment WHERE symbol=?',(SYMBOL,)).fetchone()
+    rpd=db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(SYMBOL,)).fetchone()
+    atr=db.execute('SELECT * FROM atr_er_checkpoint WHERE symbol=? ORDER BY width',(SYMBOL,)).fetchall()
+    lineage=db.execute('SELECT * FROM cold_prefix_lineage WHERE symbol=?',(SYMBOL,)).fetchone()
+    assert segment and rpd and len(atr)==2 and lineage
+    assert lineage[0]==segment[0]==RpdState.restore(rpd[0]).symbol==SYMBOL
+    assert all(row[0]==SYMBOL for row in atr)
+    for alias in ('牛來USDT','NIULAIUSDT'):
+        for table in ('segment','rpd_checkpoint','atr_er_checkpoint','cold_prefix_lineage'):
+            assert not db.execute(f'SELECT 1 FROM {table} WHERE symbol=?',(alias,)).fetchone()
+    return dict(segment=segment, next_open=RpdState.restore(rpd[0]).next_open,
+                rpd_sha=sha256(rpd[0].encode()).hexdigest(),
+                atr_sha=sha256(json.dumps(atr).encode()).hexdigest(), lineage=lineage)
+
+def main():
+    assert AUTH_SHA is None and ROOT.is_mount()
+    if RESTART!='resume':
+        assert not list(ROOT.iterdir())
+    assert next(l.split(' - ')[1].split()[0] for l in Path('/proc/self/mountinfo').read_text().splitlines()
+                if l.split()[4]==str(ROOT))=='tmpfs'
+    assert os.statvfs(DATA).f_flag & os.ST_RDONLY
+    assert not any(Path(p).exists() for p in ('/var/run/docker.sock','/oi20-docker-publication','/run/openmarket-credential'))
+    os.umask(0o077)
+    # Reuse the same owned boot/markets helpers and stopped lineage as the current fixture.
+    helpers=runpy.run_path('/fixture-driver/current_locked_startup_check.py')
+    seed_markets=helpers['seed_public_exchange_markets']
+    seed_markets.__globals__.update(BASE=SYMBOL[:-4],SYMBOL=SYMBOL,PAIR=PAIR,NATIVE_GUA=True)
+    if RESTART!='resume':
+        helpers['restore_scratch']()
+        # Only the temp fixture's copied causal database is discarded.
+        (ROOT/'causal-candles.sqlite').unlink()
+    phase='carry' if RESTART=='resume' else 'cold'
+    now=END-Q+65_000 if RESTART=='resume' else END-2*Q+65_000
+    if EARLY_ROSTER or EARLY_EXPECT in ('start','no-start'):
+        now=END-2*Q+5_000
+    generation=8 if RESTART=='resume' else 7
+    loaded=None
+    qualified=True
+    previous_roster_state=None
+    saw_absent=False
+    next_now=now
+    next_generation=generation
+    meter_headers=Counter()
+    shared_requests=[]
+    owner_replies=[]
+    cycle_count=0
+    workers=[]
+    state_box=[]
+    seed_seen=[]
+    archive_wire=[]
+    exact_join=[]
+    decision_origins=[]
+    advice_sources=[]
+    first_cold_start=[]
+    uncovered_tape=[]
+    loop_trace=[]
+    original_enter=PaperState.__enter__
+    lock_identity=None
+    def state_enter(state):
+        nonlocal lock_identity
+        current=original_enter(state)
+        assert current is state
+        state_box.append(state)
+        if RESTART:
+            locked=os.fstat(state.fd)
+            lock_identity=(locked.st_dev,locked.st_ino)
+            code='''
+import fcntl, os, sys
+fd=os.open(sys.argv[1],os.O_RDWR|os.O_NOFOLLOW)
+try:
+    fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+except BlockingIOError:
+    print('SECOND_PAPER_WRITER_REFUSED')
+else:
+    raise AssertionError('DUPLICATE_WRITER_ENTERED')
+'''
+            lock_path=Path(f'/proc/self/fd/{state.fd}').readlink()
+            assert lock_path.parent==ROOT and lock_path.stat().st_ino==lock_identity[1]
+            guard=subprocess.run([sys.executable,'-B','-c',code,str(lock_path)],check=True,
+                capture_output=True,text=True,timeout=8)
+            assert guard.stdout.strip()=='SECOND_PAPER_WRITER_REFUSED'
+        return current
+
+    class Clock:
+        def time_ns(self):
+            return now*1_000_000
+        def __getattr__(self,name):
+            return getattr(time,name)
+
+    class Wire:
+        def send(self,request):
+            assert request['op']=='READ_C11_V2'
+            self.nonce=request['nonce']
+        def receive(self,timeout):
+            source=datetime.fromtimestamp((now-1)/1000,timezone.utc)
+            lease=datetime.fromtimestamp((now+59999)/1000,timezone.utc)
+            roster=[{'symbol':SYMBOL,'native_oi_change_24h_raw':'0.25' if qualified else '0.00'}]
+            roster.extend({'symbol':f'BAR{i}USDT','native_oi_change_24h_raw':'0.00'} for i in range(59))
+            return dict(nonce=self.nonce,status='FRESH',source=entry_feed.SOURCE,
+                query_sha256=entry_feed.QUERY,offset=0,page_size=60,generation=generation,left_ms=55000,
+                received_at=source.isoformat(),lease_until=lease.isoformat(),rows=roster)
+    feed=entry_feed.EntryFeed(Wire(),1)
+    feed.classification=N(verified={SYMBOL:PAIR},received_monotonic_ns=time.monotonic_ns())
+    observer=N(point=lambda sym,_: (generation,1,Decimal('.25')) if sym==SYMBOL and qualified else None)
+    @contextmanager
+    def intake(*_):
+        yield feed,observer
+
+    def block_order(*_a,**_kw):
+        raise AssertionError('NO_ORDER_ALLOWED_IN_JCT_REPLAY')
+
+    earlier_minutes={}
+    if EARLY_ROSTER:
+        # Fill only the missing replay cassette, not the worker database.
+        # Restore genuine closed rows from the same hashed official archive.
+        import csv,io,zipfile
+        from cold_prefix import verify_archive_blob
+        path=Path('/archive-wire')
+        grid=base['end_ms']
+        days={datetime.fromtimestamp((grid-i*24*60*M)/1000,timezone.utc).strftime('%Y-%m-%d')
+              for i in range(1,5)}
+        entries=json.loads((path/'manifest.json').read_bytes())
+        for record in entries:
+            if record.get('date') not in days:continue
+            name=record['name']; raw=(path/name).read_bytes()
+            verify_archive_blob(name,record['bytes'],record['sha256'],raw,(path/(name+'.CHECKSUM')).read_bytes())
+            assert record['actual_received_ms']<END-2*Q
+            with zipfile.ZipFile(io.BytesIO(raw)) as z, z.open(z.namelist()[0]) as f:
+                rows=csv.reader(io.TextIOWrapper(f,newline='')); header=next(rows)
+                assert header[0]=='open_time' and len(header)==12
+                for r in rows:
+                    assert len(r)==12
+                    r[0],r[6],r[8]=int(r[0]),int(r[6]),int(r[8])
+                    assert r[0]<grid and r[6]==r[0]+M-1
+                    r=translated(r)
+                    assert r[0] not in earlier_minutes
+                    earlier_minutes[r[0]]=r
+        assert len(earlier_minutes)==4*24*60 and not set(earlier_minutes)&bars.keys()
+        earlier_minutes.update(bars)
+
+    def candle_response(method,url,shared=False):
+        u=urlsplit(str(url))
+        if (method,u.scheme,u.netloc)!=('GET','https','fapi.binance.com'):
+            raise AssertionError('UNSUPPORTED_FIXTURE_ENDPOINT')
+        q=parse_qs(u.query,strict_parsing=True)
+        if u.path=='/fapi/v1/klines':
+            assert q['symbol']==[SYMBOL] and all(len(x)==1 for x in q.values())
+            width={'1m':M,'5m':FIVE,'15m':Q}[q['interval'][0]]
+            stop=int(q.get('endTime',[str(now-1)])[0])+1
+            start=int(q.get('startTime',['0'])[0])
+            limit=int(q.get('limit',['500'])[0])
+            assert 0 < limit <= 1500
+            rowmap=earlier_minutes if EARLY_ROSTER and shared and width==M else rows_by_width[width]
+            rows=[rowmap[t] for t in sorted(rowmap) if start<=t<stop and t+width<=min(now,stop)][-limit:]
+            if shared:
+                if HAN_MODE:
+                    assert 'symbol=%E7%89%9B%E6%9D%A5USDT' in u.query
+                assert width==M and stop<=now
+                if EARLY_ROSTER and len(rows)!=limit:
+                    # An earlier request can precede the 600 captured minutes.
+                    # No fabrication. The real adapter rejects short bodies.
+                    uncovered_tape.append((start,stop,limit,len(rows)))
+                    return rows
+                assert len(rows)==limit
+                shared_requests.append((start,stop,len(rows),now))
+            else:
+                owner_replies.append((width,len(rows),now))
+            return rows
+        if u.path in ('/fapi/v1/ticker/price','/fapi/v2/ticker/price'):
+            return {'symbol':SYMBOL,'price':'0.01'} if q.get('symbol') else [{'symbol':SYMBOL,'price':'0.01'}]
+        # Fail closed before network. Unexpected public requests are visible without URL/parameters.
+        raise AssertionError('UNSUPPORTED_FIXTURE_FAPI_PATH:'+u.path)
+
+    def sync_send(_session,prepared,**_):
+        response=requests.Response()
+        response.status_code=200
+        response.headers.update({'Content-Type':'application/json','x-mbx-used-weight-1m':'40'})
+        response._content=json.dumps(candle_response(prepared.method,prepared.url)).encode()
+        response.request=prepared
+        response.url=prepared.url
+        meter_headers[now//M]+=1
+        return response
+    async def async_send(_session,method,url,*,ssl=True,**_):
+        meter_headers[now//M]+=1
+        return helpers['ArchivedResponse'](url,json.dumps(candle_response(method,url)))
+
+    class Response:
+        def __init__(self,url,rows):
+            self.url=url; self.history=(); self.status=200; self.reason='OK'; self.content=self
+            self.headers=CIMultiDict({'x-mbx-used-weight-1m':'43','Content-Type':'application/json'})
+            self.body=json.dumps(rows).encode(); self.content_length=len(self.body)
+        async def iter_chunked(self,_):
+            yield self.body
+        async def text(self, errors='replace'):
+            return self._body.decode(errors=errors)
+    class FixtureSession:
+        closed=False
+        @asynccontextmanager
+        async def get(self,url,allow_redirects,**kw):
+            assert allow_redirects is False
+            yield Response(url,candle_response('GET',url,shared=True))
+
+    def spawn():
+        p,c=socket.socketpair()
+        p.setblocking(False); c.setblocking(False)
+        def serve():
+            with c:
+                try:
+                    asyncio.run(shared_history_child.serve(c,8,FixtureSession()))
+                except ConnectionResetError:
+                    pass
+        process=Thread(target=serve,daemon=True,name='isolated-jct-http-fixture')
+        process.start()
+        workers.append(process)
+        f=Future();f.set_result(p)
+        return f
+
+    def attach(run):
+        nonlocal loaded
+        from atr_er_checkpoint import AtrErCheckpoint
+        from current_history import CurrentHistory
+        h=BoundOwnerHistory.__new__(BoundOwnerHistory)
+        h.worker=run.worker; h.run=run; h.owner=get_ident()
+        h.tap=CurrentHistory(run.worker.freqtrade,run.wall,run.plan.mono,())
+        h.store=run.worker.freqtrade.policy.bars
+        if RESTART=='resume':
+            loaded=state_receipt(h.store.db)
+            assert loaded['next_open']==END-3*Q
+        else:
+            assert all(h.store.db.execute(f'SELECT count(*) FROM {tab}').fetchone()==(0,)
+                       for tab in ('segment','candle','rpd_checkpoint','atr_er_checkpoint'))
+        h.atr=AtrErCheckpoint(h.store)
+        if REVIEWED_PARTIAL or AUTO_STALE:
+            # Simulate the real half-initialized shape in this private
+            # temporary store using the separately pinned JCT origin.
+            h.store.db.execute('INSERT INTO segment VALUES (?,?,?)',(SYMBOL,ORIGIN,ORIGIN if AUTO_STALE else run.wall()))
+            if AUTO_STALE:
+                stale=RpdState(SYMBOL,ORIGIN,ORIGIN,ORIGIN).pack()
+                h.store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(SYMBOL,stale))
+            h.store.db.commit()
+        h.pending=h.last_background=h.archive_prep=h.opg_recovery=None
+        h.history_sink=None
+        # No legacy 5m/15m background transport is allowed in this fixture.
+        h.io=N(spawn=None,active=None,tick=lambda:None,close=lambda:None)
+        def store_check():
+            state_box[0].check_locked()
+            assert h.store.db.execute('PRAGMA database_list').fetchall()==[(0,'main','/c11-paper/causal-candles.sqlite')]
+        h.check_store=store_check
+        h.shared_minute=SharedHistoryForwarder(run.queue.limiter,run.wall,spawn,trace=loop_trace.append)
+        h.minute_admission=MinuteAdmissionLoop(h,h.shared_minute.lane)
+        h.primary_admission=NativePrimaryLane(h,h.shared_minute.lane)
+        if AUTO_MODE:
+            from auto_cold_archive import AutoColdAdmission, AutomaticArchive, Hold, Receipt
+            cassette=Path('/archive-wire')
+            manifest=json.loads((cassette/'manifest.json').read_bytes())
+            endpoints={row['url']:row for row in manifest}
+            class TapeHTTP:
+                def get(self,url,maximum,cancel):
+                    if cancel.is_set():
+                        raise Hold('AUTO_ARCHIVE_CANCELLED')
+                    sidecar=url.endswith('.CHECKSUM')
+                    base_url=url.removesuffix('.CHECKSUM')
+                    row=endpoints[base_url]
+                    archive_wire.append((url,sidecar))
+                    name=row['name']+('.CHECKSUM' if sidecar else '')
+                    with (cassette/name).open('rb') as handle:
+                        raw=handle.read(maximum+1)
+                    return Receipt(raw,row.get('checksum_ms',row['actual_received_ms'])
+                                   if sidecar else row['actual_received_ms'])
+            runtime=json.loads(Path('/opt/c11_owned_modules/release_stage_runtime.json').read_bytes())
+            if 'cold_archive_preparation' in runtime:
+                from auto_cold_archive import OfficialArchiveHTTP
+                from cold_archive_binding import plan
+                from stage_pin import HISTORY_PREP_ENABLED
+                # Supply only the approved replay clock and captured public wire.
+                # Lane selection and construction both use the installed recipe.
+                tape_http=TapeHTTP()
+                start=AutomaticArchive.start
+                patches.enter_context(patch.object(OfficialArchiveHTTP,'get',
+                    lambda _self,*args:tape_http.get(*args)))
+                patches.enter_context(patch.object(AutomaticArchive,'start',
+                    lambda _self,fact,cancel:start(_self,fact,cancel,grid_shift=SHIFT)))
+                h.archive_prep=plan(runtime,{},run.wall,HISTORY_PREP_ENABLED)
+                h.cold_prefix=h.archive_prep.cold_admission(run.wall)
+                auto_lane=h.cold_prefix.public
+            else:
+                auto=AutomaticArchive(TapeHTTP(),run.wall)
+                auto_lane=AutoColdAdmission(run.wall,lambda fact,cancel:auto.start(fact,cancel,grid_shift=SHIFT))
+                h.cold_prefix=auto_lane
+            assert not auto_lane.sources and not auto_lane.pending and not archive_wire
+        elif not REPLAY_MODE:
+            from cold_prefix import ClosedPrefixSource,ColdPrefixAdmission,derive
+            source=ClosedPrefixSource(DATA/'jct_official_archives',base['archive_manifest_sha'],
+                                      base['origin_ms'],base['end_ms'])
+            # Only the fixture's provider input translates the archived clock.
+            replay_source=ClosedPrefixSource(source.directory,source.manifest_sha,
+                                              source.origin+SHIFT,source.cutoff+SHIFT)
+            def prepare_replay(sym,_spec,wall,cancel):
+                return derive(sym,source,wall,cancel,grid_shift=SHIFT)
+            h.cold_prefix=ColdPrefixAdmission({SYMBOL:replay_source},run.wall,prepare=prepare_replay)
+        run.isolated_history=h
+        return h
+
+    class Done(Exception):
+        pass
+    original_cycle=native.PaperWorker._worker
+    history=None
+    def cycle(self,*a,**kw):
+        nonlocal history,now,phase,generation,cycle_count,next_now,next_generation,qualified,previous_roster_state,saw_absent
+        now,generation=next_now,next_generation
+        scheduler=self._c11_owned_scheduler.scheduler
+        if history is None:
+            history=attach(scheduler)
+        early_final=None
+        if EARLY_EXPECT in ('deliver','hold'):
+            public=history.cold_prefix.public
+            active=public.active
+            if active is not None and active[2].done() and active[2].exception() is None:
+                proof=active[2].result()
+                if type(proof) is tuple:
+                    assert active[0]==SYMBOL and not active[1].is_set()
+                    # Availability predates this simulated boundary. Move the
+                    # clock forward, publish a fresh roster, and keep the
+                    # original worker's intake and writing code unchanged.
+                    now=(now//Q+1)*Q+20_000
+                    generation+=1
+                    early_final=proof
+            assert history.store.segment(SYMBOL) is None
+        # Synthetic receipt at the exact same shared limiter ingress as the
+        # real CCXT meter. Historical HTTP itself remains disconnected.
+        scheduler.queue.limiter.note_authoritative_ip_header(now,40,2400)
+        with ExitStack() as clock_patches:
+            for name,mod in tuple(sys.modules.items()):
+                if name.startswith('freqtrade.') and callable(getattr(mod,'dt_now',None)):
+                    clock_patches.enter_context(patch.object(mod,'dt_now',lambda:datetime.fromtimestamp(now/1000,timezone.utc)))
+            result=original_cycle(self,*a,**kw)
+        cycle_count+=1
+        why=history.minute_admission.reason.get(SYMBOL)
+        if EARLY_ROSTER and not first_cold_start and history.cold_prefix.public.active is not None:
+            assert history.cold_prefix.public.active[0]==SYMBOL
+            first_cold_start.append(now%Q)
+        if why is not None and why not in seed_seen:
+            seed_seen.append(why)
+        if REPLAY_MODE and cycle_count>=2:
+            assert history.store.segment(SYMBOL) is None and not shared_requests
+            print('JCT_BASELINE_NO_SCHEDULABLE_STATE',seed_seen,flush=True)
+            raise Done
+        state=history.store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(SYMBOL,)).fetchone()
+        cursor=RpdState.restore(state[0]).next_open if state else None
+        if EARLY_EXPECT in ('start','no-start'):
+            active=history.cold_prefix.public.active
+            assert history.store.segment(SYMBOL) is None
+            assert (active is not None)==(EARLY_EXPECT=='start'), (EARLY_EXPECT,why)
+            if active is not None:assert active[0]==SYMBOL
+            assert not Trade.get_open_trades() and now%Q==5000
+            print(json.dumps(dict(status='C11_COLD_ASYNC_STARTED' if active else 'C11_COLD_ASYNC_HELD',
+                 age_ms=now%Q,isolated=True,no_orders=True)),flush=True)
+            raise Done
+        if early_final is not None:
+            source,prefix=early_final
+            assert source.cutoff==prefix.rpd.next_open and prefix.rpd.observed<=now
+            result=dict(status='C11_COLD_EARLY_DELIVERED' if cursor else 'C11_COLD_EARLY_HELD',
+                        symbol=SYMBOL,age_ms=now%Q,archive_count=len(archive_wire),observed=prefix.rpd.observed,
+                        cursor=cursor,isolated=True,no_orders=not bool(Trade.get_open_trades()),
+                        authority_generation=generation,original_strategy_callback_claim=False)
+            assert result['no_orders'] and now%Q==20_000
+            if EARLY_EXPECT=='deliver':
+                lineage=state_receipt(history.store.db)['lineage']
+                assert cursor==source.cutoff and lineage[-1]==now
+            else:
+                assert cursor is None and history.store.segment(SYMBOL) is None
+            print(json.dumps(result),flush=True)
+            raise Done
+        if phase=='temporarily_absent':
+            assert not qualified and not any(f.symbol==SYMBOL for f in history.tap.facts())
+            assert state_receipt(history.store.db)==previous_roster_state
+            saw_absent=True
+            qualified=True
+            phase='carry'
+            next_now=now+1000
+            next_generation+=1
+        elif phase=='cold' and cursor==END-3*Q:
+            if RESTART=='prepare':
+                assert len(archive_wire)==56 and not Trade.get_open_trades()
+                assert [r[2] for r in shared_requests]==[285]
+                print(json.dumps(dict(status='HAN_RESTART_PREPARED',pid=os.getpid(),
+                    state=state_receipt(history.store.db),archive_requests=len(archive_wire),
+                    native_requests=shared_requests,writer_lock=lock_identity,
+                    second_writer_refused=True)),flush=True)
+                raise Done
+            next_now=END-Q+(5_000 if EARLY_ROSTER else 65_000); next_generation+=1; phase='carry'
+            if ROSTER_RETURN:
+                previous_roster_state=state_receipt(history.store.db)
+                phase='temporarily_absent'
+                qualified=False
+        elif (INIT_MODE and phase=='cold' and generation==7 and cursor==base['end_ms']+SHIFT
+                and any(e.get('stage_reason') in ('STALE_SCOPE','STALE_SCOPE_OR_DELIVERY')
+                        and e.get('symbol')==SYMBOL for e in loop_trace)):
+            # A later fixture generation authorizes a real retry; it cannot
+            # make the previous stale receipt admissible.
+            next_now+=5000
+            next_generation+=1
+        elif (AUTO_MODE and not HAN_MODE and not INIT_MODE and phase=='cold' and generation==7
+                and cursor==base['end_ms']+SHIFT+495*M):
+            # A newly recorded generation renews owner authority. The earlier
+            # fixture generation stays expired; it cannot authorize a second page.
+            next_now+=5000
+            next_generation+=1
+        elif phase=='carry' and cursor==END-2*Q:
+            next_now=END+4000; next_generation+=1; phase='entry'
+        else:
+            step=1000 if phase=='cold' and (cursor is None or (AUTO_STALE and cursor==ORIGIN)) and AUTO_MODE else 5000
+            next_now+=step
+        if EARLY_ROSTER and cycle_count%4==0:
+            slot=history.cold_prefix.public.pending.get(SYMBOL)
+            f=slot.fact if slot else None
+            data=dict(age=now%Q,cursor=cursor,ready=bool(slot and slot.result is not None),
+                      status=slot.status if slot else None,current=bool(f and history.tap.current(f)),
+                      primary_pending=history.primary_admission.pending.busy(SYMBOL),
+                      minute_pending=history.minute_admission.pending.busy(SYMBOL),
+                      original_wire=any(j.symbol==SYMBOL for j,_,_ in history.run.queue.inflight.values()),
+                      facts=len(history.tap.facts()))
+            print('JCT_EARLY_PATH',json.dumps(data),flush=True)
+        if cycle_count%4==0:
+            print('JCT_CYCLE',cycle_count,phase,cursor,why,scheduler.queue.limiter.last_history_hold
+                  if hasattr(scheduler.queue.limiter,'last_history_hold') else None,
+                  len(shared_requests),len(owner_replies),flush=True)
+        veto=history.store.db.execute('SELECT state FROM feature_status WHERE symbol=? AND feature=? AND end_ms=?',
+                                      (SYMBOL,'RPD5_VETO_NATIVE_RECURRENCE',END)).fetchone()
+        primary=history.store.db.execute('SELECT state FROM feature_status WHERE symbol=? AND feature=? AND end_ms=?',
+                                         (SYMBOL,'NW15_PRIMARY_BEFORE_RPD',END)).fetchone()
+        original_calls=[a for a in advice_sources if a['status']=='ORIGINAL_NATIVE_CALLBACK']
+        observed_veto='VETO' in exact_join and veto==('VETO',)
+        if EARLY_ROSTER and observed_veto and not original_calls and now<END+54_000:
+            return result
+        primary_no_signal=(HAN_MODE or INIT_MODE) and phase=='entry' and primary==('PRIMARY_NO_SIGNAL',)
+        if observed_veto or primary_no_signal:
+            assert not Trade.get_open_trades()
+            assert (cursor<=END if original_calls else cursor<END), 'UNWITNESSED_VETO_CURSOR_ADVANCE'
+            if REVIEWED_PARTIAL or AUTO_STALE:
+                recovered=history.store.db.execute(
+                    'SELECT cutoff,manifest_sha,previous_state FROM c11_state_recovery_history WHERE symbol=?',
+                    (SYMBOL,)).fetchone()
+                assert recovered[0]==base['end_ms']+SHIFT
+                saved_rpd=json.loads(recovered[2])['rpd']
+                if AUTO_STALE:
+                    assert len(recovered[1])==64 and RpdState.restore(saved_rpd).next_open==ORIGIN
+                else:
+                    assert recovered[1]==base['archive_manifest_sha'] and saved_rpd is None
+            if AUTO_MODE:
+                expected_requests=0 if RESTART=='resume' else 56 if HAN_MODE else 88 if INIT_MODE else 74
+                assert len(archive_wire)==expected_requests and len({url for url,_ in archive_wire})==expected_requests
+                if HAN_MODE:
+                    assert all('%E7%89%9B%E6%9D%A5USDT' in url for url,_ in archive_wire)
+                assert not (DATA/'jct-base.local.json').exists()
+                if not AUTO_STALE:
+                    lineage=history.store.db.execute('SELECT manifest_sha FROM cold_prefix_lineage WHERE symbol=?',
+                                                      (SYMBOL,)).fetchone()
+                    assert lineage is not None
+            if RESTART=='resume':
+                assert [(a,b,n) for a,b,n,_ in shared_requests]==[(END-3*Q,END-2*Q,15),(END-2*Q,END,30)]
+                resumed=state_receipt(history.store.db)
+                assert resumed['segment']==loaded['segment'] and resumed['lineage']==loaded['lineage']
+                assert resumed['next_open']==loaded['next_open']+Q==END-2*Q
+                assert resumed['rpd_sha']!=loaded['rpd_sha'] and resumed['atr_sha']!=loaded['atr_sha']
+                print(json.dumps(dict(status='HAN_RESTART_RESUMED',pid=os.getpid(),loaded_state=loaded,
+                    advanced_state=resumed,archive_requests=len(archive_wire),native_requests=shared_requests,
+                    primary='PRIMARY_NO_SIGNAL',zero_orders=True,writer_lock=lock_identity,
+                    second_writer_refused=True)),flush=True)
+            if EARLY_ROSTER:
+                assert first_cold_start and first_cold_start[0]<60_000
+            if ROSTER_RETURN:
+                assert saw_absent and qualified
+                resumed=state_receipt(history.store.db)
+                assert resumed['segment']==previous_roster_state['segment']
+                assert resumed['lineage']==previous_roster_state['lineage']
+                assert resumed['next_open']>previous_roster_state['next_open']
+            label='HAN' if HAN_MODE else 'INIT' if INIT_MODE else 'JCT'
+            suffix='PRIMARY_NO_SIGNAL' if primary_no_signal else '5M_VETO'
+            print(json.dumps(dict(status=f'{label}_ORIGINAL_{suffix}',symbol=SYMBOL,
+                   isolated=True,calendar_shift_ms=SHIFT,
+                   original_signal_boundary=witness['end'],replay_boundary=END,cycles=cycle_count,
+                   prefix_statuses=seed_seen,shared_1m_requests=shared_requests,
+                   original_join=exact_join,zero_orders=True,real_decision_time_claim=False,
+                   decision_sources=decision_origins,observed_replay_age_ms=now-END,
+                   original_entry_advice=advice_sources,
+                   initial_cold_start_age_ms=first_cold_start[0] if first_cold_start else None,
+                   uncovered_tape_requests=len(uncovered_tape),
+                   automatic_archive=AUTO_MODE,automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
+                   retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)))),flush=True)
+            raise Done
+        if cycle_count>=36:
+            print(json.dumps(dict(status='JCT_REPLAY_HELD',phase=phase,cursor=cursor,cycles=cycle_count,
+                  prefix_statuses=seed_seen,shared_1m_requests=shared_requests,original_join=exact_join,
+                  uncovered_tape_requests=uncovered_tape[:10],
+                  retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)),
+                  reply_refusals=[x for x in loop_trace if x.get('stage')=='REPLY_REJECTED'])),flush=True)
+            raise RuntimeError('JCT_NO_ORIGINAL_VETO_RECEIPT')
+        return result
+
+    from unified_owner import UnifiedScheduler
+    actual_consume=UnifiedScheduler.consume_ready_only
+    def observe_consume(self,pair,end,frame,callback):
+        result=actual_consume(self,pair,end,frame,callback)
+        if end==END and pair==PAIR:
+            advice_sources.append(dict(status=result[0],age_ms=now-END))
+        return result
+
+    import causal_bars
+    original_join=causal_bars.join
+    def observed_join(*a,**kw):
+        result=original_join(*a,**kw)
+        if a[0].symbol==SYMBOL:
+            exact_join.append(result[0])
+            caller=sys._getframe(1)
+            decision_origins.append(dict(status=result[0],age_ms=now-END,
+                owner_code=Path(caller.f_code.co_filename).name,method=caller.f_code.co_name))
+        return result
+
+    def seed_for_jct(exchange,*,reload):
+        seed_markets(exchange,reload=reload)
+        for api in (exchange._api,exchange._api_async):
+            if api.markets and PAIR in api.markets:
+                api.markets[PAIR]['info']['onboardDate']=ORIGIN
+
+    clock=Clock()
+    factory=installed.installed_site_factory(RUNTIME_SHA,lambda *_:None)
+    try:
+        with ExitStack() as patches:
+            for obj,key,value in (
+                (PaperState,'__enter__',state_enter),(native,'OWNED_SCHEDULER_FACTORY',factory),
+                (native,'OWNED_SCHEDULER_EXPECTED_SEAL',RUNTIME_SHA),(native.PaperWorker,'_worker',cycle),
+                (native,'time',clock),(standalone_policy,'time',clock),(installed,'time_ns',clock.time_ns),
+                (UnifiedScheduler,'consume_ready_only',observe_consume),
+                (shared_history_child,'millis',lambda:now),(async_native_ccxt,'time_ns',clock.time_ns),
+                (causal_bars,'join',observed_join),(native_primary_lane,'join',observed_join),
+                (Exchange,'_load_async_markets',seed_for_jct),(Exchange,'check_time_offset',lambda _:None),
+                (Binance,'fill_leverage_tiers',lambda _:None),(Binance,'ft_additional_exchange_init',lambda _:None),
+                (requests.Session,'send',sync_send),(aiohttp.ClientSession,'_request',async_send),
+                (C11PaperExchange,'create_order',block_order),(C11PaperExchange,'cancel_order',block_order),
+            ):
+                patches.enter_context(patch.object(obj,key,value))
+            v4_entry.run_locked(dict(generation_floor=1,publication_binding='isolated-jct',wallet_usdt=1000.),
+                None,PaperState,verify_state_file,intake,lambda scope,pairs:native.config_for(scope['wallet_usdt'],pairs),
+                standalone_policy.build_policy,native.PaperWorker)
+    except Done:
+        return 2 if REPLAY_MODE else 0
+    finally:
+        for worker in workers:
+            worker.join(3)
+    raise AssertionError('UNEXPECTED_UNBOUNDED_WORKER_RETURN')
+
+
+if __name__=='__main__':
+    raise SystemExit(main())
