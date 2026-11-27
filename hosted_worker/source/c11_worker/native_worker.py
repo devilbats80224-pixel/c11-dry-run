@@ -165,7 +165,7 @@ class PaperBot(C11PaperRecoveryRunner):
         try:
             self._owned_revisit_reconciled=self.policy.reconcile_restart(self) is True
             from native_refresh_cycle import flat_native_refresh
-            with flat_native_refresh(self):
+            with flat_native_refresh(self) as due_terminal:
                 super().process()
             self.policy.reconcile_restart(self)
             self.observe_native_positions()
@@ -173,7 +173,8 @@ class PaperBot(C11PaperRecoveryRunner):
             # Read the just-authenticated native roster, not the provider
             # again while dispatched detached sends recheck owner authority.
             observed_now=self.feed.warmup_observation_since(observed_before)
-            self.feature_warmup.after_protection(self,verified_cycle_rows=observed_now)
+            self.feature_warmup.after_protection(
+                self,verified_cycle_rows=observed_now,due_terminal=due_terminal)
             self._owned_exit_projection_cache=self._owned_exit_projection()
         except BaseException:
             self._owned_exit_projection_cache=None

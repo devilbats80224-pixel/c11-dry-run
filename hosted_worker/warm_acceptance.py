@@ -40,7 +40,8 @@ import entry_feed
 ROOT=Path('/c11-paper')
 PAIR='STBL/USDT:USDT'
 unicode_case=os.environ.get('C11_WARM_UNICODE_CASE')=='yes'
-ready_basis_case=os.environ.get('C11_WARM_READY_BASIS_CASE')=='yes'
+terminal_gap_case=os.environ.get('C11_WARM_TERMINAL_GAP_CASE')=='yes'
+ready_basis_case=terminal_gap_case or os.environ.get('C11_WARM_READY_BASIS_CASE')=='yes'
 divergent_fallback_case=os.environ.get('C11_WARM_DIVERGENT_FALLBACK_CASE')=='yes'
 divergent_fallback=[]
 unknown_base='牛来' if unicode_case else 'ON'
@@ -519,23 +520,34 @@ def main(outer):
             clock[0]=E+2000
             start=E-260*QUARTER
             for symbol in ('STBLUSDT',MISSING):
+                stop=E-MINUTE if terminal_gap_case and symbol=='STBLUSDT' else E
                 bars=tuple(ClosedBar(t,t+MINUTE+1,4.,6.,3.,5. if t==E-MINUTE else 4.,1.,4.)
-                           for t in range(start,E,MINUTE))
+                           for t in range(start,stop,MINUTE))
                 policy.bars.record(symbol,MINUTE,bars)
             from pandas import DataFrame
             legacy=(PAIR,'15m',CandleType.FUTURES)
             # A received wider backup can have a different price. Ready
             # 1m must win, without a cross-source comparison or veto.
-            w.freqtrade._c11_trial_15m_fallback_cache={legacy:(start,E,DataFrame({'close':[999.]}))}
+            w.freqtrade._c11_trial_15m_fallback_cache=(
+                {} if terminal_gap_case else {legacy:(start,E,DataFrame({'close':[999.]}))})
             # Execute the original Worker process; no fake DataProvider or
             # replacement refresh implementation. Physical replies are taped.
-            w.freqtrade.process()
+            for _ in range(3 if terminal_gap_case else 1):
+                w.freqtrade.process()
+                source=w.freqtrade._c11_trial_native_frame_sources
+                if all(source.get((pair,'15m',CandleType.FUTURES))=='closed_1m_projection'
+                       for pair in (PAIR,UNKNOWN_PAIR)):
+                    break
+                clock[0]+=5000
             assert legacy not in w.freqtrade._c11_trial_15m_fallback_cache
-            source=w.freqtrade._c11_trial_native_frame_sources
-            assert all(source[(pair,'15m',CandleType.FUTURES)]=='closed_1m_projection'
+            assert all(source.get((pair,'15m',CandleType.FUTURES))=='closed_1m_projection'
                        for pair in (PAIR,UNKNOWN_PAIR)),source
             data=w.freqtrade.dataprovider.ohlcv(PAIR,'15m',candle_type=CandleType.FUTURES)
-            assert len(data)>=260 and float(data.close.iloc[-1])==5.
+            assert len(data)>=260
+            if terminal_gap_case:
+                assert exact_requests==[('STBLUSDT','1m',1)],exact_requests
+            else:
+                assert float(data.close.iloc[-1])==5.
             assert all(tf=='1m' for _,tf,_ in exact_requests),exact_requests
             assert not Trade.get_trades().all()
             with closing(sqlite3.connect('file:/c11-paper/causal-candles.sqlite?mode=ro',uri=True)) as reader:
@@ -544,7 +556,10 @@ def main(outer):
                 assert count==3900,count
                 widths=tuple(reader.execute('SELECT symbol,count(*) FROM candle WHERE width=? GROUP BY symbol',(QUARTER,)))
                 assert any(symbol in ('STBLUSDT',MISSING) and n==260 for symbol,n in widths),widths
-            print('C11_FULL_WORKER_READY_BASIS_NO_DIRECT_WIDE',len(exact_requests),flush=True)
+            if terminal_gap_case:
+                print('C11_TERMINAL_GAP_WORKER_ONLY_1M_AND_DURABLE',flush=True)
+            else:
+                print('C11_FULL_WORKER_READY_BASIS_NO_DIRECT_WIDE',len(exact_requests),flush=True)
             return
         import subprocess
         from concurrent.futures import ThreadPoolExecutor

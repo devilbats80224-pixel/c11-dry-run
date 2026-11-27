@@ -6,6 +6,7 @@ from local_candle_refresh import refresh_with_local_basis
 
 @contextmanager
 def flat_native_refresh(bot):
+    due_terminal = set()
     ex = bot.exchange
     refresh = ex.refresh_latest_ohlcv
     previous = vars(ex).get('refresh_latest_ohlcv')
@@ -29,12 +30,12 @@ def flat_native_refresh(bot):
             market_id=market_id, now_ms=lambda: time.time_ns() // 1000000,
             pair_list=pairs, allow_native_15m_fallback=True,
             provenance=bot._c11_trial_native_frame_sources,
-            fallback_cache=bot._c11_trial_15m_fallback_cache, **opts,
+            fallback_cache=bot._c11_trial_15m_fallback_cache, due_terminal=due_terminal, **opts,
         )
 
     ex.refresh_latest_ohlcv = scoped
     try:
-        yield
+        yield due_terminal
     finally:
         if had_override:
             ex.refresh_latest_ohlcv = previous

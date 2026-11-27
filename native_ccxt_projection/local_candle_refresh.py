@@ -44,7 +44,7 @@ def _only_terminal_minute_missing(store, symbol, start, end, observed):
 def refresh_with_local_basis(*, native_refresh, cache_view, store, market_id, now_ms,
                              pair_list, since_ms=None, cache=True, drop_incomplete=None,
                              allow_native_15m_fallback=False, provenance=None,
-                             fallback_cache=None):
+                             fallback_cache=None, due_terminal=None):
     """Prefer admitted 1m; optionally use a separate noncanonical 15m frame.
 
     Never use a wider fallback for 5m or promote it to raw 1m, history state
@@ -73,9 +73,12 @@ def refresh_with_local_basis(*, native_refresh, cache_view, store, market_id, no
             # Release acceptance must verify the caller's missing-data behavior.
             if cache:
                 cache_view.pop(key,None)
-            if (allow_native_15m_fallback and timeframe == '15m' and symbol and start < end
-                    and not _only_terminal_minute_missing(store, symbol, start, end, observed)):
-                fallback[key]=(start,end)
+            if allow_native_15m_fallback and timeframe == '15m' and symbol and start < end:
+                if _only_terminal_minute_missing(store, symbol, start, end, observed):
+                    if due_terminal is not None:
+                        due_terminal.add((pair, symbol, end))
+                else:
+                    fallback[key]=(start,end)
             continue
         frame = DataFrame(
             ((r.open_ms,r.op,r.high,r.low,r.close,r.volume) for r in bars),

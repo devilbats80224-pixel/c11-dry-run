@@ -60,9 +60,36 @@ class FeatureWarmup:
     def __init__(self):
         self.next_attempt_ns=0
         self.last_symbol=None
+        self.background_boundary=None
+        self.background_attempts={}
+        self.background_complete=set()
+        self.background_sequence=0
 
-    def after_protection(self,bot,*,verified_cycle_rows=None):
+    def after_protection(self,bot,*,verified_cycle_rows=None,due_terminal=()):
         from standalone_policy import INPUT_ERRORS
+        # The data provider found an exact last-minute gap in this cycle.
+        # Dispatch it only after protection, using the just-authenticated list.
+        # The separate low-priority rotation must not consume this opportunity.
+        if due_terminal and verified_cycle_rows:
+            now=time.time_ns()//1_000_000
+            boundary=now//QUARTER*QUARTER
+            deadline=getattr(bot,'_owned_original_cycle_deadline_ns',None)
+            for candidate in verified_cycle_rows:
+                tick=time.monotonic_ns()
+                if deadline is None or tick>=deadline:
+                    break
+                if ((candidate.pair,candidate.symbol,boundary) not in due_terminal
+                        or tick>=candidate.expires_ns or not bot.observed_ranked(candidate)):
+                    continue
+                try:
+                    bot.policy.candles.refill_due_terminal_minute(bot,candidate,boundary)
+                except INPUT_ERRORS+(sqlite3.Error,):
+                    continue
+        if verified_cycle_rows is not None:
+            self._background_batch(bot,verified_cycle_rows,INPUT_ERRORS)
+            return
+        # Keep the unchanged compatibility path when no authenticated owner
+        # is installed. It is never used for the active owner's candidate batch.
         tick=time.monotonic_ns()
         if tick<self.next_attempt_ns:
             return
@@ -70,7 +97,7 @@ class FeatureWarmup:
         # None is the exact original disabled owner path. An active lane
         # passes an explicit tuple, even empty; never retry or reuse the
         # watchlist when a just-authenticated current observation is missing.
-        ranked=bot.feed.ranked() if verified_cycle_rows is None else verified_cycle_rows
+        ranked=bot.feed.ranked()
         for i,item in enumerate(ranked):
             if item.symbol==self.last_symbol:
                 ranked=ranked[i+1:]+ranked[:i+1]
@@ -85,3 +112,31 @@ class FeatureWarmup:
             except INPUT_ERRORS+(sqlite3.Error,):
                 pass
             return
+
+
+    def _background_batch(self,bot,rows,errors):
+        now=time.time_ns()//1_000_000
+        boundary=now//QUARTER*QUARTER
+        if boundary!=self.background_boundary:
+            self.background_boundary=boundary
+            self.background_attempts.clear()
+            self.background_complete.clear()
+            self.background_sequence=0
+        deadline=getattr(bot,'_owned_original_cycle_deadline_ns',None)
+        # Real owner time and existing transport limits bound the cycle, not
+        # a fixed number of candidates. Unvisited work leads the next cycle.
+        for candidate in sorted(rows,key=lambda c:self.background_attempts.get(c.symbol,-1)):
+            tick=time.monotonic_ns()
+            if deadline is None or tick>=deadline:
+                return
+            if (candidate.symbol in self.background_complete
+                    or tick>=candidate.expires_ns or not bot.observed_ranked(candidate)):
+                continue
+            self.background_attempts[candidate.symbol]=self.background_sequence
+            self.background_sequence+=1
+            try:
+                (_,_,nw),state=readiness(bot,bot.policy,candidate.pair,candidate.symbol,boundary,errors)
+            except errors+(sqlite3.Error,):
+                continue
+            if nw is not None and nw.status!='UNKNOWN' and state is not None and state.known:
+                self.background_complete.add(candidate.symbol)

@@ -55,6 +55,23 @@ class NativeCandles:
              and market['settle']==market['quote']=='USDT','C11_NATIVE_MARKET_ID')
         return market
 
+    def refill_due_terminal_minute(self,bot,candidate,end):
+        pair,symbol=candidate.pair,candidate.symbol
+        self.market(bot,pair,symbol)
+        now=time.time_ns()//1_000_000
+        opened=end-MINUTE
+        if (not end<=now<end+MINUTE
+                or self.store.range(symbol,MINUTE,opened,end,now)):
+            return
+        owned=getattr(bot,'_c11_owned_data_lane',None)
+        if owned is None:
+            return
+        # The original owner may already hold a larger terminal receipt.
+        if any(owned.covers_native_public(symbol,MINUTE,end-n*MINUTE,end,n) for n in (1,30,45)):
+            return
+        self.query(bot,symbol,MINUTE,opened,end,1,primary_pull=True,
+                   fallback_lease_ns=candidate.expires_ns)
+
     def update_nw(self,bot,pair,symbol,end):
         self.market(bot,pair,symbol)
         key=pair,end
