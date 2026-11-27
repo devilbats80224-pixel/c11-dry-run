@@ -1,5 +1,7 @@
 """Public output is limited to enumerated replay status and a count."""
+from collections import Counter
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -61,6 +63,40 @@ for row in r.get("reply_refusals", [])[:10]:
         if isinstance(reasons, list) and all(isinstance(x, str) and x in safe_scope_reasons for x in reasons):
             print("C11_HOSTED_REPLAY_SCOPE_DIAGNOSTIC", mode, scope["lane"], ",".join(reasons))
 if status == "JCT_REPLAY_HELD":
+    # Public CI sees an allowlisted first reason and counts, never raw jobs,
+    # symbols, timing, exception messages, receipts, or wire data.
+    safe_persist = (
+        "DELIVERY_SCOPE_LOST", "INVALID_RECEIPT_CLOCK",
+        "NATIVE_BATCH_REFUSED", "SQLITE_BUSY",
+    )
+    first_persist = None
+    if isinstance(r.get("persist_refusals"), list) and r["persist_refusals"]:
+        reasons = []
+        for refusal in r["persist_refusals"]:
+            reason = refusal.get("stage_reason") if isinstance(refusal, dict) else None
+            reasons.append(reason if reason in safe_persist else "UNCLASSIFIED")
+        first_persist = reasons[0]
+        counts = Counter(reasons)
+        summary = ",".join(f"{reason}:{counts[reason]}" for reason in sorted(counts))
+        print("C11_HOSTED_PERSIST_DIAGNOSTIC", mode, f"first={reasons[0]}", f"counts={summary}")
+    safe_prefix_refusals = (
+        "OLD_STATE_NOT_BOUND", "NO_AUTHENTICATED_LOCAL_STATE",
+        "NATIVE_PREPARATION_REFUSED", "NATIVE_MINUTES_REFUSED",
+        "NATIVE_BUDGET_OR_AUTHORITY_HELD", "COLD_PREFIX_NO_REVIEWED_SOURCE",
+        "AUTO_RECENT_MINUTES_ONLY_ORIGINAL_STATE_UNVERIFIED",
+    )
+    phases = ("cold", "carry", "entry", "temporarily_absent")
+    phase = r.get("phase")
+    phase = phase if phase in phases else "unknown"
+    reasons = r.get("prefix_statuses")
+    first_gate = next((x for x in reasons if x in safe_prefix_refusals), None) if isinstance(reasons, list) else None
+    if first_gate:
+        print("C11_HOSTED_PREFIX_DIAGNOSTIC", mode, f"phase={phase}", f"first={first_gate}")
+    elif not r.get("persist_refusals"):
+        print("C11_HOSTED_PREFIX_DIAGNOSTIC", mode, f"phase={phase}", "first=UNCONFIRMED")
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::error title=C11 replay ({mode})::Expected original 5m VETO in the target cycle; "
+              f"actual JCT_REPLAY_HELD; phase={phase}; reason={first_gate or first_persist or 'UNCONFIRMED'}")
     # Only emit machine status tokens, not any wire data, paths, or IDs.
     import re
     for field in ("entry_gate_statuses", "entry_advice_statuses", "entry_primary", "entry_rpd_checks"):
@@ -81,8 +117,24 @@ if remote == "yes":
     assert r["archive_public_receipts"] > 0, "PINNED_SOURCE_BYTES_NOT_FETCHED"
 if cached == "yes":
     assert r["archive_public_receipts"] == 0, "CACHE_REOPENED_ARCHIVE_NETWORK"
-assert any(item.get("status") == "VETO" and item.get("method") == "record_verified_veto"
-           for item in r.get("decision_sources", [])), "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
+decisions = r.get("decision_sources", [])
+optional_native_veto = any(
+    d.get("status") == "VETO" and d.get("method") == "record_verified_veto" for d in decisions
+)
+callback_native_veto = False
+if mode == "reviewed-partial" and r.get("strategy_native_veto") is True:
+    calls = [item for item in r.get("original_entry_advice", [])
+             if item.get("status") == "ORIGINAL_NATIVE_CALLBACK"]
+    callback_native_veto = (
+        len(calls) == 1 and type(calls[0].get("last_enter_long")) is int
+        and calls[0]["last_enter_long"] == 0 and type(calls[0].get("age_ms")) is int
+        and 0 <= calls[0]["age_ms"] < 60_000
+        and any(d.get("status") == "VETO" and d.get("owner_code") == "causal_bars.py"
+                and d.get("method") == "inputs" and d.get("boundary") == r["replay_boundary"]
+                and d.get("inside_original_target_callback") is True
+                and d.get("age_ms") == calls[0]["age_ms"] for d in decisions)
+    )
+assert optional_native_veto or callback_native_veto, "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
 assert r.get("automatic_archive") is (mode != "reviewed-partial")
 if mode != "reviewed-partial" and cached == remote == "no":
     assert r.get("discovery_configured") is True, "UNSEEDED_DISCOVERY_NOT_ENABLED"

@@ -199,29 +199,45 @@ class NativePrimaryLane:
                 return
             state=RpdState.restore(record[0])
             anchor=s.end-QUARTER
-            if ((state.symbol,state.origin)!=(f.symbol,f.origin) or state.observed>now
-                    or not s.end-2*QUARTER<=state.next_open<=anchor):
+            if (state.symbol,state.origin)!=(f.symbol,f.origin) or state.observed>now:
                 return
-            # A page may already have been atomically persisted by the
-            # projection/refill route, which doesn't populate terminal_five.
-            # Reconstruct only the exact admitted minute window, after the
-            # original checkpoint and current scope have been verified.
-            bars=(witness[2] if witness is not None else
-                  project_closed_minutes(o.store,f.symbol,FIVE,state.next_open,s.end,now))
-            if bars is None:
-                return
-            minute_five={bar.open_ms:bar for bar in bars}
-            for opening in range(state.next_open,s.end,FIVE):
-                derived=minute_five.get(opening)
-                existing=o.store.range(f.symbol,FIVE,opening,opening+FIVE,now)
-                if existing and derived is not None:
-                    prices=('op','high','low','close','volume','quote')
-                    if any(getattr(existing[0],field)!=getattr(derived,field) for field in prices):
-                        return
-                bar=existing[0] if existing else derived
-                if bar is None:
+            if state.next_open==s.end:
+                # The original feature warmup can finish RPD before this
+                # optional owner lane. Prove that the sealed exact-close state
+                # used the same admitted terminal basis, never an older state
+                # or an inconsistent independently fetched wider candle.
+                derived=project_closed_minutes(o.store,f.symbol,FIVE,anchor,s.end,now)
+                stored=o.store.range(f.symbol,FIVE,anchor,s.end,now)
+                fields=('op','high','low','close','volume','quote')
+                if (not derived or len(stored)!=len(derived)
+                        or any(a.received_ms>state.observed or
+                               any(getattr(a,k)!=getattr(b,k) for k in fields)
+                               for a,b in zip(stored,derived))
+                        or state.bars[-len(stored):]!=[[r.high,r.low,r.close,r.volume] for r in stored]):
                     return
-                state.advance(bar,now)
+            else:
+                if not s.end-2*QUARTER<=state.next_open<=anchor:
+                    return
+                # A page may already have been atomically persisted by the
+                # projection/refill route, which doesn't populate terminal_five.
+                # Reconstruct only the exact admitted minute window, after the
+                # original checkpoint and current scope have been verified.
+                bars=(witness[2] if witness is not None else
+                      project_closed_minutes(o.store,f.symbol,FIVE,state.next_open,s.end,now))
+                if bars is None:
+                    return
+                minute_five={bar.open_ms:bar for bar in bars}
+                for opening in range(state.next_open,s.end,FIVE):
+                    derived=minute_five.get(opening)
+                    existing=o.store.range(f.symbol,FIVE,opening,opening+FIVE,now)
+                    if existing and derived is not None:
+                        prices=('op','high','low','close','volume','quote')
+                        if any(getattr(existing[0],field)!=getattr(derived,field) for field in prices):
+                            return
+                    bar=existing[0] if existing else derived
+                    if bar is None:
+                        return
+                    state.advance(bar,now)
             result,_=join(Scope(f.symbol,s.end),now,[state.closed()])
             if result=='VETO' and self.current(f,s,o.run.wall()):
                 o.store.feature_status(f.symbol,s.end,now,{'RPD5_VETO_NATIVE_RECURRENCE':'VETO'})

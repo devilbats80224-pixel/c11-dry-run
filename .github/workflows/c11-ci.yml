@@ -46,6 +46,8 @@ jobs:
           sh -n native_history_scheduler/run_prior_invariants.sh
       - name: Reject tracked local-only files
         run: python3 -I -B release_regressions/check_public_tracked_files.py
+      - name: Verify safe native replay failure diagnostics
+        run: python3 -I -B hosted_worker/test_replay_public_diagnostics.py
       - name: Run portable regression tests
         run: |
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then

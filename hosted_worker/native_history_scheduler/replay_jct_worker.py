@@ -194,6 +194,7 @@ def main():
     first_cold_start=[]
     uncovered_tape=[]
     loop_trace=[]
+    in_target_callback=False
     original_enter=PaperState.__enter__
     lock_identity=None
     def state_enter(state):
@@ -234,18 +235,32 @@ else:
             return getattr(time,name)
 
     class Wire:
+        def __init__(self,*,pinned_generation=False):
+            self.pinned_generation=pinned_generation
+            self.publication=None
         def send(self,request):
             assert request['op']=='READ_C11_V2'
             self.nonce=request['nonce']
         def receive(self,timeout):
-            source=datetime.fromtimestamp((now-1)/1000,timezone.utc)
-            lease=datetime.fromtimestamp((now+59999)/1000,timezone.utc)
+            # A real publisher's generation identifies one immutable
+            # publication. Rereading it does not renew received_at or the
+            # lease. The cross-generation negative control below injects
+            # renewed old frames explicitly to exercise the stricter cap.
+            if self.pinned_generation:
+                if self.publication is None or self.publication[0]!=generation:
+                    self.publication=(generation,now-5000)
+                published=self.publication[1]
+                left=published+60000-now
+            else:
+                published,left=now-1,55000
+            source=datetime.fromtimestamp(published/1000,timezone.utc)
+            lease=datetime.fromtimestamp((published+60000)/1000,timezone.utc)
             roster=[{'symbol':SYMBOL,'native_oi_change_24h_raw':'0.25' if qualified else '0.00'}]
             roster.extend({'symbol':f'BAR{i}USDT','native_oi_change_24h_raw':'0.00'} for i in range(59))
-            return dict(nonce=self.nonce,status='FRESH',source=entry_feed.SOURCE,
-                query_sha256=entry_feed.QUERY,offset=0,page_size=60,generation=generation,left_ms=55000,
+            return dict(nonce=self.nonce,status='FRESH' if left>0 else 'STALE',source=entry_feed.SOURCE,
+                query_sha256=entry_feed.QUERY,offset=0,page_size=60,generation=generation,left_ms=max(left,0),
                 received_at=source.isoformat(),lease_until=lease.isoformat(),rows=roster)
-    feed=entry_feed.EntryFeed(Wire(),1)
+    feed=entry_feed.EntryFeed(Wire(pinned_generation=REVIEWED_PARTIAL),1)
     feed.classification=N(verified={SYMBOL:PAIR},received_monotonic_ns=time.monotonic_ns())
     if LEASE_CLOCK:
         # Moving the replay across closed boundaries also ages metadata.
@@ -671,6 +686,13 @@ else:
                 assert cursor is None and history.store.segment(SYMBOL) is None
             print(json.dumps(result),flush=True)
             raise Done
+        # Do not teleport the fixture to a different quarter between the
+        # original async READY/GO/REPLY stages. The 950 ms GO deadline and all
+        # production authority checks remain in force. Live owner polling
+        # stays unmodified; this only controls the fixture's market-time jump.
+        pending_replay_wire=REVIEWED_PARTIAL and bool(
+            history.shared_minute.waiting or history.primary_admission.pending.pending
+            or history.minute_admission.pending.pending)
         if phase=='temporarily_absent':
             assert not qualified and not any(f.symbol==SYMBOL for f in history.tap.facts())
             assert state_receipt(history.store.db)==previous_roster_state
@@ -679,7 +701,7 @@ else:
             phase='carry'
             next_now=now+1000
             next_generation+=1
-        elif phase=='cold' and (cursor==END-3*Q or
+        elif phase=='cold' and not pending_replay_wire and (cursor==END-3*Q or
                 (REVIEWED_PARTIAL and cursor in (END-2*Q,END-Q))):
             # Polls observe committed state, not every intermediate cursor.
             # In this reviewed case the independent accepted path can catch
@@ -718,7 +740,7 @@ else:
             # fixture generation stays expired; it cannot authorize a second page.
             next_now+=5000
             next_generation+=1
-        elif phase=='carry' and (cursor==END-2*Q or (REVIEWED_PARTIAL and cursor==END-Q)):
+        elif phase=='carry' and not pending_replay_wire and (cursor==END-2*Q or (REVIEWED_PARTIAL and cursor==END-Q)):
             # Accepted pages are committed asynchronously. The original
             # worker may advance one additional closed quarter before the
             # fixture observes a cursor. Do not strand the replay on the
@@ -727,7 +749,7 @@ else:
             next_now=END+4000; next_generation+=1; phase='entry'
         else:
             step=1000 if phase=='cold' and (cursor is None or (AUTO_STALE and cursor==ORIGIN)) and AUTO_MODE else 5000
-            next_now+=step
+            next_now+=min(step,250) if pending_replay_wire else step
         if EARLY_ROSTER and cycle_count%4==0:
             slot=None if CACHED else history.cold_prefix.public.pending.get(SYMBOL)
             f=slot.fact if slot else None
@@ -747,7 +769,17 @@ else:
         primary=history.store.db.execute('SELECT state FROM feature_status WHERE symbol=? AND feature=? AND end_ms=?',
                                          (SYMBOL,'NW15_PRIMARY_BEFORE_RPD',END)).fetchone()
         original_calls=[a for a in advice_sources if a['status']=='ORIGINAL_NATIVE_CALLBACK']
-        observed_veto='VETO' in exact_join and veto==('VETO',)
+        # The original Freqtrade strategy can consume the rebuilt state itself
+        # before the data-only fallback writes its separate feature marker.
+        # Prove the real exact-end VETO happened inside that native callback
+        # and the returned last row does not request entry; no inferred VETO.
+        strategy_native_veto=(REVIEWED_PARTIAL and len(original_calls)==1
+            and original_calls[0].get('last_enter_long')==0
+            and any(d['status']=='VETO' and d.get('boundary')==END
+                    and d.get('inside_original_target_callback') is True
+                    and d['owner_code']=='causal_bars.py' and d['method']=='inputs'
+                    and d['age_ms']==original_calls[0]['age_ms'] for d in decision_origins))
+        observed_veto=('VETO' in exact_join and veto==('VETO',)) or strategy_native_veto
         if EARLY_ROSTER and observed_veto and not original_calls and now<END+54_000:
             return result
         primary_no_signal=(HAN_MODE or INIT_MODE) and phase=='entry' and primary==('PRIMARY_NO_SIGNAL',)
@@ -804,14 +836,14 @@ else:
                    prefix_statuses=seed_seen,shared_1m_requests=shared_requests,
                    original_join=exact_join,zero_orders=True,real_decision_time_claim=False,
                    decision_sources=decision_origins,observed_replay_age_ms=now-END,
-                   original_entry_advice=advice_sources,
+                   original_entry_advice=advice_sources,strategy_native_veto=strategy_native_veto,
                    initial_cold_start_age_ms=first_cold_start[0] if first_cold_start else None,
                    uncovered_tape_requests=len(uncovered_tape),
                    automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,pinned_remote=PINNED_REMOTE,
                    discovery_configured=bool(getattr(history.archive_prep,'discover_unseeded',False)),automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
                    retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)))),flush=True)
             raise Done
-        if cycle_count>=36:
+        if cycle_count>=36 or (REVIEWED_PARTIAL and phase=='entry' and now>=END+60_000):
             print(json.dumps(dict(status='JCT_REPLAY_HELD',phase=phase,cursor=cursor,cycles=cycle_count,
                   prefix_statuses=seed_seen,shared_1m_requests=shared_requests,original_join=exact_join,
                   uncovered_tape_requests=uncovered_tape[:10],
@@ -822,6 +854,7 @@ else:
                   entry_advice_statuses=sorted({x['status'] for x in advice_sources}),
                   entry_primary=primary[0] if primary else None,
                   entry_rpd_checks=sorted(rpd_entry_checks),
+                  persist_refusals=[x for x in loop_trace if x.get('stage')=='PERSIST_REJECTED'],
                   reply_refusals=[x for x in loop_trace if x.get('stage')=='REPLY_REJECTED'])),flush=True)
             raise RuntimeError('JCT_NO_ORIGINAL_VETO_RECEIPT')
         return result
@@ -829,9 +862,20 @@ else:
     from unified_owner import UnifiedScheduler
     actual_consume=UnifiedScheduler.consume_ready_only
     def observe_consume(self,pair,end,frame,callback):
-        result=actual_consume(self,pair,end,frame,callback)
-        if end==END and pair==PAIR:
-            advice_sources.append(dict(status=result[0],age_ms=now-END))
+        if (end,pair)!=(END,PAIR):
+            return actual_consume(self,pair,end,frame,callback)
+        def witness_original():
+            nonlocal in_target_callback
+            in_target_callback=True
+            try:return callback()
+            finally:in_target_callback=False
+        result=actual_consume(self,pair,end,frame,witness_original if REVIEWED_PARTIAL else callback)
+        event=dict(status=result[0],age_ms=now-END)
+        if REVIEWED_PARTIAL and result[0]=='ORIGINAL_NATIVE_CALLBACK':
+            frame=result[1]
+            if frame is not None and 'enter_long' in frame and len(frame):
+                event['last_enter_long']=int(frame['enter_long'].iloc[-1])
+        advice_sources.append(event)
         return result
 
     rpd_entry_checks=set()
@@ -873,7 +917,8 @@ else:
         if a[0].symbol==SYMBOL:
             exact_join.append(result[0])
             caller=sys._getframe(1)
-            decision_origins.append(dict(status=result[0],age_ms=now-END,
+            decision_origins.append(dict(status=result[0],age_ms=now-END,boundary=a[0].end_ms,
+                inside_original_target_callback=in_target_callback,
                 owner_code=Path(caller.f_code.co_filename).name,method=caller.f_code.co_name))
         return result
 
@@ -886,6 +931,7 @@ else:
     clock=Clock()
     import feature_warmup
     import native_candles
+    import native_refresh_cycle
     factory=installed.installed_site_factory(RUNTIME_SHA,lambda *_:None)
     try:
         with ExitStack() as patches:
@@ -904,7 +950,8 @@ else:
                 # For this replay, the original direct candle receipt and
                 # warmup share the same captured clock as the Worker. Do not
                 # let the runner wall clock mark archived state "from the future".
-                *(([(native_candles,'time',clock),(feature_warmup,'time',clock)]) if REVIEWED_PARTIAL else []),
+                *(([(native_candles,'time',clock),(feature_warmup,'time',clock),
+                    (native_refresh_cycle,'time',clock)]) if REVIEWED_PARTIAL else []),
                 (UnifiedScheduler,'consume_ready_only',observe_consume),
                 (NativePrimaryLane,'record_verified_veto',observed_veto),
                 (shared_history_child,'millis',lambda:now),(async_native_ccxt,'time_ns',clock.time_ns),
