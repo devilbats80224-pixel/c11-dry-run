@@ -283,6 +283,12 @@ class UnifiedScheduler:
             self.plan.remember_original_warm_offer(provisional)
         return provisional
 
+    def requires_staged_revisit_frame(self,proof):
+        # The warm route installs exact reconstructed input. Ordinary and
+        # verified non-warm routes may already have the canonical frame.
+        self._owner()
+        return self.warm.prepared is not None and self.warm.prepared[0] is proof
+
     def original_revisit_frame(self,proof,provider_frame):
         self._owner()
         if self.warm.prepared is not None and self.warm.prepared[0] is proof:
