@@ -93,8 +93,31 @@ def reviewed_download_rejects_changed_checksum():
     assert calls == [url+".CHECKSUM"]
 
 
+def reviewed_download_stops_after_expiry():
+    name = "EXAMPLEUSDT-1m-2026-11-25.zip"
+    url = "https://example.invalid/" + name
+    digest = sha256(b"test").hexdigest()
+    calls = []
+    clock = [100]
+    def fetch(target, limit, cancel):
+        calls.append(target)
+        clock[0] = 101
+        return Receipt((digest+"  "+name).encode(), 100)
+    archive = AutomaticArchive(Ns(get=fetch), lambda: clock[0])
+    progress = ArchiveProgress(archive, "EXAMPLEUSDT", 1, 2, 0, (),
+                               reviewed=Ns(review_expires_ms=101))
+    try:
+        progress.fetch(name,url,100,1000,Event(),pin=(digest,4))
+    except Hold as exc:
+        assert exc.status == "AUTO_ARCHIVE_REVIEWED_SCOPE"
+    else:
+        raise AssertionError("C11_EXPIRED_MANIFEST_FETCHED_BODY")
+    assert calls == [url+".CHECKSUM"]
+
+
 if __name__ == "__main__":
     boundary_cases()
     reviewed_download_rejects_changed_checksum()
+    reviewed_download_stops_after_expiry()
     identical_suffix_cannot_identify_original_state()
     print("C11_UNCACHED_PROVENANCE_CONTROLS_PASS")

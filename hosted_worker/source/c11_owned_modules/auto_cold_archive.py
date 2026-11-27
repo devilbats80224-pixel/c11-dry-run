@@ -226,7 +226,12 @@ class ArchiveProgress:
         self.ledger=[]
         self.max_received=0
 
+    def require_current_review(self):
+        if self.reviewed is not None and self.archive.wall()>=self.reviewed.review_expires_ms:
+            raise Hold('AUTO_ARCHIVE_REVIEWED_SCOPE')
+
     def fetch(self,name,url,closed_at,limit,cancel,*,pin=None):
+        self.require_current_review()
         checksum=self.archive.transport.get(url+'.CHECKSUM',512,cancel)
         try:
             expected,spelling=checksum.body.decode('utf-8').split()
@@ -238,6 +243,7 @@ class ArchiveProgress:
             raise Hold('AUTO_ARCHIVE_UNVERIFIED')
         if pin is not None and pin[1]>limit:
             raise Hold('AUTO_ARCHIVE_BUDGET')
+        self.require_current_review()
         zipped=self.archive.transport.get(url,limit if pin is None else pin[1],cancel)
         size=len(zipped.body)
         if pin is not None and size!=pin[1]:
@@ -253,8 +259,7 @@ class ArchiveProgress:
 
     def resume(self,event):
         cancel=JobLimit(event)
-        if self.reviewed is not None and self.archive.wall()>=self.reviewed.review_expires_ms:
-            raise Hold('AUTO_ARCHIVE_REVIEWED_SCOPE')
+        self.require_current_review()
         budget=self.archive.max_bytes-(sum(item['bytes'] for item in self.ledger) if self.reviewed else 0)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
@@ -305,8 +310,7 @@ class ArchiveProgress:
         if len(self.ledger)<len(self.parts):
             return self
         raw=json.dumps(self.ledger,sort_keys=True,separators=(',',':')).encode()
-        if self.reviewed is not None and self.archive.wall()>=self.reviewed.review_expires_ms:
-            raise Hold('AUTO_ARCHIVE_REVIEWED_SCOPE')
+        self.require_current_review()
         source=ClosedPrefixSource(Path('/unused-automatic-download'),
                                   self.reviewed.manifest_sha if self.reviewed else sha256(raw).hexdigest(),
                                   self.origin+self.shift,self.cutoff+self.shift,

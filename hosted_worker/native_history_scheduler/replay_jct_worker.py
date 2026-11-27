@@ -306,7 +306,7 @@ else:
                 if HAN_MODE:
                     assert 'symbol=%E7%89%9B%E6%9D%A5USDT' in u.query
                 assert width==M and stop<=now
-                if (EARLY_ROSTER or REVIEWED_PARTIAL) and len(rows)!=limit:
+                if (EARLY_ROSTER or REVIEWED_PARTIAL or PINNED_REMOTE) and len(rows)!=limit:
                     # Optional primary reads can precede the captured tape.
                     # Return the actual short body so the original row-count
                     # guard handles it. Never synthesize rows or raise in IPC.
