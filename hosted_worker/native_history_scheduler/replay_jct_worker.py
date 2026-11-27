@@ -785,13 +785,15 @@ else:
                    original_entry_advice=advice_sources,
                    initial_cold_start_age_ms=first_cold_start[0] if first_cold_start else None,
                    uncovered_tape_requests=len(uncovered_tape),
-                   automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,pinned_remote=PINNED_REMOTE,automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
+                   automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,pinned_remote=PINNED_REMOTE,
+                   discovery_configured=bool(getattr(history.archive_prep,'discover_unseeded',False)),automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
                    retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)))),flush=True)
             raise Done
         if cycle_count>=36:
             print(json.dumps(dict(status='JCT_REPLAY_HELD',phase=phase,cursor=cursor,cycles=cycle_count,
                   prefix_statuses=seed_seen,shared_1m_requests=shared_requests,original_join=exact_join,
                   uncovered_tape_requests=uncovered_tape[:10],
+                  archive_public_receipts=len(archive_wire),
                   retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)),
                   reply_refusals=[x for x in loop_trace if x.get('stage')=='REPLY_REJECTED'])),flush=True)
             raise RuntimeError('JCT_NO_ORIGINAL_VETO_RECEIPT')

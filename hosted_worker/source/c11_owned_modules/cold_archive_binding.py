@@ -5,14 +5,17 @@ from cold_prefix import ColdPrefixAdmission
 
 MODE_KEY='cold_archive_preparation'
 PUBLIC_MODE='BINANCE_PUBLIC_CLOSED_1M_V1'
+DISCOVERY_KEY='unseeded_archive_discovery'
+DISCOVERY_MODE='BOUNDED_OFFICIAL_ARCHIVE_V1'
 
 
 class ColdSourceAdmission:
     """Prefer reviewed local sources; only one prefix preparation at a time."""
-    def __init__(self,reviewed,wall):
+    def __init__(self,reviewed,wall,*,discover_unseeded=False):
         self.reviewed=ColdPrefixAdmission({s:v for s,v in reviewed.items() if not v.download_only},wall)
         remote={s:v for s,v in reviewed.items() if v.download_only}
-        archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall,reviewed_remote=remote)
+        archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall,reviewed_remote=remote,
+                                 discover_unseeded=discover_unseeded)
         self.public=AutoColdAdmission(wall,archive.start)
 
     def offer(self,fact):
@@ -67,6 +70,9 @@ def plan(runtime,sources,wall,history_enabled):
         raise ValueError('C11_PUBLIC_COLD_ARCHIVE_MODE_OR_HISTORY_SCOPE')
     if any(source.download_only for source in sources.values()) and mode!=PUBLIC_MODE:
         raise ValueError('C11_REVIEWED_DOWNLOAD_REQUIRES_PUBLIC_HISTORY')
+    if DISCOVERY_KEY in runtime and (runtime[DISCOVERY_KEY]!=DISCOVERY_MODE or mode!=PUBLIC_MODE):
+        raise ValueError('C11_UNSEEDED_DISCOVERY_EXACT_MODE')
     if not sources and mode is None:
         return None
-    return ArchivePrepLane({},wall,cold_prefix_sources=sources,public_cold_archive=mode==PUBLIC_MODE)
+    return ArchivePrepLane({},wall,cold_prefix_sources=sources,public_cold_archive=mode==PUBLIC_MODE,
+                           discover_unseeded=DISCOVERY_KEY in runtime)

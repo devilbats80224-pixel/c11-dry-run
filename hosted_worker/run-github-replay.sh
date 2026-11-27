@@ -29,7 +29,7 @@ chmod 0444 "$out/warm/warm_acceptance.py"
 if [ "$2" = build ]; then
     mkdir -p "$artifact"
     docker pull --platform linux/arm64 "docker.io/freqtradeorg/freqtrade@$base"
-    python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" "$out/warm/baked_catalog" "$out/fixture/jct"
+    C11_ISOLATED_UNSEEDED_DISCOVERY=yes python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" "$out/warm/baked_catalog" "$out/fixture/jct"
     DOCKER_BUILDKIT=0 docker build --pull=false --network=none --iidfile "$artifact/image.iid" "$out/stage"
     image=$(cat "$artifact/image.iid")
     sha256sum "$out/stage/opt/c11_owned_modules/release_stage_runtime.json" | awk '{print $1}' >"$artifact/runtime.sha"

@@ -115,8 +115,52 @@ def reviewed_download_stops_after_expiry():
     assert calls == [url+".CHECKSUM"]
 
 
+def discovered_archives_use_existing_bounds():
+    from datetime import datetime, timezone
+    def utc(day):
+        return int(datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp()*1000)
+    end = utc("2026-11-27") + 2*QUARTER
+    requests = []
+    transport = Ns(get=lambda *args: requests.append(args))
+    short = Ns(symbol="EXAMPLEUSDT",pair="EXAMPLE/USDT:USDT",
+               origin=utc("2025-11-10"),boundary=end)
+    too_long = Ns(symbol=short.symbol,pair=short.pair,
+                  origin=utc("2020-02-03"),boundary=end)
+    with patch.object(ArchiveProgress, "resume", autospec=True,
+                      side_effect=lambda self, _: self):
+        default = AutomaticArchive(transport, lambda: end)
+        try:
+            default.start(short, Event())
+        except Hold as exc:
+            assert exc.status == RECENT_PROOF_REQUIRED
+        else:
+            raise AssertionError("DISCOVERY_MUST_NOT_BE_DEFAULT")
+        enabled = AutomaticArchive(transport, lambda: end, discover_unseeded=True)
+        assert enabled.start(short, Event()).discovered
+        try:
+            enabled.start(too_long, Event())
+        except Hold as exc:
+            assert exc.status == "AUTO_ARCHIVE_DISCOVERY_LIMIT"
+        else:
+            raise AssertionError("C11_DISCOVERY_BYPASSED_ARCHIVE_BUDGET")
+    assert not requests
+
+    archive = AutomaticArchive(transport, lambda: end, max_bytes=10, discover_unseeded=True)
+    progress = ArchiveProgress(archive, short.symbol, short.origin, end, 0,
+                               (("one","unused",end),("two","unused",end)), discovered=True)
+    progress.ledger.append({"bytes": 10})
+    try:
+        progress.resume(Event())
+    except Hold as exc:
+        assert exc.status == "AUTO_ARCHIVE_DISCOVERY_LIMIT"
+    else:
+        raise AssertionError("C11_DISCOVERY_BYTE_BUDGET_RESET_AFTER_YIELD")
+    assert not requests
+
+
 if __name__ == "__main__":
     boundary_cases()
+    discovered_archives_use_existing_bounds()
     reviewed_download_rejects_changed_checksum()
     reviewed_download_stops_after_expiry()
     identical_suffix_cannot_identify_original_state()

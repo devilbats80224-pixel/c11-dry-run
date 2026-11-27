@@ -15,11 +15,15 @@ class ArchiveSource:
 
 class ArchivePrepLane:
     """One readonly file worker; never given a DB, bot, limiter or entry authority."""
-    def __init__(self,sources,wall,worker_prepare=prepare,*,cold_prefix_sources=None,public_cold_archive=False):
+    def __init__(self,sources,wall,worker_prepare=prepare,*,cold_prefix_sources=None,public_cold_archive=False,
+                 discover_unseeded=False):
         if type(sources) is not dict or not all(type(x) is ArchiveSource for x in sources.values()):
             raise ValueError('EXACT_ARCHIVE_SOURCE_REQUIRED')
         if type(public_cold_archive) is not bool:
             raise ValueError('C11_PUBLIC_COLD_ARCHIVE_EXACT_MODE')
+        if type(discover_unseeded) is not bool or discover_unseeded and not public_cold_archive:
+            raise ValueError('C11_UNSEEDED_DISCOVERY_EXACT_MODE')
+        self.discover_unseeded=discover_unseeded
         self.cold_prefix_sources=MappingProxyType(dict(cold_prefix_sources or {}))
         self.public_cold_archive=public_cold_archive
         self.sources=dict(sources);self.wall=wall;self.worker_prepare=worker_prepare;self.owner=get_ident()
@@ -28,7 +32,7 @@ class ArchivePrepLane:
     def cold_admission(self,wall):
         if self.public_cold_archive:
             from cold_archive_binding import ColdSourceAdmission
-            return ColdSourceAdmission(self.cold_prefix_sources,wall)
+            return ColdSourceAdmission(self.cold_prefix_sources,wall,discover_unseeded=self.discover_unseeded)
         from cold_prefix import ColdPrefixAdmission
         return ColdPrefixAdmission(self.cold_prefix_sources,wall)
     def current_version(self,symbol):

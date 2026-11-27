@@ -34,7 +34,8 @@ print("C11_HOSTED_REPLAY", mode, status, "lacks_state", recent, "cache_required"
       "pages_persisted", int(stages.get("PERSISTED", 0)),
       "replies_rejected", int(stages.get("REPLY_REJECTED", 0)),
       "budget_held", int(stages.get("BUDGET_HELD", 0)),
-      "tape_windows_missing", missing_count)
+      "tape_windows_missing", missing_count,
+      "archive_requests", int(r.get("archive_public_receipts",0)))
 safe_refusals = {"STALE_SCOPE_OR_DELIVERY", "SCOPE_INVALID_AT_READ", "PARENT_DELIVERY_EXPIRED",
                  "SCOPE_AND_PARENT_DELIVERY_EXPIRED", "PROTOCOL", "HTTP_STATUS", "NO_HTTP_RECEIPT",
                  "NOT_DISPATCHED_BY_CHILD", "WEIGHT_HEADER", "RECEIPT_TIME", "ROW_COUNT"}
@@ -66,6 +67,9 @@ if cached == "yes":
 assert any(item.get("status") == "VETO" and item.get("method") == "record_verified_veto"
            for item in r.get("decision_sources", [])), "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
 assert r.get("automatic_archive") is (mode != "reviewed-partial")
+if mode != "reviewed-partial" and cached == remote == "no":
+    assert r.get("discovery_configured") is True, "UNSEEDED_DISCOVERY_NOT_ENABLED"
+    assert r.get("archive_public_receipts") == 74, "UNSEEDED_PUBLIC_ARCHIVE_NOT_VERIFIED"
 assert r.get("automatic_stale_repair") is (mode == "auto-stale")
 assert r.get("reviewed_partial_repair") is (mode == "reviewed-partial")
 if mode == "reviewed-partial":

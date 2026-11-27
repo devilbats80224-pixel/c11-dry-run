@@ -30,6 +30,7 @@ MAX_FILES=60
 FILES_PER_SLICE=12
 MAX_FILE_BYTES=2*1024*1024
 RECENT_PROOF_REQUIRED='AUTO_RECENT_MINUTES_ONLY_ORIGINAL_STATE_UNVERIFIED'
+DISCOVERY_LIMIT='AUTO_ARCHIVE_DISCOVERY_LIMIT'
 
 def inside_recent_window(f):
     # Market metadata identifies the contract, not a default fetch start.
@@ -166,10 +167,11 @@ def windows(symbol,origin,boundary):
 
 
 class AutomaticArchive:
-    def __init__(self,transport,wall,*,max_bytes=MAX_BYTES,reviewed_remote=None):
-        if not 0<max_bytes<=MAX_BYTES:
+    def __init__(self,transport,wall,*,max_bytes=MAX_BYTES,reviewed_remote=None,discover_unseeded=False):
+        if not 0<max_bytes<=MAX_BYTES or type(discover_unseeded) is not bool:
             raise ValueError('AUTO_ARCHIVE_CONFIG')
         self.transport,self.wall,self.max_bytes=transport,wall,max_bytes
+        self.discover_unseeded=discover_unseeded
         self.reviewed_remote=dict(reviewed_remote or {})
         if any(type(src) is not ClosedPrefixSource or not src.download_only
                for src in self.reviewed_remote.values()):
@@ -203,11 +205,17 @@ class AutomaticArchive:
         reviewed=self.reviewed_remote.get(f.symbol)
         if reviewed is not None:
             return self.reviewed_progress(f,reviewed,grid_shift).resume(cancel)
-        if not inside_recent_window(f):
+        discovered=not inside_recent_window(f)
+        if discovered and not self.discover_unseeded:
             raise Hold(RECENT_PROOF_REQUIRED)
         origin,boundary=f.origin-grid_shift,f.boundary-grid_shift
-        cutoff,parts=windows(f.symbol,origin,boundary)
-        return ArchiveProgress(self,f.symbol,origin,cutoff,grid_shift,parts).resume(cancel)
+        try:
+            cutoff,parts=windows(f.symbol,origin,boundary)
+        except Hold as exc:
+            if discovered and exc.status=='AUTO_ARCHIVE_BUDGET':
+                raise Hold(DISCOVERY_LIMIT) from exc
+            raise
+        return ArchiveProgress(self,f.symbol,origin,cutoff,grid_shift,parts,discovered=discovered).resume(cancel)
 
     def prepare(self,f,cancel,*,grid_shift=0):
         """Run all bounded slices for the standalone archive review driver."""
@@ -219,9 +227,9 @@ class AutomaticArchive:
 
 class ArchiveProgress:
     """Job-local authenticated cursor. Never publishes partial strategy state."""
-    def __init__(self,archive,symbol,origin,cutoff,grid_shift,parts,*,reviewed=None):
+    def __init__(self,archive,symbol,origin,cutoff,grid_shift,parts,*,reviewed=None,discovered=False):
         self.archive,self.origin,self.cutoff,self.shift=archive,origin,cutoff,grid_shift
-        self.parts,self.reviewed=parts,reviewed
+        self.parts,self.reviewed,self.discovered=parts,reviewed,discovered
         self.recurrence=ArchiveRecurrence(symbol,origin,grid_shift)
         self.ledger=[]
         self.max_received=0
@@ -260,13 +268,16 @@ class ArchiveProgress:
     def resume(self,event):
         cancel=JobLimit(event)
         self.require_current_review()
-        budget=self.archive.max_bytes-(sum(item['bytes'] for item in self.ledger) if self.reviewed else 0)
+        budget=self.archive.max_bytes-(sum(item['bytes'] for item in self.ledger)
+                                       if self.reviewed or self.discovered else 0)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
             if len(self.ledger)==len(self.parts):
                 break
             if count and budget<MAX_FILE_BYTES:
                 break
+            if budget<=0:
+                raise Hold(DISCOVERY_LIMIT if self.discovered else 'AUTO_ARCHIVE_BUDGET')
             try:
                 if cancel.is_set():
                     raise Hold('AUTO_ARCHIVE_CANCELLED')
@@ -279,6 +290,8 @@ class ArchiveProgress:
                 except Hold as exc:
                     if exc.status in ('AUTO_ARCHIVE_TRANSIENT','AUTO_ARCHIVE_FILE_MISSING','AUTO_ARCHIVE_NOT_AVAILABLE'):
                         raise Hold(exc.status,wait_ms=exc.wait_ms,continuation=self) from exc
+                    if self.discovered and exc.status=='AUTO_ARCHIVE_BUDGET':
+                        raise Hold(DISCOVERY_LIMIT) from exc
                     raise
                 # A time slice may end after the parser has updated several
                 # bars. Publish only the cursor after a whole verified file.
@@ -434,7 +447,7 @@ class AutoColdAdmission(ColdPrefixAdmission):
         except Hold as exc:
             slot.status=exc.status
             slot.failures+=1
-            if exc.status in (RECENT_PROOF_REQUIRED,'AUTO_ARCHIVE_REVIEWED_SCOPE','AUTO_ARCHIVE_BUDGET','AUTO_ARCHIVE_NO_VERIFIED_ORIGIN','AUTO_ARCHIVE_UNVERIFIED',
+            if exc.status in (RECENT_PROOF_REQUIRED,DISCOVERY_LIMIT,'AUTO_ARCHIVE_REVIEWED_SCOPE','AUTO_ARCHIVE_BUDGET','AUTO_ARCHIVE_NO_VERIFIED_ORIGIN','AUTO_ARCHIVE_UNVERIFIED',
                               'AUTO_ARCHIVE_ORIGIN_GAP','AUTO_ARCHIVE_CONTINUITY_GAP'):
                 # This unchanged identity/window needs different verified
                 # evidence or budget. Do not spin on every owner cycle.
