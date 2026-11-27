@@ -238,9 +238,17 @@ def expired_completed_source_cannot_block_ready_peer():
     finally:
         lane.close()
 
+
+def production_archive_mode_discovers_for_current_unseeded_candidates():
+    from cold_archive_binding import plan
+    runtime={'cold_archive_preparation':'BINANCE_PUBLIC_CLOSED_1M_V1'}
+    lane=plan(runtime,{},lambda:1795773600000,True)
+    assert lane.discover_unseeded is True,'C11_PUBLIC_MODE_DID_NOT_ALLOW_ON_DEMAND_DISCOVERY'
+
 if __name__ == "__main__":
     missing_month_finds_daily_without_a_catalogue()
     expired_completed_source_cannot_block_ready_peer()
+    production_archive_mode_discovers_for_current_unseeded_candidates()
     boundary_cases()
     discovered_archives_use_existing_bounds()
     reviewed_download_rejects_changed_checksum()

@@ -7,6 +7,7 @@ MODE_KEY='cold_archive_preparation'
 PUBLIC_MODE='BINANCE_PUBLIC_CLOSED_1M_V1'
 DISCOVERY_KEY='unseeded_archive_discovery'
 DISCOVERY_MODE='BOUNDED_OFFICIAL_ARCHIVE_V1'
+REVIEWED_ONLY='REVIEWED_OFFICIAL_ARCHIVE_ONLY_V1'
 
 
 class ColdSourceAdmission:
@@ -84,9 +85,9 @@ def plan(runtime,sources,wall,history_enabled):
         raise ValueError('C11_PUBLIC_COLD_ARCHIVE_MODE_OR_HISTORY_SCOPE')
     if any(source.download_only for source in sources.values()) and mode!=PUBLIC_MODE:
         raise ValueError('C11_REVIEWED_DOWNLOAD_REQUIRES_PUBLIC_HISTORY')
-    if DISCOVERY_KEY in runtime and (runtime[DISCOVERY_KEY]!=DISCOVERY_MODE or mode!=PUBLIC_MODE):
+    if DISCOVERY_KEY in runtime and (runtime[DISCOVERY_KEY] not in (DISCOVERY_MODE,REVIEWED_ONLY) or mode!=PUBLIC_MODE):
         raise ValueError('C11_UNSEEDED_DISCOVERY_EXACT_MODE')
     if not sources and mode is None:
         return None
     return ArchivePrepLane({},wall,cold_prefix_sources=sources,public_cold_archive=mode==PUBLIC_MODE,
-                           discover_unseeded=DISCOVERY_KEY in runtime)
+                           discover_unseeded=(mode==PUBLIC_MODE and runtime.get(DISCOVERY_KEY)!=REVIEWED_ONLY))

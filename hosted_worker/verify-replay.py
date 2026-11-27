@@ -22,7 +22,14 @@ pinned_no_discovery = sys.argv[8] if len(sys.argv) >= 9 else "no"
 assert pinned_no_discovery in {"yes", "no"} and (
     pinned_no_discovery == "no" or (remote == "yes" and no_listing == "no" and mode == "early-roster-return")
 )
-case_name = "pinned-remote-no-listing" if pinned_no_discovery == "yes" else "unseeded-no-listing" if no_listing == "yes" else (
+archive_outage = sys.argv[9] if len(sys.argv) >= 10 else "no"
+on_demand = sys.argv[10] if len(sys.argv) >= 11 else "no"
+assert archive_outage in {"yes", "no"} and on_demand in {"yes", "no"}
+assert [archive_outage,on_demand].count("yes") <= 1
+assert (archive_outage == on_demand == "no" or
+        (cached == remote == prepared == no_listing == background == pinned_no_discovery == "no"
+         and mode == "early-roster-return"))
+case_name = "archive-source-outage" if archive_outage == "yes" else "unseeded-on-demand" if on_demand == "yes" else "pinned-remote-no-listing" if pinned_no_discovery == "yes" else "unseeded-no-listing" if no_listing == "yes" else (
     "background-blank" if background == "yes" else mode
 )
 
@@ -33,6 +40,10 @@ def failure_summary(actual, phase, reason, *, age=None, persisted=None):
         detail += f"; observed_after_close_ms={age}"
     if no_listing == "yes":
         detail += "; no saved checkpoint or pinned cache; historical archives disabled by this fixture"
+    elif archive_outage == "yes":
+        detail += "; this control simulates rejected official archived requests, not normal operation"
+    elif on_demand == "yes":
+        detail += "; no preloaded checkpoint or manifest; official archive acquisition is enabled"
     if type(persisted) is int and 0 <= persisted <= 100_000:
         detail += f"; confirmed 1m pages stored: {persisted}"
     if os.environ.get("GITHUB_ACTIONS") == "true":
@@ -46,6 +57,18 @@ def failure_summary(actual, phase, reason, *, age=None, persisted=None):
 
 records = []
 lines = Path(log).read_text(errors="replace").splitlines()
+if on_demand == "yes" or archive_outage == "yes":
+    assert "C11_ON_DEMAND_PUBLIC_ARCHIVE_NO_PRELOADED_SOURCE" in lines, "UNSEEDED_PUBLIC_ROUTE_NOT_EXERCISED"
+if archive_outage == "yes":
+    outage = [json.loads(line) for line in lines if line.startswith('{"status": "JCT_ARCHIVE_OUTAGE_HELD"')]
+    if (len(outage) != 1 or type(outage[0].get("archive_public_receipts")) is not int
+            or outage[0]["archive_public_receipts"] < 1
+            or any(outage[0].get(k) is not True for k in ("no_cursor", "no_strategy_callback", "zero_orders"))):
+        failure_summary("missing safe outage result", "archive source response", "OUTAGE_HOLD_NOT_PROVEN")
+        raise AssertionError("OUTAGE_HOLD_NOT_PROVEN")
+    assert not any(line.startswith('{"status": "JCT_ORIGINAL_') for line in lines)
+    print("C11_OFFICIAL_OUTAGE_NO_FAKE_STATE_OR_VERDICT")
+    sys.exit(0)
 if no_listing == "yes":
     if "C11_CI_ABSENT_CHECKPOINT_NO_LISTING_SETUP" not in lines:
         failure_summary("comparator not set up", "input setup", "UNSEEDED_SETUP_NOT_PROVEN")
@@ -203,6 +226,13 @@ elif background == "yes":
     assert all(r["replay_boundary"] - (260 * 15 + 45) * 60_000 <= start < stop <= r["replay_boundary"]
                for start,stop,_,_ in r["shared_1m_requests"]), "BACKGROUND_REQUEST_BEFORE_RECENT_WINDOW"
     assert callback_native_veto, "BACKGROUND_ORIGINAL_CALLBACK_NOT_PROVEN"
+elif on_demand == "yes":
+    assert r.get("discovery_configured") is True, "ON_DEMAND_DISCOVERY_SWITCHED_OFF"
+    assert r["archive_public_receipts"] > 0, "ON_DEMAND_REAL_OFFICIAL_BYTES_NOT_READ"
+    if not callback_native_veto:
+        failure_summary("automatic acquisition completed but original callback absent", "strategy handoff",
+                        "ON_DEMAND_ORIGINAL_CALLBACK_NOT_PROVEN")
+        raise AssertionError("ON_DEMAND_ORIGINAL_CALLBACK_NOT_PROVEN")
 elif pinned_no_discovery == "yes":
     assert "C11_REVIEWED_REMOTE_ONLY_NO_LISTING_DISCOVERY" in lines
     assert r.get("discovery_configured") is False, "PINNED_REPLAY_OPENED_LISTING_DISCOVERY"

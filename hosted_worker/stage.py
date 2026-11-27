@@ -1,5 +1,4 @@
 """Build a source-only, non-activatable C11 replay candidate."""
-import os
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -61,8 +60,6 @@ owner = tree / "c11_owned_modules"
 runtime = dump(owner / "release_stage_runtime.json", {
     "release_enabled": False,
     "cold_archive_preparation": "BINANCE_PUBLIC_CLOSED_1M_V1",
-    **({"unseeded_archive_discovery": "BOUNDED_OFFICIAL_ARCHIVE_V1"}
-       if os.environ.get("C11_ISOLATED_UNSEEDED_DISCOVERY") == "yes" else {}),
     "files": files,
 })
 (owner / "stage_pin.py").write_text(

@@ -65,6 +65,10 @@ assert not PINNED_WITHOUT_DISCOVERY or PINNED_REMOTE
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
 PREPARED_CHECKPOINT=os.environ.get('C11_JCT_PREPARED_CHECKPOINT')=='yes'
 NO_LISTING_ORIGIN=os.environ.get('C11_JCT_NO_LISTING_ORIGIN')=='yes'
+ARCHIVE_OUTAGE=os.environ.get('C11_JCT_ARCHIVE_OUTAGE')=='yes'
+ON_DEMAND=os.environ.get('C11_JCT_ON_DEMAND')=='yes'
+assert not (ARCHIVE_OUTAGE and ON_DEMAND)
+assert not (ON_DEMAND or ARCHIVE_OUTAGE) or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT or NO_LISTING_ORIGIN))
 BACKGROUND_REVIEWED=os.environ.get('C11_JCT_BACKGROUND_REVIEWED')=='yes'
 assert not BACKGROUND_REVIEWED or (CACHED and AUTO_MODE and not PREPARED_CHECKPOINT)
 assert not NO_LISTING_ORIGIN or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT))
@@ -547,8 +551,11 @@ else:
                     if NO_LISTING_ORIGIN:
                         print('C11_NO_LISTING_CASE_OPENED_ARCHIVE',flush=True)
                         raise AssertionError('archive lookup prohibited by fixture')
-                    row=endpoints[base_url]
                     archive_wire.append((url,sidecar))
+                    if ARCHIVE_OUTAGE:
+                        assert sidecar,'outage tried file payload without a verified checksum'
+                        raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=30_000)
+                    row=endpoints[base_url]
                     name=row['name']+('.CHECKSUM' if sidecar else '')
                     with (cassette/name).open('rb') as handle:
                         raw=handle.read(maximum+1)
@@ -558,7 +565,7 @@ else:
             if NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
                 # Remove only the hosted comparator's archive-origin option.
                 # The identical market cassette and original Worker stay in place.
-                runtime.pop('unseeded_archive_discovery',None)
+                runtime['unseeded_archive_discovery']='REVIEWED_OFFICIAL_ARCHIVE_ONLY_V1'
             if 'cold_archive_preparation' in runtime:
                 from auto_cold_archive import OfficialArchiveHTTP
                 from cold_archive_binding import plan
@@ -593,6 +600,11 @@ else:
                     assert sources and all(src.download_only for src in sources.values())
                     assert not h.archive_prep.discover_unseeded
                     print('C11_REVIEWED_REMOTE_ONLY_NO_LISTING_DISCOVERY',flush=True)
+                if ON_DEMAND or ARCHIVE_OUTAGE:
+                    assert not sources and h.archive_prep.discover_unseeded
+                    assert 'unseeded_archive_discovery' not in runtime
+                    assert not archive_wire
+                    print('C11_ON_DEMAND_PUBLIC_ARCHIVE_NO_PRELOADED_SOURCE',flush=True)
                 h.cold_prefix=h.archive_prep.cold_admission(run.wall)
                 if CACHED:
                     from cold_prefix import derive
@@ -910,6 +922,12 @@ else:
                    automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,pinned_remote=PINNED_REMOTE,
                    discovery_configured=bool(getattr(history.archive_prep,'discover_unseeded',False)),automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
                    retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)))),flush=True)
+            raise Done
+        if ARCHIVE_OUTAGE and archive_wire and cycle_count>=12:
+            assert cursor is None and not Trade.get_open_trades()
+            assert not original_calls and veto!=('VETO',)
+            print(json.dumps(dict(status='JCT_ARCHIVE_OUTAGE_HELD',archive_public_receipts=len(archive_wire),
+                                  no_cursor=True,no_strategy_callback=True,zero_orders=True)),flush=True)
             raise Done
         if cycle_count>=36 or (REVIEWED_PARTIAL and phase=='entry' and now>=END+60_000):
             print(json.dumps(dict(status='JCT_REPLAY_HELD',phase=phase,cursor=cursor,cycles=cycle_count,
