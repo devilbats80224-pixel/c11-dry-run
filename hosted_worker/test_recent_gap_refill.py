@@ -40,9 +40,6 @@ def run_case(case, extra_minutes, expected_pages):
     lane=native.NativePrimaryLane(owner,lambda _:None)
     lane.pending=N(drain=lambda _:None,inflight_ranges=lambda _:(),offer=lambda j,w:(jobs.append((j,w)) or True))
     lane.marker=E
-    lane.recorded[sym]='PRIMARY_NO_SIGNAL'
-    lane.tick((f,),lambda:True)
-    assert not jobs,'No 5m history fetch without a primary that needs it'
     lane.recorded[sym]='REQUIRES_ORIGINAL_RPD' # test branch prerequisite, not an observed BAND buy signal
     lane.tick((f,),lambda:True)
     assert [j.n for j,w in jobs]==expected_pages
@@ -60,6 +57,56 @@ def run_case(case, extra_minutes, expected_pages):
     print(json.dumps(dict(case=case,input_fixture_only=True,existing_15m_unchanged=260,native_pages=expected_pages,
         new_1m=count,new_5m=count//5,requeues=0,original_state_created=False,strategy_callback=False,market_order=False)))
 
+def run_settled_minute_repair():
+    store=CausalBars(':memory:')
+    missing=E-3*QUARTER
+    def rows(a,b,w):
+        return tuple(ClosedBar(t,E,1.,1.,1.,1.,1.,1.) for t in range(a,b,w))
+    full=E-260*QUARTER
+    store.record(sym,MINUTE,rows(full,missing,MINUTE)+rows(missing+QUARTER,E,MINUTE))
+    store.record(sym,QUARTER,rows(full,E,QUARTER))
+    store.record(sym,FIVE,rows(missing,missing+QUARTER,FIVE))
+    state=lambda:store.db.execute('SELECT * FROM candle WHERE width!=? ORDER BY width,open_ms',(MINUTE,)).fetchall()
+    before=state()
+    owner=N(worker=N(freqtrade=N(config={'dry_run':True})),store=store,
+            run=N(wall=lambda:now,closed=False,queue=N(inflight={},protection_due=lambda:False),
+                  plan=N(provisional_scope=lambda p,e:scope if (p,e)==(pair,E) else None,current=lambda s,n:True,last={})),
+            minute_admission=N(cycle_headroom=lambda:True),pending=None,check_store=lambda:None,
+            tap=N(current=lambda fact:fact is f))
+    jobs=[]
+    lane=native.NativePrimaryLane(owner,lambda _:None)
+    lane.pending=N(drain=lambda _:None,inflight_ranges=lambda _:(),offer=lambda j,w:(jobs.append((j,w)) or True))
+    lane.marker=E
+    lane.recorded[sym]='PRIMARY_NO_SIGNAL'
+    owner.run.queue.protection_due=lambda:True
+    lane.tick((f,),lambda:True)
+    assert not jobs,'C11_CONTINUITY_INTERRUPTED_PROTECTION'
+    owner.run.queue.protection_due=lambda:False
+    peer=N(symbol='PEERUSDT',pair='PEER/USDT:USDT',boundary=E,origin=orig,generation=2)
+    peer_scope=N(symbol=peer.symbol,pair=peer.pair,end=E,expires=E+60000,generation=2)
+    owner.tap.current=lambda fact:fact is f or fact is peer
+    owner.run.plan.provisional_scope=lambda p,e:{pair:scope,peer.pair:peer_scope}.get(p) if e==E else None
+    lane.recorded[peer.symbol]='REQUIRES_ORIGINAL_RPD'
+    lane.tick((f,peer),lambda:True)
+    assert jobs and {job.symbol for job,_ in jobs}=={peer.symbol},'C11_CONTINUITY_COMPETED_WITH_DECISION_REFILL'
+    jobs.clear()
+    lane.tick((f,),lambda:False)
+    assert not jobs,'C11_CONTINUITY_BYPASSED_HEADROOM'
+    lane.tick((f,),lambda:True)
+    assert len(jobs)==1,'C11_SETTLED_RAW_1M_GAP_NOT_REFILLED'
+    j,w=jobs.pop()
+    assert (j.start,j.stop,j.n)==(missing,missing+QUARTER,15)
+    assert w.projection_only and not w.rpd_refill
+    raw=[[t,'1','1','1','1','1',t+MINUTE-1,'1',1,'1','1','0'] for t in range(j.start,j.stop,MINUTE)]
+    lane.complete(j,w,(E+1000,E+1500,raw))
+    assert len(store.range(sym,MINUTE,missing,missing+QUARTER,now))==15
+    assert lane.recorded[sym]=='PRIMARY_NO_SIGNAL' and state()==before
+    assert store.db.execute('SELECT COUNT(*) FROM rpd_checkpoint').fetchone()==(0,)
+    lane.tick((f,),lambda:True)
+    assert not jobs,'C11_SETTLED_RAW_1M_GAP_REFETCHED'
+    print('C11_SETTLED_RAW_1M_RESTORED_WITHOUT_REJUDGMENT')
+
+run_settled_minute_repair()
 run_case('empty_strategy_state', 0, [495,495,150])
 run_case('stale_2020', 0, [495,495,150])
 run_case('partial_more_local_candles', 900, [240])

@@ -88,6 +88,7 @@ class NativePrimaryLane:
         o.check_store()
         order=sorted(facts,key=lambda f:(self.last is not None and f.symbol<=self.last,f.symbol))
         queued=deque()
+        continuity=deque()
         if not order:
             self.gate('NO_CURRENT_FACTS')
         for f in order:
@@ -115,11 +116,6 @@ class NativePrimaryLane:
             try:
                 if known is None and self.classify_if_ready(f,s):
                     known=self.recorded[f.symbol]
-                if known=='PRIMARY_NO_SIGNAL':
-                    # The original same-close primary has already settled.
-                    # Skip speculative projection refill; separate background
-                    # continuity and the position protection lanes are unchanged.
-                    continue
                 if not headroom():
                     self.gate('NO_PID_HEADROOM',f)
                     continue
@@ -135,12 +131,18 @@ class NativePrimaryLane:
                     missing.difference_update(range(start,stop,QUARTER))
                 if not missing:continue
                 pages=iter(all_missing_pages(end,missing))
-                queued.append((SimpleNamespace(symbol=f.symbol,fact=f,scope=s,rpd_refill=rpd_refill,projection_only=projection_only),pages))
+                # A settled no-signal is not proof of stored 1m coverage.
+                # Restore missing raw minutes without reopening that verdict.
+                # Give decision-bearing candidates the whole tick first.
+                queue=continuity if known=='PRIMARY_NO_SIGNAL' else queued
+                queue.append((SimpleNamespace(symbol=f.symbol,fact=f,scope=s,rpd_refill=rpd_refill,projection_only=projection_only),pages))
             except (Refused,ValueError):
                 self.gate('PREPARATION_REFUSED',f)
                 continue
         # Give each symbol one page before its siblings occupy extra budget.
         # Every page still needs a fresh per-ticket GO on the same IP budget.
+        if not queued:
+            queued=continuity
         while queued:
             hold=self.phase_hold()
             if hold is not None:
