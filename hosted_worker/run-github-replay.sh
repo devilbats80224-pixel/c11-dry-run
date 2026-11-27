@@ -80,7 +80,12 @@ if [ "$2" = build ]; then
         docker run --rm --pull never --network none --read-only --cap-drop ALL \
             --security-opt=no-new-privileges \
             --mount "type=bind,src=$d/$test_name,dst=/provenance-test.py,readonly" \
-            --entrypoint python "$image" -B /provenance-test.py
+            --entrypoint python "$image" -B -c '
+import runpy,sys
+# Fixtures are mounted outside the sealed package; the actual entry
+# already receives this script directory from Python.
+sys.path.insert(0, "/opt/c11_owned_modules")
+runpy.run_path("/provenance-test.py", run_name="__main__")'
     done
     exit 0
 fi
