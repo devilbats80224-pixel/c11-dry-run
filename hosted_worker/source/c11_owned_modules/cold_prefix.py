@@ -32,6 +32,8 @@ class ClosedPrefixSource:
     cutoff: int
     review_expires_ms: int | None = None
     download_only: bool = False
+    prepared_sha256: str | None = None
+    reviewed_at_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,11 @@ def derive(symbol, source, wall, cancelled, *, grid_shift=0):
         raise ValueError('COLD_SYMBOL')
     if not os.statvfs(root).f_flag & os.ST_RDONLY:
         raise ValueError('COLD_READ_ONLY_SOURCE_REQUIRED')
+    if source.prepared_sha256 is not None:
+        from prepared_cold_checkpoint import read
+        # A declared pinned checkpoint is the entire source for this request.
+        # Reject a bad record rather than silently rerunning from listing day.
+        return read(symbol,source,wall,cancelled,grid_shift=grid_shift)
     manifest_path = root/'manifest.json'
     if manifest_path.is_symlink():
         raise ValueError('COLD_MANIFEST_LINK')

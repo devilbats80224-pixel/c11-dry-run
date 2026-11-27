@@ -565,6 +565,9 @@ else:
                     from cold_archive_release import installed_sources
                     cache_origins=installed_sources(runtime,run.wall(),verify_content=CACHED)
                     assert cache_origins and SYMBOL in cache_origins
+                    if not PREPARED_CHECKPOINT:
+                        # Keep the independent raw-cache/remote path regressions.
+                        cache_origins={name:replace(src,prepared_sha256=None) for name,src in cache_origins.items()}
                     sources=({name:replace(src,download_only=True) for name,src in cache_origins.items()}
                              if PINNED_REMOTE else
                              {name:replace(src,origin=src.origin+SHIFT,cutoff=src.cutoff+SHIFT)
@@ -574,20 +577,19 @@ else:
                 if CACHED:
                     from cold_prefix import derive
                     if PREPARED_CHECKPOINT:
-                        from threading import Event
-                        # Independent setup constructs the trusted checkpoint
-                        # before recovery, not inside the measured candidate path.
-                        prefix=derive(SYMBOL,cache_origins[SYMBOL],run.wall,Event(),grid_shift=SHIFT)
-                        assert prefix.rpd.next_open==base['end_ms']+SHIFT and prefix.rpd.origin==ORIGIN
-                        def prepared_only(sym,spec,wall,cancel):
-                            assert sym==SYMBOL and spec.cutoff==prefix.rpd.next_open
-                            assert prefix.rpd.observed<=wall() and not cancel.is_set()
+                        assert cache_origins[SYMBOL].prepared_sha256,'C11_REVIEWED_PREPARED_PIN_MISSING'
+                        def refuse_listing_origin(*_args,**_kwargs):
+                            raise AssertionError('C11_REVIEWED_PREPARED_OPENED_LISTING_ARCHIVE')
+                        import cold_prefix
+                        patches.enter_context(patch.object(cold_prefix,'derive_records',refuse_listing_origin))
+                    def read_on_fixture_clock(sym,_spec,wall,cancel):
+                        # Only the original pinned public cassette uses the shifted clock.
+                        prefix=derive(sym,cache_origins[sym],wall,cancel,grid_shift=SHIFT)
+                        if PREPARED_CHECKPOINT:
+                            assert prefix.rpd.next_open==base['end_ms']+SHIFT and prefix.rpd.origin==ORIGIN
                             print('C11_RECOVERY_REUSED_PREPARED_CHECKPOINT',flush=True)
-                            return prefix
-                        h.cold_prefix.reviewed.prepare=prepared_only
-                    else:
-                        h.cold_prefix.reviewed.prepare=lambda sym,_spec,wall,cancel: derive(
-                            sym,cache_origins[sym],wall,cancel,grid_shift=SHIFT)
+                        return prefix
+                    h.cold_prefix.reviewed.prepare=read_on_fixture_clock
                     # A cache-only recovery may not silently reopen the listing scan.
                     def deny_archive_download(*_args):
                         raise AssertionError('C11_CACHED_RECOVERY_USED_ARCHIVE_NETWORK')

@@ -55,7 +55,9 @@ def record(raw, pin, now):
         keys={'origin_ms','cutoff_ms','contract_sha256','manifest_sha256','reviewed_at_ms','use_until_ms'}
         require(quote_contract_shape(symbol) and type(src) is dict
                 and (set(src)==keys or set(src)==keys|{'transport'} and
-                     src['transport']=='pinned_official_download'), 'C11_COLD_SOURCE_SHAPE')
+                     src['transport']=='pinned_official_download' or set(src)==keys|{'prepared_sha256'}
+                     and type(src['prepared_sha256']) is str and HASH.fullmatch(src['prepared_sha256'])),
+                'C11_COLD_SOURCE_SHAPE')
         origin,cutoff,reviewed,expires=(src[k] for k in ('origin_ms','cutoff_ms','reviewed_at_ms','use_until_ms'))
         require(all(type(x) is int for x in (origin,cutoff,reviewed,expires))
                 and origin%Q==cutoff%Q==0 and 0<origin<cutoff<=reviewed<=now<expires,
@@ -119,7 +121,10 @@ def verified_catalog(root, pin, now, read_file, *, verify_content):
         base=root/symbol
         checked_contract(read_file(base/'contract.json',4096),symbol,src)
         parts=checked_parts(read_file(base/'manifest.json',128*1024),symbol,src)
-        if verify_content and src.get('transport')!='pinned_official_download':
+        if verify_content and 'prepared_sha256' in src:
+            pin=src['prepared_sha256']
+            require(pinned(read_file(base/'prepared-prefix.json',256*1024),pin),'C11_COLD_PREPARED_BYTES')
+        elif verify_content and src.get('transport')!='pinned_official_download':
             for part in parts:
                 name=part['name']
                 content=read_file(base/name,part['bytes'])
@@ -162,5 +167,7 @@ def installed_sources(verified_manifest, now, *, verify_content=False):
                                verify_content=verify_content)
     return {symbol:ClosedPrefixSource(ROOT/symbol,src['manifest_sha256'],src['origin_ms'],
                                       src['cutoff_ms'],review_expires_ms=src['use_until_ms'],
-                                      download_only=src.get('transport')=='pinned_official_download')
+                                      download_only=src.get('transport')=='pinned_official_download',
+                                      prepared_sha256=src.get('prepared_sha256'),
+                                      reviewed_at_ms=src['reviewed_at_ms'])
             for symbol,src in sources.items()}

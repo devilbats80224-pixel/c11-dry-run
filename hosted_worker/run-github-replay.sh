@@ -29,7 +29,19 @@ chmod 0444 "$out/warm/warm_acceptance.py"
 if [ "$2" = build ]; then
     mkdir -p "$artifact"
     docker pull --platform linux/arm64 "docker.io/freqtradeorg/freqtrade@$base"
-    C11_ISOLATED_UNSEEDED_DISCOVERY=yes python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" "$out/warm/baked_catalog" "$out/fixture/jct"
+    python3 -I -B "$d/stage.py" "$d/source" "$out/prepare-input" "$base" "$out/warm/baked_catalog" "$out/fixture/jct"
+    catalog_pin=$(sha256sum "$out/prepare-input/opt/c11-reviewed-cold-prefix/catalog.json" | awk '{print $1}')
+    chmod 0755 "$out/prepare-input"
+    docker run --rm --pull never --network none --read-only --user 1000:2000 --cap-drop ALL \
+      --security-opt=no-new-privileges -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 \
+      --mount "type=bind,src=$out/prepare-input/opt,dst=/raw-build,readonly" \
+      --mount "type=bind,src=$d/build_prepared_checkpoint.py,dst=/prepare.py,readonly" \
+      --entrypoint python "docker.io/freqtradeorg/freqtrade@$base" -B /prepare.py "$catalog_pin" >"$out/prepared-prefix.json"
+    # Exact separately reproduced checkpoint for this frozen public fixture.
+    prepared_pin=002fd0a569094afef11b4ae6b14722e616598aaff20b4ed8734b5934f10cb820
+    printf '%s  %s\n' "$prepared_pin" "$out/prepared-prefix.json" | sha256sum -c -
+    C11_ISOLATED_UNSEEDED_DISCOVERY=yes python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" \
+      "$out/warm/baked_catalog" "$out/fixture/jct" "$out/prepared-prefix.json" "$prepared_pin"
     DOCKER_BUILDKIT=0 docker build --pull=false --network=none --iidfile "$artifact/image.iid" "$out/stage"
     image=$(cat "$artifact/image.iid")
     sha256sum "$out/stage/opt/c11_owned_modules/release_stage_runtime.json" | awk '{print $1}' >"$artifact/runtime.sha"
@@ -81,7 +93,7 @@ if docker run --rm --pull never --network none --read-only --cap-drop ALL \
 fi
 grep -Fx 'C11_NO_NEW_BAKED_OWNER_AUTHORIZATION_NO_OPERATIONAL_ENTRY' "$out/activation.log"
 if [ "$2" = build ]; then
-    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_reconfirm_queue_binding.py test_original_revisit_offer.py; do
+    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_prepared_cold_checkpoint.py; do
         docker run --rm --pull never --network none --read-only --cap-drop ALL \
             --security-opt=no-new-privileges \
             --mount "type=bind,src=$d/$test_name,dst=/provenance-test.py,readonly" \

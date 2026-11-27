@@ -38,9 +38,14 @@ for f, rel in inputs + overlay:
 assert len(files) > 150
 cold = tree / "c11-reviewed-cold-prefix"
 cold.mkdir()
-cold_catalog = (copy_archives(sys.argv[5], cold) if len(sys.argv) == 6 else {
-    "schema": "c11-reviewed-cold-prefix-v1", "sources": {}
-})
+assert len(sys.argv) in (5,6,8)
+cold_catalog = (copy_archives(sys.argv[5], cold, prepared=sys.argv[6], prepared_pin=sys.argv[7])
+                if len(sys.argv)==8 else copy_archives(sys.argv[5],cold) if len(sys.argv)==6 else {
+                    "schema": "c11-reviewed-cold-prefix-v1", "sources": {}
+                })
+if len(sys.argv)==8:
+    symbol,=cold_catalog['sources']
+    files[f"/opt/c11-reviewed-cold-prefix/{symbol}/prepared-prefix.json"]=sys.argv[7]
 files["/opt/c11-reviewed-cold-prefix/catalog.json"] = dump(cold / "catalog.json", cold_catalog)
 seeds = tree / "c11-reviewed-seeds"
 seeds.mkdir()

@@ -1,7 +1,7 @@
 """Stage one allowlisted, independently digest-pinned closed public archive set.
 
-A cache supplies raw data only, never a precomputed strategy checkpoint.
-Runtime re-verifies this package before use. No transport is opened here.
+Raw data is the default. A separately validated and explicitly pinned prepared
+checkpoint can be included; runtime re-verifies it. No transport is opened here.
 """
 from hashlib import sha256
 import json
@@ -14,7 +14,7 @@ quote_contract_shape = run_path(str(
     Path(__file__).parent / "source/c11_worker/exact_symbol.py"))["quote_contract_shape"]
 
 
-def copy_archives(source, output):
+def copy_archives(source, output, *, prepared=None, prepared_pin=None):
     source, output = Path(source), Path(output)
     contract = (source / "contract.json").read_bytes()
     payload = json.loads(contract)
@@ -45,12 +45,28 @@ def copy_archives(source, output):
         assert digest == r["sha256"] and len(data) <= 2 * 1024 * 1024
         (target / name).write_bytes(data)
         (target / (name + ".CHECKSUM")).write_text(f"{digest}  {name}\n")
-    return {"schema": "c11-reviewed-cold-prefix-v1", "sources": {symbol: {
+    record = {
         "origin_ms": origin, "cutoff_ms": cutoff, "reviewed_at_ms": proof_time,
         "use_until_ms": proof_time + 7 * 86_400_000,
         "contract_sha256": sha256(contract).hexdigest(),
         "manifest_sha256": sha256(manifest_bytes).hexdigest(),
-    }}}
+    }
+    if prepared is not None or prepared_pin is not None:
+        assert (type(prepared_pin) is str and re.fullmatch(r"[a-f0-9]{64}", prepared_pin)
+                and prepared is not None)
+        prepared = Path(prepared)
+        assert prepared.is_file() and not prepared.is_symlink() and 0 < prepared.stat().st_size <= 256*1024
+        raw = prepared.read_bytes()
+        assert sha256(raw).hexdigest() == prepared_pin
+        body = json.loads(raw)
+        state = body["rpd"]["state"]
+        assert (body["schema"], body["archive_manifest_sha"], state["symbol"],
+                state["origin"], state["next_open"]) == (
+                    "c11-reviewed-prepared-prefix-v1", record["manifest_sha256"], symbol, origin, cutoff)
+        assert type(state["observed"]) is int and cutoff <= state["observed"] <= proof_time
+        (target / "prepared-prefix.json").write_bytes(raw)
+        record["prepared_sha256"] = prepared_pin
+    return {"schema": "c11-reviewed-cold-prefix-v1", "sources": {symbol: record}}
 
 
 if __name__ == "__main__":
