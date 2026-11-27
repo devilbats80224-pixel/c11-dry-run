@@ -20,7 +20,7 @@ SCOPE = dict(schema="C11_COMPATIBLE_SEVEN_PAPER_OPG_PRIOR_ROLL_FORWARD_V1",
              candidate_release_manifest=R, seed_catalog_sha=C,
              paper_ledger="/c11-paper/trades.c11.paper.sqlite",
              causal_store="/c11-paper/causal-candles.sqlite",
-             accepted_cohort=["BABYUSDT","CYSUSDT","MMTUSDT","OPGUSDT","PHAROSUSDT","RPLUSUSDT","SAHARAUSDT"],
+             accepted_cohort=["BABYUSDT","CYSUSDT","MMTUSDT","OPGUSDT","PHAROSUSDT","RPLUSDT","SAHARAUSDT"],
              quarantined=["AIOTUSDT","LISTAUSDT"], nonce="9" * 64,
              reviewed_from_ms=1_245_000, reviewed_until_ms=1_300_000,
              no_real_orders=True, no_oi_change=True, redacted_log_mode="bounded_docker_local_v1")
@@ -35,6 +35,8 @@ with patch.object(stage_pin,"RELEASE_PARENT_IMAGE",A,create=True):
     reason=denial_reason(data,sha(data),R,C,1_250_000)
     assert reason is None, "C11_REVIEWED_CURRENT_PREDECESSOR_REFUSED:"+str(reason)
     assert not check(raw(parent_image=B))
+    typo = raw(accepted_cohort=[*SCOPE["accepted_cohort"][:5], "RPLUSUSDT", "SAHARAUSDT"])
+    assert denial_reason(typo, sha(typo), R, C, 1_250_000) == "ACCEPTED_SCOPE_LIST_MISMATCH"
     assert not check(raw(no_real_orders=False))
     assert not check(data, 1_300_000)
     assert not validate_baked(data, "8"*64,R,C,1_250_000)
