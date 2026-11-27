@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
-[ "$#" = 2 ] || exit 64
-case "$2" in warm|early-roster-return|auto-stale|reviewed-partial) ;; *) exit 64;; esac
+[ "$#" = 3 ] || exit 64
+case "$2" in build|warm|early-roster-return|auto-stale|reviewed-partial) ;; *) exit 64;; esac
 out=$1
+artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
 fixture_sha=566dcb2865792e8f7ffdab8e0b223fb273ba303ecd8c3710fd10c7e66fac9b6a
 fixture_url=https://github.com/devilbats80224-pixel/c11-dry-run/releases/download/c11-ci-replay-fixtures-v1/c11-ci-paper-replay-v1.tar.gz
@@ -25,10 +26,28 @@ find "$out/warm" -type d -exec chmod 0755 '{}' +
 find "$out/warm" -type f -exec chmod 0444 '{}' +
 cp "$d/warm_acceptance.py" "$out/warm/warm_acceptance.py"
 chmod 0444 "$out/warm/warm_acceptance.py"
-docker pull --platform linux/arm64 "docker.io/freqtradeorg/freqtrade@$base"
-python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" "$out/warm/baked_catalog"
-DOCKER_BUILDKIT=0 docker build --pull=false --network=none --iidfile "$out/image.iid" "$out/stage"
-image=$(cat "$out/image.iid")
+if [ "$2" = build ]; then
+    mkdir -p "$artifact"
+    docker pull --platform linux/arm64 "docker.io/freqtradeorg/freqtrade@$base"
+    python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" "$out/warm/baked_catalog"
+    DOCKER_BUILDKIT=0 docker build --pull=false --network=none --iidfile "$artifact/image.iid" "$out/stage"
+    image=$(cat "$artifact/image.iid")
+    sha256sum "$out/stage/opt/c11_owned_modules/release_stage_runtime.json" | awk '{print $1}' >"$artifact/runtime.sha"
+    git -C "$d" rev-parse HEAD >"$artifact/source.sha"
+    docker save -o "$out/image.tar" "$image"
+    gzip -1c "$out/image.tar" >"$artifact/image.tar.gz"
+    rm "$out/image.tar"
+    (cd "$artifact" && sha256sum image.tar.gz image.iid runtime.sha source.sha >SHA256SUMS)
+else
+    (cd "$artifact" && test "$(wc -l <SHA256SUMS)" = 4 && sha256sum -c SHA256SUMS)
+    test "$(git -C "$d" rev-parse HEAD)" = "$(cat "$artifact/source.sha")"
+    docker load -i "$artifact/image.tar.gz"
+    image=$(cat "$artifact/image.iid")
+fi
+printf '%s\n' "$image" | grep -Eq '^sha256:[a-f0-9]{64}$'
+test "$(docker image inspect --format '{{.Id}} {{.Architecture}}' "$image")" = "$image arm64"
+runtime_pin=$(cat "$artifact/runtime.sha")
+echo "C11_EXACT_REPLAY_IMAGE $image $runtime_pin"
 docker run --rm --pull never --network none --read-only --cap-drop ALL \
     --security-opt=no-new-privileges "$image" --review-self-check
 if docker run --rm --pull never --network none --read-only --cap-drop ALL \
@@ -37,8 +56,9 @@ if docker run --rm --pull never --network none --read-only --cap-drop ALL \
     exit 2
 fi
 grep -Fx 'C11_NO_NEW_BAKED_OWNER_AUTHORIZATION_NO_OPERATIONAL_ENTRY' "$out/activation.log"
+if [ "$2" = build ]; then exit 0; fi
 warm() {
-    pin=$(sha256sum "$out/stage/opt/c11_owned_modules/release_stage_runtime.json" | awk '{print $1}')
+    pin=$runtime_pin
     docker run --rm --pull never --network none --read-only --user 1000:2000 \
       --cpus 1 --memory 768m --pids-limit 64 --cap-drop ALL --security-opt=no-new-privileges \
       --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \

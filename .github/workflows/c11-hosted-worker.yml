@@ -7,7 +7,24 @@ concurrency:
   group: c11-hosted-worker-${{ github.sha }}
   cancel-in-progress: true
 jobs:
+  build-image:
+    name: Build one disabled ARM64 C11 artifact
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker" build "$RUNNER_TEMP/c11-artifact"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c11-arm64-replay-image
+          path: ${{ runner.temp }}/c11-artifact
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
   hosted-case:
+    needs: build-image
     name: C11 replay (${{ matrix.case }})
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
@@ -20,10 +37,14 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Build and run packaged C11 against closed replay inputs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: c11-arm64-replay-image
+          path: ${{ runner.temp }}/c11-artifact
+      - name: Replay the same verified C11 artifact
         env:
           REPLAY_CASE: ${{ matrix.case }}
-        run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker" "$REPLAY_CASE"
+        run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker" "$REPLAY_CASE" "$RUNNER_TEMP/c11-artifact"
   hosted-worker:
     name: ARM64 full C11 Worker replay
     needs: hosted-case
