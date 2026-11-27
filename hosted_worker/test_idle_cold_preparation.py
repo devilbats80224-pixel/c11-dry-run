@@ -5,6 +5,8 @@ from types import SimpleNamespace as N
 from unittest.mock import patch
 
 from causal_bars import QUARTER
+from cold_archive_binding import ColdSourceAdmission
+from auto_cold_archive import RECENT_PROOF_REQUIRED
 from cold_prefix import ClosedPrefixSource, ColdPrefixAdmission, PreparedPrefix
 
 T=1795773600000
@@ -68,5 +70,27 @@ def main():
         second.active=None
         second.close()
     print('C11_IDLE_REVIEWED_PREPARATION_PUBLISHED_ONLY_TO_CURRENT_CANDIDATE')
+
+def held_peer_does_not_starve_preparation():
+    held=N(symbol='陌生候選USDT',pair='陌生候選/USDT:USDT',origin=T-500*QUARTER,boundary=T)
+    now=[T+100]
+    source_owner=N(phase_allows=lambda:True,cold_delivery_window=lambda:True,
+                   cold_delivery_allows=lambda _:False,tap=N(current=lambda f:f is held))
+    combined=ColdSourceAdmission({SYMBOL:SOURCE},lambda:now[0])
+    combined.reviewed.prepare=prepare
+    try:
+        assert combined.offer(held)=='AUTO_ARCHIVE_QUEUED'
+        slot=combined.public.pending[held.symbol]
+        slot.status,slot.due_ms=RECENT_PROOF_REQUIRED,2**63-1
+        combined.tick(source_owner)
+        assert combined.reviewed.active is not None,'C11_NO_SOURCE_PEER_STARVES_LOCAL_BACKGROUND'
+        combined.reviewed.active[2].result(timeout=2)
+        combined.tick(source_owner,ready_only=True)
+        assert combined.reviewed.prewarmed[SYMBOL] is RESULT
+        assert combined.public.pending[held.symbol] is slot and combined.public.active is None
+    finally:
+        combined.close()
+
 if __name__=='__main__':
     main()
+    held_peer_does_not_starve_preparation()

@@ -56,9 +56,15 @@ class ColdSourceAdmission:
             self.public.tick(owner,**flags)
             return
         self.public.retire_stale()
-        if self.public.pending:
+        now=self.public.wall()
+        # Unresolvable, backing-off or vanished peers cannot reserve this
+        # worker just by remaining in the public pending dictionary.
+        public_due=any(owner.tap.current(slot.fact) and
+                       (now>=slot.due_ms or slot.result is not None and not prepare_only)
+                       for slot in self.public.pending.values())
+        if public_due:
             self.reviewed.cancel_idle()
-        self.reviewed.tick(owner,allow_idle=not self.public.pending,**flags)
+        self.reviewed.tick(owner,allow_idle=not public_due,**flags)
         if self.reviewed.active is None:
             self.public.tick(owner,**flags)
 
