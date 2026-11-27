@@ -158,7 +158,57 @@ def discovered_archives_use_existing_bounds():
     assert not requests
 
 
+
+def missing_month_finds_daily_without_a_catalogue():
+    from datetime import datetime, timezone
+    from io import BytesIO
+    from zipfile import ZipFile
+    from cold_archive_identity import archive_location
+    from auto_cold_archive import DAY
+    origin=int(datetime(2026,10,31,tzinfo=timezone.utc).timestamp()*1000)
+    cutoff=origin+DAY
+    now=cutoff+2*QUARTER
+    symbol='陌生候選USDT'
+    fact=Ns(symbol=symbol,pair=symbol[:-4]+'/USDT:USDT',origin=origin,boundary=now)
+    _,monthly=archive_location(symbol,'2026-10')
+    name,daily=archive_location(symbol,'2026-10-31')
+    data=BytesIO()
+    with ZipFile(data,'w') as zip_file:
+        zip_file.writestr(name.removesuffix('.zip')+'.csv',''.join(
+            f'{t},100,101,99,100,10,{t+59_999},1000,1,0,0,0\n'
+            for t in range(origin,cutoff,60_000)))
+    body=data.getvalue()
+    calls=[]
+    def fetch(url,maximum,cancel):
+        assert not cancel.is_set()
+        calls.append(url)
+        if url==monthly+'.CHECKSUM':
+            raise Hold('AUTO_ARCHIVE_FILE_MISSING')
+        if url==daily+'.CHECKSUM':
+            return Receipt(f'{sha256(body).hexdigest()}  {name}'.encode(),now)
+        assert url==daily and len(body)<=maximum
+        return Receipt(body,now)
+    archive=AutomaticArchive(Ns(get=fetch),lambda:now)
+    try:
+        source,prefix=archive.prepare(fact,Event())
+    except Hold as exc:
+        raise AssertionError('C11_NO_CATALOGUE_MISSING_MONTH_DID_NOT_TRY_DAILY') from exc
+    assert (source.origin,source.cutoff,prefix.rpd.next_open)==(origin,cutoff,cutoff)
+    assert len(prefix.quarters)==96 and set(width for width,_ in prefix.atr)=={FIVE,QUARTER}
+    assert calls==[monthly+'.CHECKSUM',daily+'.CHECKSUM',daily]
+    with patch('auto_cold_archive.MAX_FILES',0):
+        limited=ArchiveProgress(archive,symbol,origin,cutoff,0,((name,monthly,cutoff),))
+        try:
+            limited.substitute_closed_days(symbol+'-1m-2026-10.zip',cutoff)
+        except Hold as exc:
+            assert exc.status=='AUTO_ARCHIVE_BUDGET'
+        else:
+            raise AssertionError('C11_DAILY_SUBSTITUTE_BYPASSED_FILE_LIMIT')
+    pinned=ArchiveProgress(archive,symbol,origin,cutoff,0,(),reviewed=Ns())
+    assert not pinned.substitute_closed_days(symbol+'-1m-2026-10.zip',cutoff)
+
 if __name__ == "__main__":
+    missing_month_finds_daily_without_a_catalogue()
     boundary_cases()
     discovered_archives_use_existing_bounds()
     reviewed_download_rejects_changed_checksum()

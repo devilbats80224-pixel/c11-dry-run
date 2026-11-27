@@ -265,11 +265,34 @@ class ArchiveProgress:
             raise Hold('AUTO_ARCHIVE_NOT_AVAILABLE')
         return zipped,dict(name=name,sha256=expected,url=url,bytes=size,actual_received_ms=zipped.received_ms)
 
+    def substitute_closed_days(self,name,closed_at):
+        # Pinned manifests cannot change assets. Only an actual 404/410
+        # from the official unpinned monthly route reaches this method.
+        match=re.fullmatch(re.escape(self.recurrence.symbol)+r'-1m-(\d{4}-\d{2})\.zip',name)
+        if self.reviewed is not None or match is None:
+            return False
+        start=self.recurrence.minute
+        day=start//DAY*DAY
+        if not 0<day<closed_at<=self.cutoff or closed_at%DAY:
+            return False
+        replacements=[]
+        while day<closed_at:
+            stamp=datetime.fromtimestamp(day/1000,timezone.utc)
+            if stamp.strftime('%Y-%m')!=match[1]:
+                return False
+            n,u=archive_location(self.recurrence.symbol,stamp.strftime('%Y-%m-%d'))
+            day+=DAY
+            replacements.append((n,u,day))
+        if len(self.parts)-1+len(replacements)>MAX_FILES:
+            raise Hold(DISCOVERY_LIMIT if self.discovered else 'AUTO_ARCHIVE_BUDGET')
+        i=len(self.ledger)
+        self.parts=tuple(self.parts[:i])+tuple(replacements)+tuple(self.parts[i+1:])
+        return True
+
     def resume(self,event):
         cancel=JobLimit(event)
         self.require_current_review()
-        budget=self.archive.max_bytes-(sum(item['bytes'] for item in self.ledger)
-                                       if self.reviewed or self.discovered else 0)
+        budget=self.archive.max_bytes-sum(item['bytes'] for item in self.ledger)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
             if len(self.ledger)==len(self.parts):
@@ -288,6 +311,11 @@ class ArchiveProgress:
                     if available>self.archive.wall():
                         raise Hold('AUTO_ARCHIVE_NOT_AVAILABLE')
                 except Hold as exc:
+                    if (exc.status=='AUTO_ARCHIVE_FILE_MISSING' and not pin and
+                            self.substitute_closed_days(name,closed_at)):
+                        # Keep the verified cursor and allow a peer to run
+                        # before trying freshly planned daily assets.
+                        return self
                     if exc.status in ('AUTO_ARCHIVE_TRANSIENT','AUTO_ARCHIVE_FILE_MISSING','AUTO_ARCHIVE_NOT_AVAILABLE'):
                         raise Hold(exc.status,wait_ms=exc.wait_ms,continuation=self) from exc
                     if self.discovered and exc.status=='AUTO_ARCHIVE_BUDGET':
