@@ -92,6 +92,21 @@ class NativeCandles:
             if candidate is None or not bot.observed_ranked(candidate):
                 waiting=True
                 continue
+            if width==QUARTER:
+                from closed_minute_basis import project_closed_minutes
+                quarters=project_closed_minutes(self.store,symbol,width,start,end,now)
+                if quarters is not None:
+                    # The already admitted minute basis is sufficient. Canonical
+                    # record refuses a disagreement; never overwrite it or ask
+                    # the network to adjudicate an already available projection.
+                    def still_current():
+                        return (end<=time.time_ns()//1_000_000<end+MINUTE
+                                and time.monotonic_ns()<candidate.expires_ns
+                                and any(row is candidate for row in bot.feed.latest_owner_observation))
+                    self.store.record_owner_primary_batch(
+                        symbol,((MINUTE,()),(FIVE,()),(QUARTER,quarters)),still_current)
+                    self.filled_nw_lanes.add(lane)
+                    continue
             self.query(bot,symbol,width,start,end,count,primary_pull=True,
                        fallback_lease_ns=candidate.expires_ns)
             if self.store.range(symbol,width,start,end,time.time_ns()//1_000_000):

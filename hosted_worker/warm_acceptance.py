@@ -40,6 +40,7 @@ import entry_feed
 ROOT=Path('/c11-paper')
 PAIR='STBL/USDT:USDT'
 unicode_case=os.environ.get('C11_WARM_UNICODE_CASE')=='yes'
+ready_basis_case=os.environ.get('C11_WARM_READY_BASIS_CASE')=='yes'
 unknown_base='牛来' if unicode_case else 'ON'
 UNKNOWN_PAIR=unknown_base+'/USDT:USDT'
 assert version('freqtrade')=='2026.10' and version('ccxt')=='4.5.90'
@@ -107,6 +108,7 @@ def valid(q):
     fields=parse_qs(p.query); tf=fields.get('interval',[''])[0]; start=int(fields.get('startTime',['0'])[0]); end=int(fields.get('endTime',[str(E-1)])[0]);lim=int(fields.get('limit',['500'])[0])
     assert fields['symbol'] in (['STBLUSDT'],[MISSING])
     exact_requests.append((fields['symbol'][0],tf,lim))
+    if ready_basis_case and tf!='1m':raise AssertionError('C11_READY_BASIS_REQUESTED_WIDE_WIRE')
     rr=W['actual_public_receipts'] if fields['symbol']==['STBLUSDT'] else tuple(MIX['rows']['ONUSDT'].values())
     for x in rr:
       if x['timeframe']==tf:
@@ -496,6 +498,42 @@ def main(outer):
                 finally:atomic_injected[0]=False
             return original_commit(symbol,batches,authority)
           policy.bars.record_owner_primary_batch=fixture_atomic
+        if ready_basis_case:
+            # Synthetic closed candles establish a complete admitted basis.
+            # This is a routing test, not a performance or signal replay.
+            from causal_bars import MINUTE, QUARTER
+            from freqtrade.enums import CandleType
+            from contextlib import closing
+            clock[0]=E+2000
+            start=E-260*QUARTER
+            for symbol in ('STBLUSDT',MISSING):
+                bars=tuple(ClosedBar(t,t+MINUTE+1,4.,6.,3.,5. if t==E-MINUTE else 4.,1.,4.)
+                           for t in range(start,E,MINUTE))
+                policy.bars.record(symbol,MINUTE,bars)
+            from pandas import DataFrame
+            legacy=(PAIR,'15m',CandleType.FUTURES)
+            # A received wider backup can have a different price. Ready
+            # 1m must win, without a cross-source comparison or veto.
+            w.freqtrade._c11_trial_15m_fallback_cache={legacy:(start,E,DataFrame({'close':[999.]}))}
+            # Execute the original Worker process; no fake DataProvider or
+            # replacement refresh implementation. Physical replies are taped.
+            w.freqtrade.process()
+            assert legacy not in w.freqtrade._c11_trial_15m_fallback_cache
+            source=w.freqtrade._c11_trial_native_frame_sources
+            assert all(source[(pair,'15m',CandleType.FUTURES)]=='closed_1m_projection'
+                       for pair in (PAIR,UNKNOWN_PAIR)),source
+            data=w.freqtrade.dataprovider.ohlcv(PAIR,'15m',candle_type=CandleType.FUTURES)
+            assert len(data)>=260 and float(data.close.iloc[-1])==5.
+            assert all(tf=='1m' for _,tf,_ in exact_requests),exact_requests
+            assert not Trade.get_trades().all()
+            with closing(sqlite3.connect('file:/c11-paper/causal-candles.sqlite?mode=ro',uri=True)) as reader:
+                count,=reader.execute('SELECT count(*) FROM candle WHERE symbol=? AND width=? AND open_ms>=? AND open_ms<?',
+                                      ('STBLUSDT',MINUTE,start,E)).fetchone()
+                assert count==3900,count
+                widths=tuple(reader.execute('SELECT symbol,count(*) FROM candle WHERE width=? GROUP BY symbol',(QUARTER,)))
+                assert any(symbol in ('STBLUSDT',MISSING) and n==260 for symbol,n in widths),widths
+            print('C11_FULL_WORKER_READY_BASIS_NO_DIRECT_WIDE',len(exact_requests),flush=True)
+            return
         import subprocess
         from concurrent.futures import ThreadPoolExecutor
         contention=os.environ.get('C11_CONTENTION')=='yes'
