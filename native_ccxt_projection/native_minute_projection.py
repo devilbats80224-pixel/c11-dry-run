@@ -20,7 +20,7 @@ def project(end,minute_rows,received,now,prefix_five,prefix_quarter):
         minute=tuple(bar(r,received) for r in minute_rows)
         if any(r[6]!=r[0]+MIN-1 or not b.valid(MIN) for r,b in zip(minute_rows,minute,strict=True)):
             return None
-        result=[(MIN,minute[-30:])]  # reuse longer source to fill missing 5m, do not rewrite earlier 1m
+        result=[(MIN,minute)]  # retain all admitted raw rows; the atomic store handles duplicates
         for width,prefix in ((FIVE,prefix_five),(QUARTER,prefix_quarter)):
             anchor=end-QUARTER
             if (type(prefix) is not tuple or (width==QUARTER and not prefix)
