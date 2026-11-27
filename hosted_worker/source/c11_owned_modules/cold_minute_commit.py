@@ -1,5 +1,5 @@
 """Atomic same-source closed historical bars; call only from the original owner."""
-from causal_bars import ClosedBar,FIVE,QUARTER
+from causal_bars import ClosedBar,FIVE,MINUTE,QUARTER
 from capture import sanitize
 from minute_rollup import MIN,roll
 
@@ -10,7 +10,10 @@ def commit(store,symbol,origin,start,stop,rows,sent,received,authority):
         or authority() is not True or store.db.in_transaction):
         raise ValueError('C11_CLOSED_MINUTE_PAGE_SCOPE')
     raw=sanitize(rows,'1m',stop,(stop-start)//MIN,sent)
-    aggregates={}
+    # Keep the verified base candles so later state recovery can reproduce
+    # the aggregates. Store the base and both projections in one transaction.
+    minutes=tuple(ClosedBar(r[0],received,*(float(r[i]) for i in (1,2,3,4,5,7))) for r in raw)
+    aggregates={MINUTE:minutes}
     for width in (FIVE,QUARTER):
         width_rows=[]
         for t in range(start,stop,width):
@@ -32,6 +35,6 @@ def commit(store,symbol,origin,start,stop,rows,sent,received,authority):
         for width,values in aggregates.items():
             before=db.total_changes
             store._record_checked_rows(symbol,width,values)
-            written.append(db.total_changes-before)
+            if width!=MINUTE:written.append(db.total_changes-before)
         if authority() is not True:raise ValueError('C11_CLOSED_MINUTE_PAGE_EXPIRED')
     return tuple(written)
