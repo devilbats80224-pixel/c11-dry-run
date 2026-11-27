@@ -107,6 +107,27 @@ class PublicDiagnosticsTest(unittest.TestCase):
                     [sys.executable,"-I","-B",str(Path(__file__).with_name("verify-replay.py")),
                      "early-roster-return",str(log),"no","yes","no","no","no","yes"],
                     capture_output=True,text=True,check=False)
+            def on_demand(receipt, outage=False):
+                log.write_text("C11_ON_DEMAND_PUBLIC_ARCHIVE_NO_PRELOADED_SOURCE\n"+json.dumps(receipt), encoding="utf-8")
+                return subprocess.run(
+                    [sys.executable,"-I","-B",str(Path(__file__).with_name("verify-replay.py")),
+                     "early-roster-return",str(log),"no","no","no","no","no","no",
+                     "yes" if outage else "no","no" if outage else "yes"],
+                    capture_output=True,text=True,check=False)
+            official={**valid,"discovery_configured":True,"archive_public_receipts":74}
+            passed=on_demand(official)
+            self.assertEqual(passed.returncode,0,passed.stderr)
+            for invalid in ({"archive_public_receipts":0},{"discovery_configured":False},{"original_entry_advice":[]},
+                            {"verified_raw_archive_cache":True}):
+                with self.subTest(invalid=invalid):
+                    self.assertNotEqual(on_demand({**official,**invalid}).returncode,0)
+            outage=dict(status="JCT_ARCHIVE_OUTAGE_HELD",archive_public_receipts=1,
+                        no_cursor=True,no_strategy_callback=True,zero_orders=True)
+            self.assertEqual(on_demand(outage,True).returncode,0)
+            self.assertNotEqual(on_demand(outage).returncode,0)
+            self.assertNotEqual(on_demand(official,True).returncode,0)
+            self.assertNotEqual(on_demand({**outage,"no_cursor":False},True).returncode,0)
+            self.assertNotEqual(on_demand({**outage,"archive_public_receipts":0},True).returncode,0)
             pinned={**valid,"pinned_remote":True,"archive_public_receipts":74}
             passed=run_pinned(pinned)
             self.assertEqual(passed.returncode,0,passed.stderr)
