@@ -64,7 +64,7 @@ runtime = dump(owner / "release_stage_runtime.json", {
 })
 (owner / "stage_pin.py").write_text(
     f"RUNTIME_SHA={runtime!r}\nCATALOG_SHA={catalog!r}\nAUTH_SHA=None\n"
-    "HISTORY_PREP_ENABLED=True\nDURABLE_REVISIT_ANALYSIS_ENABLED=True\n"
+    "RELEASE_PARENT_IMAGE=None\nHISTORY_PREP_ENABLED=True\nDURABLE_REVISIT_ANALYSIS_ENABLED=True\n"
 )
 (out / "Dockerfile").write_text(f"""FROM docker.io/freqtradeorg/freqtrade@{pinned}
 USER 0:0
