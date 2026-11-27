@@ -63,6 +63,14 @@ class LaunchChecks(unittest.TestCase):
             changed=deepcopy(self.launch)
             changed['Mounts'].append(dict(Type='bind',Source='/fixture',Destination=destination,RW=False))
             self.assertEqual(self.verify(self.receipt,changed),'MOUNT_SHADOWS_TESTED_CODE')
+        for destination in ('/opt/c11','/opt/c11/transport'):
+            changed=deepcopy(self.launch)
+            changed['Mounts'].append(dict(Type='bind',Source='/fixture',Destination=destination,RW=False))
+            # A reviewed and actual launch matching each other is insufficient
+            # if both hide code from the supposedly immutable artifact.
+            receipt={**self.receipt,'tested_launch':changed}
+            with self.subTest(destination=destination):
+                self.assertEqual(self.verify(receipt,changed),'MOUNT_SHADOWS_TESTED_CODE')
 
     def test_wrong_image_or_paper_volume_is_not_same_release(self):
         changed=deepcopy(self.launch)

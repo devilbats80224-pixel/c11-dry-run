@@ -5,7 +5,7 @@ import re
 import sys
 
 CODE_ROOTS = tuple(map(PurePosixPath,(
-    '/opt/c11_owned_modules','/opt/c11_worker','/opt/c11_background_review',
+    '/opt/c11','/opt/c11_owned_modules','/opt/c11_worker','/opt/c11_background_review',
     '/opt/c11-reviewed-seeds','/opt/c11-reviewed-cold-prefix','/freqtrade',
 )))
 HEX40 = re.compile(r'[a-f0-9]{40}')
