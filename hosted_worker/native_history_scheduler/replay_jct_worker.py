@@ -62,6 +62,8 @@ CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
 PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
 PREPARED_CHECKPOINT=os.environ.get('C11_JCT_PREPARED_CHECKPOINT')=='yes'
+NO_LISTING_ORIGIN=os.environ.get('C11_JCT_NO_LISTING_ORIGIN')=='yes'
+assert not NO_LISTING_ORIGIN or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT))
 assert not PREPARED_CHECKPOINT or (CACHED and AUTO_MODE)
 EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
@@ -538,6 +540,9 @@ else:
                         raise Hold('AUTO_ARCHIVE_CANCELLED')
                     sidecar=url.endswith('.CHECKSUM')
                     base_url=url.removesuffix('.CHECKSUM')
+                    if NO_LISTING_ORIGIN:
+                        print('C11_NO_LISTING_CASE_OPENED_ARCHIVE',flush=True)
+                        raise AssertionError('archive lookup prohibited by fixture')
                     row=endpoints[base_url]
                     archive_wire.append((url,sidecar))
                     name=row['name']+('.CHECKSUM' if sidecar else '')
@@ -546,6 +551,10 @@ else:
                     return Receipt(raw,row.get('checksum_ms',row['actual_received_ms'])
                                    if sidecar else row['actual_received_ms'])
             runtime=json.loads(Path('/opt/c11_owned_modules/release_stage_runtime.json').read_bytes())
+            if NO_LISTING_ORIGIN:
+                # Remove only the hosted comparator's archive-origin option.
+                # The identical market cassette and original Worker stay in place.
+                runtime.pop('unseeded_archive_discovery',None)
             if 'cold_archive_preparation' in runtime:
                 from auto_cold_archive import OfficialArchiveHTTP
                 from cold_archive_binding import plan
@@ -573,6 +582,9 @@ else:
                              {name:replace(src,origin=src.origin+SHIFT,cutoff=src.cutoff+SHIFT)
                               for name,src in cache_origins.items()})
                 h.archive_prep=plan(runtime,sources,run.wall,HISTORY_PREP_ENABLED)
+                if NO_LISTING_ORIGIN:
+                    assert not sources and not h.archive_prep.discover_unseeded
+                    print('C11_CI_ABSENT_CHECKPOINT_NO_LISTING_SETUP',flush=True)
                 h.cold_prefix=h.archive_prep.cold_admission(run.wall)
                 if CACHED:
                     from cold_prefix import derive
@@ -830,7 +842,7 @@ else:
                 else:
                     assert recovered[1]==base['archive_manifest_sha'] and saved_rpd is None
             if AUTO_MODE:
-                expected_requests=0 if RESTART=='resume' or CACHED else 56 if HAN_MODE else 88 if INIT_MODE else 74
+                expected_requests=0 if RESTART=='resume' or CACHED or NO_LISTING_ORIGIN else 56 if HAN_MODE else 88 if INIT_MODE else 74
                 assert len(archive_wire)==expected_requests and len({url for url,_ in archive_wire})==expected_requests
                 if HAN_MODE:
                     assert all('%E7%89%9B%E6%9D%A5USDT' in url for url,_ in archive_wire)

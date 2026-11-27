@@ -12,6 +12,9 @@ assert remote in {"yes", "no"} and not (cached == remote == "yes")
 assert cached in {"yes", "no"}
 prepared = sys.argv[5] if len(sys.argv) >= 6 else "no"
 assert prepared in {"yes", "no"} and (prepared == "no" or cached == "yes")
+no_listing = sys.argv[6] if len(sys.argv) >= 7 else "no"
+assert no_listing in {"yes", "no"}
+assert no_listing == "no" or (cached == remote == prepared == "no" and mode == "early-roster-return")
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial", "yes"}
 def failure_summary(actual, phase, reason, *, age=None):
     detail = (f"Expected original 5m VETO in the target cycle; actual {actual}; "
@@ -29,6 +32,14 @@ def failure_summary(actual, phase, reason, *, age=None):
 
 records = []
 lines = Path(log).read_text(errors="replace").splitlines()
+if no_listing == "yes":
+    if "C11_CI_ABSENT_CHECKPOINT_NO_LISTING_SETUP" not in lines:
+        failure_summary("comparator not set up", "input setup", "UNSEEDED_SETUP_NOT_PROVEN")
+        raise AssertionError("UNSEEDED_SETUP_NOT_PROVEN")
+    if "C11_NO_LISTING_CASE_OPENED_ARCHIVE" in lines:
+        failure_summary("opened listing archive", "checkpoint preparation", "UNSEEDED_LISTING_LOOKUP")
+        raise AssertionError("UNSEEDED_LISTING_LOOKUP")
+
 for line in lines:
     if line.startswith("{"):
         try:
@@ -171,6 +182,12 @@ if prepared == "yes":
                                      "HOLD_UNPROVEN_ANALYZED_FRAME"} else "UNCONFIRMED"
         failure_summary("original filter reached but full original callback absent", "strategy handoff", reason)
         raise AssertionError("PREPARED_CHECKPOINT_ORIGINAL_CALLBACK_NOT_PROVEN")
+elif no_listing == "yes":
+    assert r["archive_public_receipts"] == 0
+    assert r["shared_1m_requests"], "UNSEEDED_MINUTE_REPAIR_NOT_PROVEN"
+    assert all(r["replay_boundary"] - (260 * 15 + 45) * 60_000 <= start < stop <= r["replay_boundary"]
+               for start, stop, _, _ in r["shared_1m_requests"]), "UNSEEDED_REQUEST_BEFORE_RECENT_WINDOW"
+    assert callback_native_veto, "UNSEEDED_ORIGINAL_CALLBACK_NOT_PROVEN"
 else:
     assert optional_native_veto or callback_native_veto, "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
 print("C11_HOSTED_ORIGINAL_PROOF", mode, "ENTRY_CALLBACK_5M_VETO" if callback_native_veto else "ORIGINAL_5M_FILTER_VETO")
