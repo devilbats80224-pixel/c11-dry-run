@@ -39,7 +39,9 @@ import entry_feed
 
 ROOT=Path('/c11-paper')
 PAIR='STBL/USDT:USDT'
-UNKNOWN_PAIR='ON/USDT:USDT'
+unicode_case=os.environ.get('C11_WARM_UNICODE_CASE')=='yes'
+unknown_base='牛来' if unicode_case else 'ON'
+UNKNOWN_PAIR=unknown_base+'/USDT:USDT'
 assert version('freqtrade')=='2026.10' and version('ccxt')=='4.5.90'
 assert sha256(Path('/freqtrade/freqtrade/worker.py').read_bytes()).hexdigest()=='9c5a046404f69e061ead72595f8a48f84eb19d9025331f8ff91f3bfebf767f65'
 assert Path(Exchange.__init__.__code__.co_filename).is_relative_to('/freqtrade/freqtrade')
@@ -76,7 +78,7 @@ def seed_public_exchange_markets(exchange, *, reload):
         maker=0.0002,taker=0.0005,precision={'amount':0.001,'price':0.001},
         limits={'amount':{'min':0.001,'max':100000},'price':{'min':0.001,'max':10000},
                 'cost':{'min':5,'max':None},'leverage':{'min':1,'max':20}},
-        info={'contractType':'PERPETUAL','status':'TRADING','onboardDate':SEED['origin_ms']}) for base,pair in (('STBL',PAIR),('ON',UNKNOWN_PAIR))])
+        info={'contractType':'PERPETUAL','status':'TRADING','onboardDate':SEED['origin_ms']}) for base,pair in (('STBL',PAIR),(unknown_base,UNKNOWN_PAIR))])
     events.append('synthetic-public-metadata')
 
 from urllib.parse import urlsplit,parse_qs
@@ -88,7 +90,7 @@ import sqlite3
 W=json.load(open('/fixture/WIRE_PRIVATE.json')); E=W['E']
 MIX=json.load(open('/fixture/MIXED_WIRE_PRIVATE.json'))
 assert MIX['E']==E and MIX['g']==W['generation'] and MIX['pub']==W['actual_page'] and MIX['expiry']==W['expiry']
-MISSING='ONUSDT'
+MISSING=unknown_base+'USDT'
 B='a'*64
 SEED=json.load(open('/fixture/STBL_SEED.json'))
 assert SEED['symbol']=='STBLUSDT' and SEED['artifact_available_ms']<E and SEED['end_ms']+21*300000==E
@@ -105,7 +107,7 @@ def valid(q):
     fields=parse_qs(p.query); tf=fields.get('interval',[''])[0]; start=int(fields.get('startTime',['0'])[0]); end=int(fields.get('endTime',[str(E-1)])[0]);lim=int(fields.get('limit',['500'])[0])
     assert fields['symbol'] in (['STBLUSDT'],[MISSING])
     exact_requests.append((fields['symbol'][0],tf,lim))
-    rr=W['actual_public_receipts'] if fields['symbol']==['STBLUSDT'] else tuple(MIX['rows'][MISSING].values())
+    rr=W['actual_public_receipts'] if fields['symbol']==['STBLUSDT'] else tuple(MIX['rows']['ONUSDT'].values())
     for x in rr:
       if x['timeframe']==tf:
         assert x['receive_ms']<=clock[0],('no time travel',fields['symbol'],tf,clock[0],x['receive_ms'])
@@ -149,6 +151,12 @@ async def async_send(self,method,url,*,ssl=True,**kwargs):
 class ReplayPublication:
     def response(self,nonce):
         raw=W['actual_page']
+        if unicode_case:
+            # Synthetic contract alias only: reuse harmless fixture candles as
+            # injected transport response; never claim historical Chinese data.
+            assert sum(x['symbol']=='ONUSDT' for x in raw['rows'])==1
+            raw={**raw,'rows':[{**x,'symbol':MISSING} if x['symbol']=='ONUSDT' else x
+                               for x in raw['rows']]}
         return {**raw,'nonce':nonce,'status':'FRESH','left_ms':W['expiry']-clock[0]}
 def main(outer):
     manifest=Path('/opt/c11_owned_modules/release_stage_runtime.json').read_bytes()
@@ -197,8 +205,9 @@ def main(outer):
     f=entry_feed.EntryFeed(b,1)
     f.classification=N(verified={'STBLUSDT':PAIR,MISSING:UNKNOWN_PAIR},body_sha256=MIX['meta'],received_monotonic_ns=time.monotonic_ns())
     obs=ObserverClient(b,B)
-    assert tuple(x.symbol for x in f.read())==(MISSING,'STBLUSDT')
-    assert f.tracking_pairs()==(UNKNOWN_PAIR,PAIR)
+    got=tuple(x.symbol for x in f.read())
+    assert got==(MISSING,'STBLUSDT'),got
+    assert f.tracking_pairs()==(UNKNOWN_PAIR,PAIR),f.tracking_pairs()
     cfg=config_for(1000.0,[UNKNOWN_PAIR,PAIR])
     assert cfg['dry_run'] and not cfg['exchange'].get('key')
     seal=sha256(Path('/opt/c11_owned_modules/compiled_candidate_factory.py').read_bytes()).hexdigest()
@@ -225,7 +234,7 @@ def main(outer):
       from durable_loader import SeedLoader
       # Archive-to-canonical fixture at actual historical receipt, not earlier.
       def prime_unknown(policy):
-        for tf,x in MIX['rows'][MISSING].items():
+        for tf,x in MIX['rows']['ONUSDT'].items():
           assert x['receive_ms']<=clock[0]
           width={'1m':60000,'15m':900000}[tf]
           policy.bars.record(MISSING,width,[ClosedBar(int(z[0]),x['receive_ms'],*(float(v) for v in z[1:6]),float(z[7])) for z in x['raw_kline_rows']])
@@ -560,7 +569,7 @@ def main(outer):
             print('EXACT_RECONCILED_FLAT_PROTECTION_SCOPE',intent_case,w.freqtrade._owned_revisit_no_positions,
                   w.freqtrade._owned_revisit_reconciled,flush=True)
           if i==0:
-            assert loader.status=={'ONUSDT':'NOT_YET_SEEDED','STBLUSDT':'PRIOR_CURSOR_DURABLY_REGISTERED_ONLY'},loader.status
+            assert loader.status=={MISSING:'NOT_YET_SEEDED','STBLUSDT':'PRIOR_CURSOR_DURABLY_REGISTERED_ONLY'},loader.status
             st=RpdState.restore(policy.bars.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',('STBLUSDT',)).fetchone()[0])
             assert st.next_open==E-21*300000
             print('NATIVE_WORKER_AUTO_INVOKED_DURABLE_PRIOR_BINDING',loader.status,flush=True)
@@ -595,8 +604,7 @@ def main(outer):
         assert not Trade.get_trades().all()
         assert [x for x in exact_requests if x[0]=='STBLUSDT' and x[1]=='1m']==[('STBLUSDT','1m',45)],exact_requests
         assert not any(x[0]=='STBLUSDT' and (x[1]=='5m' or x[1]=='15m' and x[2]!=499) for x in exact_requests),exact_requests
-        assert sorted(x for x in exact_requests if x[1]=='15m')==[
-          ('ONUSDT','15m',499),('STBLUSDT','15m',499)],exact_requests
+        assert sorted(x for x in exact_requests if x[1]=='15m')==sorted([(MISSING,'15m',499),('STBLUSDT','15m',499)]),exact_requests
         from freqtrade.enums import CandleType
         sources=w.freqtrade._c11_trial_native_frame_sources
         assert sources[(PAIR,'15m',CandleType.FUTURES)]=='direct_15m_fallback',sources
@@ -616,6 +624,10 @@ def main(outer):
         assert 0<=ready_at<60_000, 'C11_UNREADY_PEER_DELAYED_SAME_CLOSE'
         print('C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK',ready_at,flush=True)
         print('C11_LEGACY_WIDE_DID_NOT_MASK_RAW_MINUTE_GAP',flush=True)
+        if unicode_case:
+            assert sum(x[0]==MISSING for x in exact_requests)>=1
+            assert not any(x[0]=='ONUSDT' for x in exact_requests)
+            print('C11_UNICODE_ORIGINAL_CONTRACT_IN_PROVIDER_AND_NATIVE_WIRE',flush=True)
         if missing_analysis_case:
             print('C11_RAW_REFILL_AND_ORIGINAL_CALLBACK_WITH_MISSING_ANALYZED_CACHE',flush=True)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)

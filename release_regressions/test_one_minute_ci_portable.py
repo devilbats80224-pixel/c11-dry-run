@@ -141,7 +141,7 @@ class NativeStatusChecks(unittest.TestCase):
         e = runpy.run_path(str(HERE / 'native_replay_status.py'))
         merge = 'a' * 40
         outstanding = {'blank_checkpoint': 'missing', 'stale_checkpoint': 'failure',
-                       'unicode_symbol': 'missing', 'exact_package_and_entry': 'missing'}
+                       'direct_wide_data_fetch': 'missing', 'exact_package_and_entry': 'missing'}
         combine = e['merge_hosted_evidence']
         expected = dict(outstanding)
         del expected['blank_checkpoint']
