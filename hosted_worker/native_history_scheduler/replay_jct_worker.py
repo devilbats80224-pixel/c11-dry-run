@@ -187,6 +187,7 @@ def main():
     workers=[]
     state_box=[]
     seed_seen=[]
+    prefix_observations=[]
     archive_wire=[]
     exact_join=[]
     decision_origins=[]
@@ -654,8 +655,12 @@ else:
             if lane.active is not None:
                 assert lane.active[0]==SYMBOL
                 first_cold_start.append(now%Q)
-        if why is not None and why not in seed_seen:
-            seed_seen.append(why)
+        if why is not None:
+            if why not in seed_seen:
+                seed_seen.append(why)
+            if not any(item['phase']==phase and item['reason']==why for item in prefix_observations):
+                prefix_observations.append(dict(phase=phase,reason=why,age_ms=now%Q))
+
         if REPLAY_MODE and cycle_count>=2:
             assert history.store.segment(SYMBOL) is None and not shared_requests
             print('JCT_BASELINE_NO_SCHEDULABLE_STATE',seed_seen,flush=True)
@@ -845,6 +850,7 @@ else:
             raise Done
         if cycle_count>=36 or (REVIEWED_PARTIAL and phase=='entry' and now>=END+60_000):
             print(json.dumps(dict(status='JCT_REPLAY_HELD',phase=phase,cursor=cursor,cycles=cycle_count,
+                  prefix_observations=prefix_observations,
                   prefix_statuses=seed_seen,shared_1m_requests=shared_requests,original_join=exact_join,
                   uncovered_tape_requests=uncovered_tape[:10],
                   archive_public_receipts=len(archive_wire),

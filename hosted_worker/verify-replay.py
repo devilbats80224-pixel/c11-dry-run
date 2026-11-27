@@ -11,6 +11,20 @@ remote = sys.argv[4] if len(sys.argv) >= 5 else "no"
 assert remote in {"yes", "no"} and not (cached == remote == "yes")
 assert cached in {"yes", "no"}
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial"}
+def failure_summary(actual, phase, reason, *, age=None):
+    detail = (f"Expected original 5m VETO in the target cycle; actual {actual}; "
+              f"phase={phase}; reason={reason}")
+    if age is not None:
+        detail += f"; observed_after_close_ms={age}"
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        print(f"::error title=C11 replay ({mode})::{detail}")
+    if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+        try:
+            with Path(summary_path).open("a", encoding="utf-8") as summary:
+                print(f"### C11 Worker replay: {mode}", "", detail, "", sep="\n", file=summary)
+        except OSError:
+            print("C11_JOB_SUMMARY_UNAVAILABLE")
+
 records = []
 lines = Path(log).read_text(errors="replace").splitlines()
 for line in lines:
@@ -23,7 +37,9 @@ for line in lines:
             "JCT_ORIGINAL_5M_VETO", "JCT_REPLAY_HELD"
         }:
             records.append(record)
-assert len(records) == 1, "C11_MISSING_UNIQUE_REPLAY_RESULT"
+if len(records) != 1:
+    failure_summary("no unique Worker result", "receipt", "REPLAY_RESULT_MISSING_OR_DUPLICATE")
+    raise AssertionError("C11_MISSING_UNIQUE_REPLAY_RESULT")
 r = records[0]
 status = r["status"]
 recent = "AUTO_RECENT_MINUTES_ONLY_ORIGINAL_STATE_UNVERIFIED" in r.get("prefix_statuses", [])
@@ -80,7 +96,8 @@ if status == "JCT_REPLAY_HELD":
         summary = ",".join(f"{reason}:{counts[reason]}" for reason in sorted(counts))
         print("C11_HOSTED_PERSIST_DIAGNOSTIC", mode, f"first={reasons[0]}", f"counts={summary}")
     safe_prefix_refusals = (
-        "OLD_STATE_NOT_BOUND", "NO_AUTHENTICATED_LOCAL_STATE",
+        "RPD_CHECKPOINT_IDENTITY_MISMATCH", "RPD_OBSERVATION_AFTER_CYCLE_CLOCK",
+        "NO_AUTHENTICATED_LOCAL_STATE",
         "NATIVE_PREPARATION_REFUSED", "NATIVE_MINUTES_REFUSED",
         "NATIVE_BUDGET_OR_AUTHORITY_HELD", "COLD_PREFIX_NO_REVIEWED_SOURCE",
         "AUTO_RECENT_MINUTES_ONLY_ORIGINAL_STATE_UNVERIFIED",
@@ -88,15 +105,17 @@ if status == "JCT_REPLAY_HELD":
     phases = ("cold", "carry", "entry", "temporarily_absent")
     phase = r.get("phase")
     phase = phase if phase in phases else "unknown"
-    reasons = r.get("prefix_statuses")
-    first_gate = next((x for x in reasons if x in safe_prefix_refusals), None) if isinstance(reasons, list) else None
-    if first_gate:
-        print("C11_HOSTED_PREFIX_DIAGNOSTIC", mode, f"phase={phase}", f"first={first_gate}")
-    elif not r.get("persist_refusals"):
-        print("C11_HOSTED_PREFIX_DIAGNOSTIC", mode, f"phase={phase}", "first=UNCONFIRMED")
-    if os.environ.get("GITHUB_ACTIONS") == "true":
-        print(f"::error title=C11 replay ({mode})::Expected original 5m VETO in the target cycle; "
-              f"actual JCT_REPLAY_HELD; phase={phase}; reason={first_gate or first_persist or 'UNCONFIRMED'}")
+    observations = r.get("prefix_observations")
+    observation = next((x for x in observations if isinstance(x, dict)
+                        and x.get("phase") in phases and x.get("reason") in safe_prefix_refusals
+                        and type(x.get("age_ms")) is int and 0 <= x["age_ms"] < 900_000), None) if isinstance(observations, list) else None
+    if observation:
+        phase, reason, age = observation["phase"], observation["reason"], observation["age_ms"]
+        print("C11_HOSTED_PREFIX_DIAGNOSTIC", mode, f"phase={phase}", f"first={reason}", f"age_ms={age}")
+    else:
+        reason, age = first_persist or "UNCONFIRMED", None
+        print("C11_HOSTED_PREFIX_DIAGNOSTIC", mode, f"phase={phase}", f"first={reason}")
+    failure_summary("JCT_REPLAY_HELD", phase, reason, age=age)
     # Only emit machine status tokens, not any wire data, paths, or IDs.
     import re
     for field in ("entry_gate_statuses", "entry_advice_statuses", "entry_primary", "entry_rpd_checks"):

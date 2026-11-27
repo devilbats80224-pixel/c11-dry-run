@@ -93,8 +93,11 @@ class MinuteAdmissionLoop:
                     self.reason[f.symbol]=self.offer_reviewed_repair(f)
                     continue
                 rpd=RpdState.restore(stored[0])
-                if (rpd.symbol,rpd.origin)!=(f.symbol,f.origin) or rpd.observed>now:
-                    self.reason[f.symbol]='OLD_STATE_NOT_BOUND'
+                if (rpd.symbol,rpd.origin)!=(f.symbol,f.origin):
+                    self.reason[f.symbol]='RPD_CHECKPOINT_IDENTITY_MISMATCH'
+                    continue
+                if rpd.observed>now:
+                    self.reason[f.symbol]='RPD_OBSERVATION_AFTER_CYCLE_CLOCK'
                     continue
                 floor,cutoff=f.boundary-MAX_ANALYZER_QUARTERS*Q,f.boundary-Q
                 if rpd.next_open<floor:
