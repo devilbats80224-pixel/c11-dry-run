@@ -97,7 +97,7 @@ if docker run --rm --pull never --network none --read-only --cap-drop ALL \
 fi
 grep -Fx 'C11_NO_NEW_BAKED_OWNER_AUTHORIZATION_NO_OPERATIONAL_ENTRY' "$out/activation.log"
 if [ "$2" = build ]; then
-    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_idle_cold_preparation.py; do
+    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_idle_cold_preparation.py test_stale_cursor_minute_bridge.py; do
         docker run --rm --pull never --network none --read-only --cap-drop ALL \
             --security-opt=no-new-privileges \
             --mount "type=bind,src=$d/$test_name,dst=/provenance-test.py,readonly" \

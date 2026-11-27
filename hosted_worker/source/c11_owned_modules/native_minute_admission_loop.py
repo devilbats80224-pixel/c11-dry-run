@@ -1,7 +1,7 @@
 """Data-only work for current candidates, driven by original worker cycles."""
 from secrets import token_hex
 from threading import get_ident
-from admission_minute_job import make_job,MAX_ANALYZER_QUARTERS
+from admission_minute_job import make_job,MAX_ANALYZER_QUARTERS,repairable_checkpoint
 from cold_minute_commit import commit
 from native_cold_minute_page import Q
 from parallel_history_pages import PendingHistoryPages
@@ -55,7 +55,7 @@ class MinuteAdmissionLoop:
                 if segment is None and row is None:
                     status=lane.offer(f)
                 elif segment is not None and segment.open_ms==f.origin and (row is None or
-                        RpdState.restore(row[0]).next_open<f.boundary-MAX_ANALYZER_QUARTERS*Q):
+                        not repairable_checkpoint(f,RpdState.restore(row[0]).next_open)):
                     status=self.offer_reviewed_repair(f)
                 else:continue
                 primary=getattr(o,'primary_admission',None)
@@ -86,7 +86,7 @@ class MinuteAdmissionLoop:
                     if primary is not None:
                         primary.gate(self.reason[f.symbol],f)
                     continue
-                if cursor is None or cursor.open_ms!=f.origin:
+                if cursor is None or cursor.open_ms!=f.origin or cursor.proven_at_ms>now:
                     self.reason[f.symbol]='NO_AUTHENTICATED_LOCAL_STATE'
                     continue
                 if not stored:
@@ -100,7 +100,7 @@ class MinuteAdmissionLoop:
                     self.reason[f.symbol]='RPD_OBSERVATION_AFTER_CYCLE_CLOCK'
                     continue
                 floor,cutoff=f.boundary-MAX_ANALYZER_QUARTERS*Q,f.boundary-Q
-                if rpd.next_open<floor:
+                if not repairable_checkpoint(f,rpd.next_open):
                     self.reason[f.symbol]=self.offer_reviewed_repair(f)
                     continue
                 rows=o.store.db.execute('SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? AND open_ms<? AND received_ms<=?',(f.symbol,Q,floor,cutoff,now))

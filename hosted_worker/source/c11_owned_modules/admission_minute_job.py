@@ -4,6 +4,15 @@ from native_cold_minute_page import PAGE,Q,M,resolve_range
 import re
 
 MAX_ANALYZER_QUARTERS=260
+# Distinct from the strategy's indicator window: permit resumable repair of
+# an authenticated checkpoint for one archive review interval. A missing
+# cursor or a years-old cursor must never initiate a listing-history crawl.
+MAX_VERIFIED_BRIDGE_QUARTERS=7*24*4
+
+def repairable_checkpoint(fact,cursor):
+    return (type(cursor) is int and fact.origin<cursor
+            and cursor//Q*Q>=max(fact.origin,fact.boundary-MAX_VERIFIED_BRIDGE_QUARTERS*Q))
+
 @dataclass(frozen=True)
 class MinuteHistoryJob:
     symbol:str
@@ -21,16 +30,14 @@ class MinuteHistoryJob:
         return (type(now) is int and self.end<=now<self.end+Q
             and self.end%Q==self.start%Q==self.stop%Q==0
             and 0<self.origin<=self.start<self.stop<=self.end-Q
-            and self.stop-self.start<=PAGE and self.start>=self.end-MAX_ANALYZER_QUARTERS*Q
+            and self.stop-self.start<=PAGE and self.start>=self.end-MAX_VERIFIED_BRIDGE_QUARTERS*Q
             and self.generation>0 and type(self.symbol) is str and self.symbol.endswith('USDT')
             and type(self.ticket) is str and bool(re.fullmatch('[0-9a-f]{32}',self.ticket)))
     def child(self):
         return dict(symbol=self.symbol,start=self.start,stop=self.stop,count=self.n,width=M)
 
 def make_job(fact,verified_cursor,analysis_gaps,now,ticket):
-    # A cursor before the recent analyzer horizon requires an independently
-    # verified local state, not a remote crawl from the old listing origin.
-    if type(verified_cursor) is not int or not fact.origin<verified_cursor:
+    if not repairable_checkpoint(fact,verified_cursor):
         return None
     page=resolve_range(fact.boundary,verified_cursor,analysis_gaps)
     if page is None:return None
