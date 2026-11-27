@@ -584,6 +584,11 @@ def main(outer):
         finally:
             reader.close()
         assert stored==list(range(E-45*MINUTE,E,MINUTE)),('WARM_MINUTES_NOT_DURABLE',len(stored))
+        assert policy.bars.db.execute('SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(MISSING,)).fetchone() is None
+        assert any(x[0]==MISSING for x in exact_requests), 'C11_UNREADY_PEER_NOT_EXERCISED'
+        (ready_at,)=tuple(t for t,pair,status in advice if (pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK'))
+        assert 0<=ready_at<60_000, 'C11_UNREADY_PEER_DELAYED_SAME_CLOSE'
+        print('C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK',ready_at,flush=True)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)
         print('PACKAGED_WARM_ROUTE_ORIGINAL_CALLBACK',json.dumps(exact_requests),flush=True)
         return

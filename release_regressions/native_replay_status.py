@@ -15,7 +15,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 # release proof remains due where the criterion excludes listing-origin history.
 HOSTED_CASES = frozenset({
     "exact_15m_fallback_preserves_base_history", "historic_minutes_not_saved",
-    "partial_checkpoint", "blank_checkpoint",
+    "partial_checkpoint", "blank_checkpoint", "independent_delivery",
 })
 
 

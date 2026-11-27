@@ -83,7 +83,8 @@ warm() {
       -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e C11_EXACT_FINAL_RUNTIME_SHA="$pin" \
       -e C11_ARCHIVE_CATALOG_CHECK_MS=1795773600000 -e C11_OFFLINE_EXPECT_BAKED_SCOPE=no -e C11_FUNCTIONAL_TRIAL=yes -e C11_INTENT_CASE=flat \
       --entrypoint python "$image" -B /proof/warm_acceptance.py >"$out/warm-runtime.log" 2>&1 &&
-      grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" ||
+      grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" &&
+      grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
 }
 cold() {
