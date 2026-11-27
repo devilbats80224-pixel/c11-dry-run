@@ -172,6 +172,11 @@ def main():
     saw_absent=False
     next_now=now
     next_generation=generation
+    replay_epoch=now
+    real_mono=time.monotonic_ns
+    mono_epoch=real_mono()
+    cycle_wall_start=mono_epoch
+    last_mono=mono_epoch
     meter_headers=Counter()
     shared_requests=[]
     owner_replies=[]
@@ -216,6 +221,12 @@ else:
     class Clock:
         def time_ns(self):
             return now*1_000_000
+        def monotonic_ns(self):
+            nonlocal last_mono
+            if not REVIEWED_PARTIAL:
+                return real_mono()
+            last_mono=max(last_mono,mono_epoch+(now-replay_epoch)*1_000_000+(real_mono()-cycle_wall_start))
+            return last_mono
         def __getattr__(self,name):
             return getattr(time,name)
 
@@ -347,10 +358,42 @@ else:
         f=Future();f.set_result(p)
         return f
 
+    def assert_lease_controls(bot):
+        from current_history import CurrentHistory
+        moment=[1_000_000_000]
+        roster_generation=[70]
+        mono=lambda:moment[0]
+        class ControlledWire(Wire):
+            def receive(self,timeout):
+                return {**super().receive(timeout),'generation':roster_generation[0]}
+        shadow=entry_feed.EntryFeed(ControlledWire(),1)
+        shadow.classification=N(verified={SYMBOL:PAIR},received_monotonic_ns=mono())
+        owner=N(feed=shadow,exchange=bot.exchange)
+        tap=CurrentHistory(owner,lambda:now,mono,())
+        def read():
+            tap.before_protection()
+            shadow.read()
+        with patch.object(entry_feed,'time',N(monotonic_ns=mono)):
+            read()
+            (prior,)=tap.facts()
+            moment[0]=prior.expires_ns-1
+            assert tap.current(prior)
+            moment[0]=prior.expires_ns
+            assert not tap.current(prior)
+            read()  # A repeated numeric generation must not renew the cap.
+            assert not tap.facts() and not tap.current(prior)
+            roster_generation[0]+=1
+            read()
+            (fresh,)=tap.facts()
+            assert fresh.generation==prior.generation+1 and tap.current(fresh) and not tap.current(prior)
+        print('C11_REVIEWED_FIXTURE_LEASE_CONTROLS_PASS',flush=True)
+
     def attach(run):
         nonlocal loaded
         from atr_er_checkpoint import AtrErCheckpoint
         from current_history import CurrentHistory
+        if REVIEWED_PARTIAL:
+            assert_lease_controls(run.worker.freqtrade)
         h=BoundOwnerHistory.__new__(BoundOwnerHistory)
         h.worker=run.worker; h.run=run; h.owner=get_ident()
         h.tap=CurrentHistory(run.worker.freqtrade,run.wall,run.plan.mono,())
@@ -530,8 +573,9 @@ else:
     original_cycle=native.PaperWorker._worker
     history=None
     def cycle(self,*a,**kw):
-        nonlocal history,now,phase,generation,cycle_count,next_now,next_generation,qualified,previous_roster_state,saw_absent
+        nonlocal history,now,phase,generation,cycle_count,next_now,next_generation,qualified,previous_roster_state,saw_absent,cycle_wall_start
         now,generation=next_now,next_generation
+        cycle_wall_start=real_mono()
         scheduler=self._c11_owned_scheduler.scheduler
         if history is None:
             history=attach(scheduler)
@@ -627,6 +671,12 @@ else:
             # make the previous stale receipt admissible.
             next_now+=5000
             next_generation+=1
+        elif (REVIEWED_PARTIAL and phase=='cold' and generation==7
+                and cursor==base['end_ms']+SHIFT+495*M):
+            # The publisher genuinely issues a new generation. An older
+            # observation can never lend its authority to the next page.
+            next_now+=5000
+            next_generation+=1
         elif (AUTO_MODE and not HAN_MODE and not INIT_MODE and phase=='cold' and generation==7
                 and cursor==base['end_ms']+SHIFT+495*M):
             # A newly recorded generation renews owner authority. The earlier
@@ -662,6 +712,10 @@ else:
             return result
         primary_no_signal=(HAN_MODE or INIT_MODE) and phase=='entry' and primary==('PRIMARY_NO_SIGNAL',)
         if observed_veto or primary_no_signal:
+            if REVIEWED_PARTIAL:
+                sent_generations={e.get('generation') for e in loop_trace
+                                  if e.get('stage')=='GRANT_WRITTEN'}
+                assert {7,8}<=sent_generations, 'C11_NO_FRESH_GENERATION_RETRY_REQUEST'
             assert not Trade.get_open_trades()
             assert (cursor<=END if original_calls else cursor<END), 'UNWITNESSED_VETO_CURSOR_ADVANCE'
             if REVIEWED_PARTIAL or AUTO_STALE:
@@ -754,6 +808,14 @@ else:
     factory=installed.installed_site_factory(RUNTIME_SHA,lambda *_:None)
     try:
         with ExitStack() as patches:
+            if REVIEWED_PARTIAL:
+                import refresh
+                # Align the fixture's monotonic lease with its market time,
+                # without changing the original per-cycle CPU budget or the
+                # IPC deadline (the latter uses real time.monotonic()).
+                patches.enter_context(patch.object(time,'monotonic_ns',clock.monotonic_ns))
+                patches.enter_context(patch.object(installed,'monotonic_ns',clock.monotonic_ns))
+                patches.enter_context(patch.object(refresh,'monotonic_ns',clock.monotonic_ns))
             for obj,key,value in (
                 (PaperState,'__enter__',state_enter),(native,'OWNED_SCHEDULER_FACTORY',factory),
                 (native,'OWNED_SCHEDULER_EXPECTED_SEAL',RUNTIME_SHA),(native.PaperWorker,'_worker',cycle),

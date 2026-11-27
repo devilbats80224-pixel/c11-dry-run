@@ -8,7 +8,8 @@ cached = sys.argv[3] if len(sys.argv) == 4 else "no"
 assert cached in {"yes", "no"}
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial"}
 records = []
-for line in Path(log).read_text(errors="replace").splitlines():
+lines = Path(log).read_text(errors="replace").splitlines()
+for line in lines:
     if line.startswith("{"):
         try:
             record = json.loads(line)
@@ -62,6 +63,8 @@ assert any(item.get("status") == "VETO" and item.get("method") == "record_verifi
 assert r.get("automatic_archive") is (mode != "reviewed-partial")
 assert r.get("automatic_stale_repair") is (mode == "auto-stale")
 assert r.get("reviewed_partial_repair") is (mode == "reviewed-partial")
+if mode == "reviewed-partial":
+    assert lines.count("C11_REVIEWED_FIXTURE_LEASE_CONTROLS_PASS") == 1
 if mode == "early-roster-return":
     assert r.get("roster_drop_return_verified") is True
     assert 0 <= r["initial_cold_start_age_ms"] < 60_000
