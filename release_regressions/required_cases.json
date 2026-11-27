@@ -14,6 +14,7 @@
     "deleted_regression_case": "RegistryChecks.test_baseline_cases_cannot_disappear_or_change",
     "untrusted_or_incomplete_native_status": "NativeStatusChecks.test_mac_results_must_be_complete_current_and_trusted",
     "wrong_native_commit_identity": "NativeStatusChecks.test_invalid_exact_merge_identity_never_queries_github",
+    "native_red_diagnostics": "NativeStatusChecks.test_native_gate_diagnostics_keep_missing_proof_distinct_from_failure",
     "hosted_evidence_must_link_exact_merge": "NativeStatusChecks.test_hosted_evidence_is_exact_and_does_not_clear_unproven_or_failed_cases"
   },
   "native": {

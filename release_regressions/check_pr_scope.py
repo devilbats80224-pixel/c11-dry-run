@@ -4,6 +4,7 @@ All unclassified paths are treated as execution-affecting. The public
 workflow reads only verified status summaries, never private replay data.
 """
 import json
+import os
 from pathlib import Path
 import runpy
 import subprocess
@@ -32,6 +33,33 @@ def requires_native_replay(paths):
     return sorted(set(paths) - PORTABLE)
 
 
+def native_failure_summary(outstanding, cases):
+    details = {
+        "missing": "No exact-commit proof was registered",
+        "failure": "Recorded replay failure",
+        "error": "Replay reported an error",
+        "pending": "Replay proof is still pending",
+    }
+    rows = [
+        "### C11 required native evidence",
+        "- Failing step: Block runtime changes without native Worker evidence.",
+        "- Last successful stage: checked out the proposed merge and identified runtime-affecting changes.",
+        "- First failing stage: match every required case to successful evidence for this exact merge.",
+    ]
+    for case, state in sorted(outstanding.items()):
+        actual = details.get(state, "Verified evidence status could not be read")
+        rows.append(f"- **`{case}`**. Expected: {cases[case]} Actual: {actual}.")
+    return "\n".join(rows) + "\n"
+
+
+def report_native_failure(outstanding, cases):
+    summary = native_failure_summary(outstanding, cases)
+    print(summary, end="")
+    if destination := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with Path(destination).open("a", encoding="utf-8") as report:
+            report.write(summary)
+
+
 def main():
     # GitHub checks out the synthetic PR merge commit. Diff against its base
     # parent, including deletes and both sides of renames. Do not test the
@@ -58,10 +86,12 @@ def main():
             outstanding = verify(cases, sha)
         except (KeyError, OSError, ValueError):
             print("NATIVE_STATUS_UNAVAILABLE")
+            report_native_failure(dict.fromkeys(cases, "unavailable"), cases)
             return 2
         for case, state in outstanding.items():
             print(f"NATIVE_RESULT_REQUIRED {case}: {state}")
         if outstanding:
+            report_native_failure(outstanding, cases)
             return 2
         print("ALL_NATIVE_CASES_PASSED_FOR_EXACT_MERGE")
         return 0

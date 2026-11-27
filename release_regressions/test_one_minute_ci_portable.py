@@ -178,6 +178,21 @@ class NativeStatusChecks(unittest.TestCase):
         self.assertEqual(combine(outstanding, merge, 'b' * 40, True), outstanding)
         self.assertEqual(combine(outstanding, merge, merge, False), outstanding)
 
+    def test_native_gate_diagnostics_keep_missing_proof_distinct_from_failure(self):
+        scope = runpy.run_path(str(HERE / 'check_pr_scope.py'))
+        summary = scope['native_failure_summary'](
+            {'stale_checkpoint': 'missing', 'direct_wide_data_fetch': 'failure',
+             'reviewed_history_preserved': 'unverified RAW_SECRET_SAMPLE'},
+            {'stale_checkpoint': 'Use recent history, not listing day.',
+             'direct_wide_data_fetch': 'Route a full 1m refill.',
+             'reviewed_history_preserved': 'Preserve reviewed corrections.'},
+        )
+        self.assertIn('stale_checkpoint', summary)
+        self.assertIn('Use recent history, not listing day.', summary)
+        self.assertIn('No exact-commit proof was registered', summary)
+        self.assertIn('Recorded replay failure', summary)
+        self.assertNotIn('RAW_SECRET_SAMPLE', summary)
+
     def test_invalid_exact_merge_identity_never_queries_github(self):
         status = runpy.run_path(str(HERE / 'native_replay_status.py'))
         with self.assertRaisesRegex(ValueError, 'EXPECTED_EXACT_MERGE_SHA'):
