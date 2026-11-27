@@ -278,7 +278,7 @@ else:
         raise AssertionError('NO_ORDER_ALLOWED_IN_JCT_REPLAY')
 
     earlier_minutes={}
-    if EARLY_ROSTER or REVIEWED_PARTIAL:
+    if EARLY_ROSTER or REVIEWED_PARTIAL or AUTO_STALE:
         # Fill only the missing replay cassette, not the worker database.
         # Restore genuine closed rows from the same hashed official archive.
         import csv,io,zipfile
@@ -318,7 +318,7 @@ else:
             start=int(q.get('startTime',['0'])[0])
             limit=int(q.get('limit',['500'])[0])
             assert 0 < limit <= 1500
-            rowmap=earlier_minutes if (EARLY_ROSTER or REVIEWED_PARTIAL) and shared and width==M else rows_by_width[width]
+            rowmap=earlier_minutes if (EARLY_ROSTER or REVIEWED_PARTIAL or AUTO_STALE) and shared and width==M else rows_by_width[width]
             rows=[rowmap[t] for t in sorted(rowmap) if start<=t<stop and t+width<=min(now,stop)][-limit:]
             if shared:
                 if HAN_MODE:
