@@ -244,6 +244,11 @@ else:
                 received_at=source.isoformat(),lease_until=lease.isoformat(),rows=roster)
     feed=entry_feed.EntryFeed(Wire(),1)
     feed.classification=N(verified={SYMBOL:PAIR},received_monotonic_ns=time.monotonic_ns())
+    if REVIEWED_PARTIAL:
+        # Moving the replay across closed boundaries also ages metadata.
+        # Reload only the same fixture-verified market, never public network.
+        feed._reviewed_metaclass_fetch=lambda:N(verified={SYMBOL:PAIR},
+                                                received_monotonic_ns=time.monotonic_ns())
     observer=N(point=lambda sym,_: (generation,1,Decimal('.25')) if sym==SYMBOL and qualified else None)
     @contextmanager
     def intake(*_):
@@ -299,9 +304,10 @@ else:
                 if HAN_MODE:
                     assert 'symbol=%E7%89%9B%E6%9D%A5USDT' in u.query
                 assert width==M and stop<=now
-                if EARLY_ROSTER and len(rows)!=limit:
-                    # An earlier request can precede the 600 captured minutes.
-                    # No fabrication. The real adapter rejects short bodies.
+                if (EARLY_ROSTER or REVIEWED_PARTIAL) and len(rows)!=limit:
+                    # Optional primary reads can precede the captured tape.
+                    # Return the actual short body so the original row-count
+                    # guard handles it. Never synthesize rows or raise in IPC.
                     uncovered_tape.append((start,stop,limit,len(rows)))
                     return rows
                 assert len(rows)==limit
