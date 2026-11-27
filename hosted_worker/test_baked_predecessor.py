@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 sys.path[:0] = ["/opt/c11_owned_modules", "/opt/c11_worker", "/opt/c11_worker/ports"]
 import stage_pin
-from authorization_boundary import validate_baked
+from authorization_boundary import denial_reason,validate_baked
 
 ROOT = Path("/c11-ci-tools/pin_postmerge_parent.py")
 helper = runpy.run_path(str(ROOT))["bind_scope"]
@@ -32,7 +32,8 @@ def check(data, at=1_250_000):
     return validate_baked(data, sha(data), R, C, at)
 data = raw()
 with patch.object(stage_pin,"RELEASE_PARENT_IMAGE",A,create=True):
-    assert check(data), "C11_REVIEWED_CURRENT_PREDECESSOR_REFUSED"
+    reason=denial_reason(data,sha(data),R,C,1_250_000)
+    assert reason is None, "C11_REVIEWED_CURRENT_PREDECESSOR_REFUSED:"+str(reason)
     assert not check(raw(parent_image=B))
     assert not check(raw(no_real_orders=False))
     assert not check(data, 1_300_000)
