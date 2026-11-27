@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
-[ "$#" = 1 ] || exit 64
+[ "$#" = 2 ] || exit 64
+case "$2" in warm|early-roster-return|auto-stale|reviewed-partial) ;; *) exit 64;; esac
 out=$1
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
 fixture_sha=566dcb2865792e8f7ffdab8e0b223fb273ba303ecd8c3710fd10c7e66fac9b6a
@@ -71,12 +72,4 @@ cold() {
     fi
     return 1
 }
-warm & warm_pid=$!
-cold early-roster-return & blank_pid=$!
-cold auto-stale & stale_pid=$!
-cold reviewed-partial & partial_pid=$!
-fail=0
-for pid in "$warm_pid" "$blank_pid" "$stale_pid" "$partial_pid"; do
-    wait "$pid" || fail=1
-done
-exit "$fail"
+if [ "$2" = warm ]; then warm; else cold "$2"; fi

@@ -7,14 +7,30 @@ concurrency:
   group: c11-hosted-worker-${{ github.sha }}
   cancel-in-progress: true
 jobs:
-  hosted-worker:
-    name: ARM64 full C11 Worker replay
+  hosted-case:
+    name: C11 replay (${{ matrix.case }})
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 24
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [warm, early-roster-return, auto-stale, reviewed-partial]
     steps:
       - name: Check out candidate merge
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
       - name: Build and run packaged C11 against closed replay inputs
-        run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker"
+        env:
+          REPLAY_CASE: ${{ matrix.case }}
+        run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker" "$REPLAY_CASE"
+  hosted-worker:
+    name: ARM64 full C11 Worker replay
+    needs: hosted-case
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every independently run ARM64 case
+        env:
+          CASE_RESULT: ${{ needs.hosted-case.result }}
+        run: test "$CASE_RESULT" = success
