@@ -693,7 +693,7 @@ else:
                     native_requests=shared_requests,writer_lock=lock_identity,
                     second_writer_refused=True)),flush=True)
                 raise Done
-            next_now=END-Q+(5_000 if EARLY_ROSTER else 65_000); next_generation+=1; phase='carry'
+            next_now=END-Q+(5_000 if (EARLY_ROSTER or REVIEWED_PARTIAL) else 65_000); next_generation+=1; phase='carry'
             if ROSTER_RETURN:
                 previous_roster_state=state_receipt(history.store.db)
                 phase='temporarily_absent'

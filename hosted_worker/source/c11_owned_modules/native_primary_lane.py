@@ -9,7 +9,7 @@ from sqlite3 import OperationalError, SQLITE_BUSY, SQLITE_LOCKED
 from bridge_protocol import Refused
 from capture import sanitize
 from causal_bars import ClosedBar,FIVE,QUARTER,MINUTE
-from closed_minute_basis import missing_projection_quarters
+from closed_minute_basis import missing_projection_quarters, project_closed_minutes
 from rpd_checkpoint import RpdState,WARM
 from c11_primary_decision_seam_v1.exact_rpd5_join import Scope, join
 from minute_rollup import roll
@@ -190,7 +190,7 @@ class NativePrimaryLane:
         o=self.owner
         now=o.run.wall()
         witness=self.terminal_five.get(f.symbol)
-        if witness is None or witness[:2]!=(s.generation,s.end) or not self.current(f,s,now):
+        if not self.current(f,s,now) or (witness is not None and witness[:2]!=(s.generation,s.end)):
             return
         try:
             proof=o.store.segment(f.symbol)
@@ -202,7 +202,15 @@ class NativePrimaryLane:
             if ((state.symbol,state.origin)!=(f.symbol,f.origin) or state.observed>now
                     or not s.end-2*QUARTER<=state.next_open<=anchor):
                 return
-            minute_five={bar.open_ms:bar for bar in witness[2]}
+            # A page may already have been atomically persisted by the
+            # projection/refill route, which doesn't populate terminal_five.
+            # Reconstruct only the exact admitted minute window, after the
+            # original checkpoint and current scope have been verified.
+            bars=(witness[2] if witness is not None else
+                  project_closed_minutes(o.store,f.symbol,FIVE,state.next_open,s.end,now))
+            if bars is None:
+                return
+            minute_five={bar.open_ms:bar for bar in bars}
             for opening in range(state.next_open,s.end,FIVE):
                 derived=minute_five.get(opening)
                 existing=o.store.range(f.symbol,FIVE,opening,opening+FIVE,now)
