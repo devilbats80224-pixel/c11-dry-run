@@ -63,7 +63,13 @@ if docker run --rm --pull never --network none --read-only --cap-drop ALL \
     exit 2
 fi
 grep -Fx 'C11_NO_NEW_BAKED_OWNER_AUTHORIZATION_NO_OPERATIONAL_ENTRY' "$out/activation.log"
-if [ "$2" = build ]; then exit 0; fi
+if [ "$2" = build ]; then
+    docker run --rm --pull never --network none --read-only --cap-drop ALL \
+        --security-opt=no-new-privileges \
+        --mount "type=bind,src=$d/test_uncached_provenance.py,dst=/provenance-test.py,readonly" \
+        --entrypoint python "$image" -B /provenance-test.py
+    exit 0
+fi
 warm() {
     pin=$runtime_pin
     docker run --rm --pull never --network none --read-only --user 1000:2000 \
