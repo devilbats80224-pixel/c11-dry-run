@@ -58,6 +58,9 @@ for row in r.get("reply_refusals", [])[:10]:
         if isinstance(reasons, list) and all(isinstance(x, str) and x in safe_scope_reasons for x in reasons):
             print("C11_HOSTED_REPLAY_SCOPE_DIAGNOSTIC", mode, scope["lane"], ",".join(reasons))
 assert status == "JCT_ORIGINAL_5M_VETO" and r.get("zero_orders") is True
+assert not any("Task exception was never retrieved" in line for line in lines), (
+    "C11_REPLAY_UNHANDLED_TRANSPORT_TASK"
+)
 assert bool(r.get("verified_raw_archive_cache")) == (cached == "yes")
 assert bool(r.get("pinned_remote")) == (remote == "yes")
 if remote == "yes":
