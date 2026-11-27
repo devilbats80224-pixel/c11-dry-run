@@ -66,6 +66,21 @@ def check(*, verify_cold_content=True):
 
     return m
 
+def verify_activation_assets():
+    # This same check is exercised in the final packaged-image regression.
+    # It is before any ledger access and cannot grant runtime authority.
+    from c11_v4_pin import STAGE_ONLY, REVIEWED_MOUNT, REVIEWED_SCOPE, RELEASE_SHA256
+    from release_facts import require_release_facts
+    from docker_observer import binding_for
+    from v4_entry import verify_runtime
+
+    assert STAGE_ONLY is False and len(REVIEWED_MOUNT) == 4
+    assert REVIEWED_SCOPE['publication_binding'] == binding_for(REVIEWED_MOUNT)
+    routes = require_release_facts('/opt/c11-release', RELEASE_SHA256, REVIEWED_SCOPE)
+    verify_runtime()
+    return routes
+
+
 def activate():
     # No env or CLI secrets. Fresh owner-reviewed thin layer only adds the
     # separate immutable approval file and its digest baked into stage_pin.
@@ -88,10 +103,8 @@ def activate():
        return 2
     from cold_archive_release import installed_sources
     sources=installed_sources(verified_manifest,now())
-    from c11_v4_pin import STAGE_ONLY, REVIEWED_MOUNT, REVIEWED_SCOPE, RELEASE_SHA256
-    from release_facts import require_release_facts
-    from docker_observer import binding_for
-    from v4_entry import verify_runtime,run_locked
+    from c11_v4_pin import REVIEWED_MOUNT, REVIEWED_SCOPE
+    from v4_entry import run_locked
     from paper_runtime import PaperState,verify_state_file
     from docker_c11_intake import open_intake
     from paper_standalone_entry import startup_config
@@ -100,11 +113,7 @@ def activate():
     from history_factory_admission import FactoryAdmission
     from outer_seed_lock import ScopedSeedFactory
     import native_worker
-    assert STAGE_ONLY is False and len(REVIEWED_MOUNT)==4
-    assert REVIEWED_SCOPE['publication_binding']==binding_for(REVIEWED_MOUNT)
-    # Prior evidence only affirms original observer and paper layout, never authorization.
-    require_release_facts('/opt/c11-release',RELEASE_SHA256,REVIEWED_SCOPE)
-    verify_runtime()
+    verify_activation_assets()
     from outer_seed_lock import private_identity,LEDGER,GUARD_PATH,LOCK
     for p in (LEDGER,GUARD_PATH,LOCK):private_identity(p)
     seed=c11_locked_scope()

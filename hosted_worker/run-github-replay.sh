@@ -97,6 +97,13 @@ if docker run --rm --pull never --network none --read-only --cap-drop ALL \
 fi
 grep -Fx 'C11_NO_NEW_BAKED_OWNER_AUTHORIZATION_NO_OPERATIONAL_ENTRY' "$out/activation.log"
 if [ "$2" = build ]; then
+    if ! sh "$d/check_packaged_release_facts.sh" "$image" "$out/release-facts-proof"; then
+        printf '%s\n' 'C11_ACTIVATION_ASSET_REGRESSION_FAILED: expected complete release accepted and missing/tampered releases refused; actual probe result is above.'
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            printf '%s\n' '### C11 packaged activation assets' '- Failed step: verify actual startup asset gate on packaged image.' '- Expected: full manifest and eight receipts pass; missing or altered assets are refused.' '- Actual: packaged startup asset regression failed; failing case and first reason are in the build log.' >>"$GITHUB_STEP_SUMMARY"
+        fi
+        exit 2
+    fi
     docker run --rm --pull never --network none --read-only --cap-drop ALL \
         --security-opt=no-new-privileges \
         --mount "type=bind,src=$d/test_baked_predecessor.py,dst=/predecessor-test.py,readonly" \
