@@ -32,7 +32,10 @@ missing_count = missing if type(missing) is int else len(missing)
 print("C11_HOSTED_REPLAY", mode, status, "lacks_state", recent, "cache_required", cached,
       "pages_requested", len(r.get("shared_1m_requests", [])),
       "pages_persisted", int(stages.get("PERSISTED", 0)),
+      "grants_written", int(stages.get("GRANT_WRITTEN", 0)),
+      "replies_accepted", int(stages.get("REPLY_ACCEPTED", 0)),
       "replies_rejected", int(stages.get("REPLY_REJECTED", 0)),
+      "requests_expired", int(stages.get("EXPIRED", 0)),
       "budget_held", int(stages.get("BUDGET_HELD", 0)),
       "tape_windows_missing", missing_count,
       "archive_requests", int(r.get("archive_public_receipts",0)))
@@ -57,6 +60,17 @@ for row in r.get("reply_refusals", [])[:10]:
         reasons = scope.get("reasons", [])
         if isinstance(reasons, list) and all(isinstance(x, str) and x in safe_scope_reasons for x in reasons):
             print("C11_HOSTED_REPLAY_SCOPE_DIAGNOSTIC", mode, scope["lane"], ",".join(reasons))
+if status == "JCT_REPLAY_HELD":
+    # Only emit machine status tokens, not any wire data, paths, or IDs.
+    import re
+    for field in ("entry_gate_statuses", "entry_advice_statuses", "entry_primary"):
+        values = r.get(field) or []
+        if isinstance(values, str):
+            values = [values]
+        safe = [v for v in values if isinstance(v, str)
+                and re.fullmatch(r"[A-Z_0-9]{2,65}", v)]
+        if safe:
+            print("C11_HOSTED_ENTRY_DIAGNOSTIC", mode, field, ",".join(safe[:30]))
 assert status == "JCT_ORIGINAL_5M_VETO" and r.get("zero_orders") is True
 assert not any("Task exception was never retrieved" in line for line in lines), (
     "C11_REPLAY_UNHANDLED_TRANSPORT_TASK"

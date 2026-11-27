@@ -621,6 +621,18 @@ else:
                     clock_patches.enter_context(patch.object(mod,'dt_now',lambda:datetime.fromtimestamp(now/1000,timezone.utc)))
             result=original_cycle(self,*a,**kw)
         cycle_count+=1
+        if REVIEWED_PARTIAL and history.shared_minute.waiting:
+            # Synthetic time advances several seconds per owner poll. Give
+            # the real thread on the other socket a chance to publish READY
+            # or REPLY before advancing that clock. Don't consume or accept
+            # the message here; the next original worker poll owns that.
+            from select import select
+            bridge=history.shared_minute
+            sock=bridge.sock
+            if sock is None and bridge.future is not None and bridge.future.done():
+                sock=bridge.future.result()
+            if sock is not None:
+                select([sock],[],[],0.20)
         why=history.minute_admission.reason.get(SYMBOL)
         if EARLY_ROSTER and not first_cold_start:
             lane=history.cold_prefix.reviewed if CACHED else history.cold_prefix.public
@@ -701,7 +713,12 @@ else:
             # fixture generation stays expired; it cannot authorize a second page.
             next_now+=5000
             next_generation+=1
-        elif phase=='carry' and cursor==END-2*Q:
+        elif phase=='carry' and (cursor==END-2*Q or (REVIEWED_PARTIAL and cursor==END-Q)):
+            # Accepted pages are committed asynchronously. The original
+            # worker may advance one additional closed quarter before the
+            # fixture observes a cursor. Do not strand the replay on the
+            # prior close or skip to an already-processed target.
+            assert now<END
             next_now=END+4000; next_generation+=1; phase='entry'
         else:
             step=1000 if phase=='cold' and (cursor is None or (AUTO_STALE and cursor==ORIGIN)) and AUTO_MODE else 5000
@@ -795,6 +812,10 @@ else:
                   uncovered_tape_requests=uncovered_tape[:10],
                   archive_public_receipts=len(archive_wire),
                   retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)),
+                  entry_gate_statuses=sorted({x['reason'] for x in loop_trace
+                     if x.get('end_ms')==END and isinstance(x.get('reason'),str)}),
+                  entry_advice_statuses=sorted({x['status'] for x in advice_sources}),
+                  entry_primary=primary[0] if primary else None,
                   reply_refusals=[x for x in loop_trace if x.get('stage')=='REPLY_REJECTED'])),flush=True)
             raise RuntimeError('JCT_NO_ORIGINAL_VETO_RECEIPT')
         return result
