@@ -137,6 +137,18 @@ class NativeStatusChecks(unittest.TestCase):
         self.assertEqual(status['failures'](cases, [
             entry('blank_state', 'success'), entry('no_direct_15m', 'success')]), {})
 
+    def test_hosted_evidence_is_exact_and_does_not_clear_unproven_or_failed_cases(self):
+        e = runpy.run_path(str(HERE / 'native_replay_status.py'))
+        merge = 'a' * 40
+        outstanding = {'blank_checkpoint': 'missing', 'stale_checkpoint': 'failure',
+                       'unicode_symbol': 'missing', 'exact_package_and_entry': 'missing'}
+        combine = e['merge_hosted_evidence']
+        expected = dict(outstanding)
+        del expected['blank_checkpoint']
+        self.assertEqual(combine(outstanding, merge, merge, True), expected)
+        self.assertEqual(combine(outstanding, merge, 'b' * 40, True), outstanding)
+        self.assertEqual(combine(outstanding, merge, merge, False), outstanding)
+
     def test_invalid_exact_merge_identity_never_queries_github(self):
         status = runpy.run_path(str(HERE / 'native_replay_status.py'))
         with self.assertRaisesRegex(ValueError, 'EXPECTED_EXACT_MERGE_SHA'):

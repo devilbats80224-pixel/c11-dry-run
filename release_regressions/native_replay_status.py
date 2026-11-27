@@ -9,6 +9,23 @@ ISSUER = "devilbats80224-pixel"
 PREFIX = "c11/native/v1/"
 SHA = re.compile(r"[0-9a-f]{40}")
 
+# Each name is asserted by the hosted image, not inferred from job count:
+# warm native exact fallback; build-time 45/9/3 storage rollback controls;
+# reviewed-partial and early-roster-return original Worker cases. Stale
+# release proof remains due where the criterion excludes listing-origin history.
+HOSTED_CASES = frozenset({
+    "exact_15m_fallback_preserves_base_history", "historic_minutes_not_saved",
+    "partial_checkpoint", "blank_checkpoint",
+})
+
+
+def merge_hosted_evidence(outstanding, merge_sha, hosted_sha, hosted_pass):
+    if hosted_pass is not True or not SHA.fullmatch(merge_sha) or merge_sha != hosted_sha:
+        return dict(outstanding)
+    # Do not erase an explicit negative review or infer any untested case.
+    return {name: state for name, state in outstanding.items()
+            if name not in HOSTED_CASES or state != "missing"}
+
 
 def failures(cases, entries):
     # GitHub lists commit statuses newest first. Ignore actors other than
@@ -41,4 +58,8 @@ def fetch(sha, token):
 
 def verify(cases, sha):
     # Never query a PR branch name or the head SHA as a fallback.
-    return failures(cases, fetch(sha, os.environ["GH_TOKEN"]))
+    outstanding = failures(cases, fetch(sha, os.environ["GH_TOKEN"]))
+    return merge_hosted_evidence(
+        outstanding, sha, os.environ.get("HOSTED_VERIFIED_MERGE_SHA"),
+        os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("HOSTED_WORKER_RESULT") == "success",
+    )

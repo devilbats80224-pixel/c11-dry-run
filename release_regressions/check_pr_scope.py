@@ -11,7 +11,6 @@ import sys
 
 PORTABLE = frozenset({
     ".github/pull_request_template.md",
-    ".github/workflows/c11-ci.yml",
     "README.md",
     ".gitignore",
     "release_regressions/check_public_tracked_files.py",

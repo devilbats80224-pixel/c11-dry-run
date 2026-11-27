@@ -13,6 +13,8 @@ concurrency:
 jobs:
   portable-checks:
     name: Portable checks (no full Worker replay)
+    needs: hosted-worker
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -89,4 +91,72 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
+          HOSTED_WORKER_RESULT: ${{ needs.hosted-worker.result }}
+          HOSTED_VERIFIED_MERGE_SHA: ${{ needs.hosted-worker.outputs.verified_merge_sha }}
         run: python3 -I -B release_regressions/check_pr_scope.py
+  build-image:
+    name: Build one disabled ARM64 C11 artifact
+    if: github.event_name == 'pull_request'
+    outputs:
+      merge_sha: ${{ steps.exact_commit.outputs.merge_sha }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: python3 -I -B hosted_worker/test_stage_archive_cache.py
+      - run: python3 -I -B hosted_worker/test_history_rejection.py
+      - run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker" build "$RUNNER_TEMP/c11-artifact"
+      - name: Bind proof to the same built merge
+        id: exact_commit
+        run: |
+          exact="$(git rev-parse HEAD)"
+          test "$exact" = "$(cat "$RUNNER_TEMP/c11-artifact/source.sha")"
+          echo "merge_sha=$exact" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: c11-arm64-replay-image
+          path: ${{ runner.temp }}/c11-artifact
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+  hosted-case:
+    needs: build-image
+    name: C11 replay (${{ matrix.case }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [warm, early-roster-return, auto-stale, reviewed-partial, cached-blank, cached-stale, pinned-remote-blank, pinned-remote-stale]
+    steps:
+      - name: Check out candidate merge
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: c11-arm64-replay-image
+          path: ${{ runner.temp }}/c11-artifact
+      - name: Replay the same verified C11 artifact
+        env:
+          REPLAY_CASE: ${{ matrix.case }}
+        run: sh hosted_worker/run-github-replay.sh "$RUNNER_TEMP/c11-worker" "$REPLAY_CASE" "$RUNNER_TEMP/c11-artifact"
+  hosted-worker:
+    name: ARM64 full C11 Worker replay
+    needs: [build-image, hosted-case]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    outputs:
+      verified_merge_sha: ${{ steps.verified.outputs.merge_sha }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require every independently run ARM64 case
+        id: verified
+        env:
+          CASE_RESULT: ${{ needs.hosted-case.result }}
+          BUILT_SHA: ${{ needs.build-image.outputs.merge_sha }}
+        run: |
+          test "$CASE_RESULT" = success
+          printf '%s\n' "$BUILT_SHA" | grep -Ex '[a-f0-9]{40}'
+          echo "merge_sha=$BUILT_SHA" >> "$GITHUB_OUTPUT"
