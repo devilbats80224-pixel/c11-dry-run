@@ -884,6 +884,8 @@ else:
                 api.markets[PAIR]['info']['onboardDate']=ORIGIN
 
     clock=Clock()
+    import feature_warmup
+    import native_candles
     factory=installed.installed_site_factory(RUNTIME_SHA,lambda *_:None)
     try:
         with ExitStack() as patches:
@@ -899,6 +901,10 @@ else:
                 (PaperState,'__enter__',state_enter),(native,'OWNED_SCHEDULER_FACTORY',factory),
                 (native,'OWNED_SCHEDULER_EXPECTED_SEAL',RUNTIME_SHA),(native.PaperWorker,'_worker',cycle),
                 (native,'time',clock),(standalone_policy,'time',clock),(installed,'time_ns',clock.time_ns),
+                # For this replay, the original direct candle receipt and
+                # warmup share the same captured clock as the Worker. Do not
+                # let the runner wall clock mark archived state "from the future".
+                *(([(native_candles,'time',clock),(feature_warmup,'time',clock)]) if REVIEWED_PARTIAL else []),
                 (UnifiedScheduler,'consume_ready_only',observe_consume),
                 (NativePrimaryLane,'record_verified_veto',observed_veto),
                 (shared_history_child,'millis',lambda:now),(async_native_ccxt,'time_ns',clock.time_ns),
