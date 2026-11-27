@@ -177,6 +177,7 @@ class NativeStatusChecks(unittest.TestCase):
         self.assertEqual(combine(outstanding, merge, merge, True), expected)
         self.assertEqual(combine(outstanding, merge, 'b' * 40, True), outstanding)
         self.assertEqual(combine(outstanding, merge, merge, False), outstanding)
+        self.assertEqual(combine({'stale_checkpoint': 'missing'}, merge, merge, True), {})
 
     def test_native_gate_diagnostics_keep_missing_proof_distinct_from_failure(self):
         scope = runpy.run_path(str(HERE / 'check_pr_scope.py'))

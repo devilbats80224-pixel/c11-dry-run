@@ -870,6 +870,7 @@ else:
             # An exact admitted terminal veto is a real original 5m judgment,
             # even when full entry advice is blocked by that filter.
             assert (cursor<=END if original_calls or exact_optional_veto else cursor<END), 'UNWITNESSED_VETO_CURSOR_ADVANCE'
+            stale_cursor_age_ms=None
             if REVIEWED_PARTIAL or AUTO_STALE:
                 recovered=history.store.db.execute(
                     'SELECT cutoff,manifest_sha,previous_state FROM c11_state_recovery_history WHERE symbol=?',
@@ -877,7 +878,9 @@ else:
                 assert recovered[0]==base['end_ms']+SHIFT
                 saved_rpd=json.loads(recovered[2])['rpd']
                 if AUTO_STALE:
-                    assert len(recovered[1])==64 and RpdState.restore(saved_rpd).next_open==ORIGIN
+                    prior_cursor=RpdState.restore(saved_rpd).next_open
+                    assert len(recovered[1])==64 and prior_cursor==ORIGIN
+                    stale_cursor_age_ms=END-prior_cursor
                 else:
                     assert recovered[1]==base['archive_manifest_sha'] and saved_rpd is None
             if AUTO_MODE:
@@ -921,6 +924,7 @@ else:
                    uncovered_tape_requests=len(uncovered_tape),
                    automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,pinned_remote=PINNED_REMOTE,
                    discovery_configured=bool(getattr(history.archive_prep,'discover_unseeded',False)),automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
+                   stale_cursor_age_ms=stale_cursor_age_ms,
                    retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)))),flush=True)
             raise Done
         if ARCHIVE_OUTAGE and archive_wire and cycle_count>=12:

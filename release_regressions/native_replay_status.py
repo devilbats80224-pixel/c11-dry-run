@@ -11,12 +11,14 @@ SHA = re.compile(r"[0-9a-f]{40}")
 
 # Each name is asserted by the hosted image, not inferred from job count:
 # warm native exact fallback and verified old-wide/new-minute separation; build-time 45/9/3 storage rollback controls;
-# reviewed-partial and early-roster-return original Worker cases. Stale
-# release proof remains due where the criterion excludes listing-origin history.
+# reviewed-partial and early-roster-return original Worker cases; prepared-stale
+# verifies the retained prior cursor, bounded native minute windows, zero archive
+# access, and the original callback on this same package.
 HOSTED_CASES = frozenset({
     "exact_15m_fallback_preserves_base_history", "historic_minutes_not_saved",
     "partial_checkpoint", "blank_checkpoint", "independent_delivery",
     "legacy_wide_masks_base_gap", "base_refill_blocked_by_missing_analyzed_frame", "unicode_symbol",
+    "stale_checkpoint",
 })
 
 

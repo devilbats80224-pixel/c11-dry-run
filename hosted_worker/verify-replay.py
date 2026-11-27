@@ -219,6 +219,15 @@ if prepared == "yes":
                                      "HOLD_UNPROVEN_ANALYZED_FRAME"} else "UNCONFIRMED"
         failure_summary("original filter reached but full original callback absent", "strategy handoff", reason)
         raise AssertionError("PREPARED_CHECKPOINT_ORIGINAL_CALLBACK_NOT_PROVEN")
+    if mode == "auto-stale":
+        age = r.get("stale_cursor_age_ms")
+        if type(age) is not int or age < 90*86_400_000:
+            failure_summary("prior persisted cursor was not proven to be old", "recover stale checkpoint",
+                            "STALE_CURSOR_AGE_NOT_PROVEN")
+            raise AssertionError("STALE_CURSOR_AGE_NOT_PROVEN")
+        # This 90-day floor describes this regression fixture, not the
+        # policy's state-age or validity limit.
+        print("C11_STALE_CHECKPOINT_NO_LISTING_AND_ORIGINAL_CALLBACK")
 elif background == "yes":
     assert "C11_RAW_ONLY_STATE_READY_BEFORE_CANDIDATE" in lines, "BACKGROUND_CHECKPOINT_NOT_READY"
     assert r["archive_public_receipts"] == 0

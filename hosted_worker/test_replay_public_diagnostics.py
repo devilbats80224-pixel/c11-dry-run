@@ -135,6 +135,35 @@ class PublicDiagnosticsTest(unittest.TestCase):
                 with self.subTest(invalid=invalid):
                     self.assertNotEqual(run_pinned({**pinned,**invalid}).returncode,0)
 
+    def test_prepared_stale_requires_old_cursor_and_bounded_native_recovery(self):
+        with tempfile.TemporaryDirectory() as temp:
+            log = Path(temp) / "replay.log"
+            e = 1795773600000
+            receipt = dict(status="JCT_ORIGINAL_5M_VETO", zero_orders=True, archive_public_receipts=0,
+                           verified_raw_archive_cache=True, pinned_remote=False, replay_boundary=e,
+                           automatic_archive=True, automatic_stale_repair=True, reviewed_partial_repair=False,
+                           observed_replay_age_ms=6000, strategy_native_veto=True,
+                           stale_cursor_age_ms=365*86400000,
+                           shared_1m_requests=[[e-15*60000,e,15,e+1]],
+                           original_entry_advice=[dict(status="ORIGINAL_NATIVE_CALLBACK",last_enter_long=0,age_ms=6000)],
+                           decision_sources=[dict(status="VETO",owner_code="causal_bars.py",method="inputs",
+                                                  boundary=e,inside_original_target_callback=True,age_ms=6000)])
+            def run(changes):
+                log.write_text("C11_RECOVERY_REUSED_PREPARED_CHECKPOINT\n"+json.dumps({**receipt,**changes}))
+                return subprocess.run(
+                    [sys.executable,"-I","-B",str(Path(__file__).with_name("verify-replay.py")),
+                     "auto-stale",str(log),"yes","no","yes"],capture_output=True,text=True,check=False)
+            good = run({})
+            self.assertEqual(good.returncode, 0, good.stderr)
+            self.assertIn("C11_STALE_CHECKPOINT_NO_LISTING_AND_ORIGINAL_CALLBACK", good.stdout)
+            for changes in ({"stale_cursor_age_ms":None},{"stale_cursor_age_ms":60000},
+                            {"shared_1m_requests":[[e-365*86400000,e,15,e+1]]},
+                            {"archive_public_receipts":1},{"original_entry_advice":[]}):
+                with self.subTest(changes=changes):
+                    result = run(changes)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("C11_STALE_CHECKPOINT_NO_LISTING_AND_ORIGINAL_CALLBACK", result.stdout)
+
     def test_optional_veto_must_be_from_exact_close_and_original_producer(self):
         with tempfile.TemporaryDirectory() as temp:
             log = Path(temp) / "replay.log"
