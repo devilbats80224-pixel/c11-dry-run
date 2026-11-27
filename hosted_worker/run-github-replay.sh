@@ -109,7 +109,7 @@ if [ "$2" = build ]; then
         --mount "type=bind,src=$d/test_baked_predecessor.py,dst=/predecessor-test.py,readonly" \
         --mount "type=bind,src=$d/../release_regressions,dst=/c11-ci-tools,readonly" \
         --entrypoint python "$image" -B /predecessor-test.py
-    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_mixed_close_history_budget.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_terminal_warmup_priority.py test_idle_cold_preparation.py test_stale_cursor_minute_bridge.py test_retained_minute_cold_prefix.py; do
+    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_mixed_close_history_budget.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_staged_revisit_not_spent.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_terminal_warmup_priority.py test_idle_cold_preparation.py test_stale_cursor_minute_bridge.py test_retained_minute_cold_prefix.py; do
         docker run --rm --pull never --network none --read-only --cap-drop ALL \
             --security-opt=no-new-privileges \
             --mount "type=bind,src=$d/$test_name,dst=/provenance-test.py,readonly" \
@@ -204,6 +204,10 @@ warm() {
       grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" &&
       grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
+    if [ "$mixed_history_pressure" = yes ]; then
+      grep -Fx C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY "$out/warm-runtime.log"
+      grep -Fx C11_COMBINED_HISTORY_PRESSURE_AND_SAME_CLOSE_REVISIT_PASS "$out/warm-runtime.log"
+    fi
     if [ "$divergent_fallback" = yes ]; then
       grep -Fx C11_DIVERGENT_FALLBACK_DID_NOT_BLOCK_ORIGINAL_DECISION "$out/warm-runtime.log"
     fi

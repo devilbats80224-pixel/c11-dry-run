@@ -602,6 +602,18 @@ def main(outer):
             assert cold.stdout.readline().startswith(b'WARM_NO_AUTHORITY_CONFIRMED_ABI_')
             assert cold.poll() is None
         missing_analysis_case=os.environ.get('C11_WARM_MISSING_ANALYSIS_CASE')=='yes'
+        mixed_pressure=os.environ.get('C11_MIXED_HISTORY_PRESSURE')=='yes'
+        delayed_frames=[]
+        from warm_release_binding import WarmReleaseBinding
+        exact_frame=WarmReleaseBinding.frame
+        def frame_after_wait(binding,first):
+            if first.pair==PAIR and clock[0]==E+7000:
+                assert binding.prepared is not None and binding.prepared[0] is first
+                delayed_frames.append(first)
+                # Simulate a durable frame not yet ready; leave all actual
+                # same-scope checks and normal analysis unchanged next cycle.
+                return ()
+            return exact_frame(binding,first)
         for i in range(3):
           clock[0]=E+2000+5000*i
           if i==0:
@@ -652,6 +664,12 @@ def main(outer):
                 w.freqtrade.process()
             assert withheld and dp.get_analyzed_dataframe(PAIR,'15m')[0].empty
             print('ACTUAL_ANALYZED_FRAME_MISSING',flush=True)
+          elif mixed_pressure and i==1:
+            with patch.object(WarmReleaseBinding,'frame',frame_after_wait):
+                w.freqtrade.process()
+            lane=w.freqtrade.strategy._c11_native_entry_owner
+            assert delayed_frames and lane.holds.get(PAIR) is delayed_frames[0] and (PAIR,E) not in lane.spent
+            assert not any((pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK') for _,pair,status in advice)
           else:
             w.freqtrade.process()
           if i==1:
@@ -713,6 +731,9 @@ def main(outer):
         assert any(x[0]==MISSING for x in exact_requests), 'C11_UNREADY_PEER_NOT_EXERCISED'
         (ready_at,)=tuple(t for t,pair,status in advice if (pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK'))
         assert 0<=ready_at<60_000, 'C11_UNREADY_PEER_DELAYED_SAME_CLOSE'
+        if mixed_pressure:
+            assert ready_at==12_000 and len(delayed_frames)>=1, ('C11_COMBINED_REVISIT_CLOCK',ready_at,delayed_frames)
+            print('C11_COMBINED_HISTORY_PRESSURE_AND_SAME_CLOSE_REVISIT_PASS',flush=True)
         print('C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK',ready_at,flush=True)
         print('C11_LEGACY_WIDE_DID_NOT_MASK_RAW_MINUTE_GAP',flush=True)
         if unicode_case:
