@@ -384,16 +384,49 @@ else:
         def observed(label, owner_lane):
             book=owner_lane.pending
             decide=book.authority
+            original_facts=h.tap.facts
             def authority(job, witness):
-                ok=decide(job,witness)
+                fact_checks=[]
+                def observe_facts():
+                    rows=original_facts()
+                    fact_checks.append((rows,h.tap.mono()))
+                    return rows
+                # Capture the rows actually evaluated by current(). Do not
+                # perform a second lookup that could move the cap/generation.
+                with patch.object(h.tap,'facts',observe_facts):
+                    ok=decide(job,witness)
                 last_refusal.clear()
-                if ok or not REVIEWED_PARTIAL:
+                if ok:
                     return ok
                 fact=witness if label=='minute' else witness.fact
                 now=run.wall()
                 reasons=[]
                 if not job.valid(now): reasons.append('JOB_INVALID')
-                if not h.tap.current(fact): reasons.append('FACT_NOT_CURRENT')
+                if fact_checks:
+                    rows,mono=fact_checks[-1]
+                    exact=[row for row in rows if
+                           (row.pair,row.symbol,row.generation,row.boundary,row.origin)==
+                           (fact.pair,fact.symbol,fact.generation,fact.boundary,fact.origin)]
+                    if not exact or not any(mono<min(row.expires_ns,fact.expires_ns) for row in exact):
+                        reasons.append('FACT_NOT_CURRENT')
+                        feed=h.tap.feed
+                        if feed.owner_cycle_stamp()<=h.tap.cycle_stamp:
+                            reasons.append('FACT_NO_SUCCESSFUL_READ_THIS_CYCLE')
+                        raw=[row for row in feed.latest_owner_observation if row.symbol==fact.symbol]
+                        if not raw: reasons.append('FACT_SYMBOL_NOT_OBSERVED')
+                        if feed.generation_floor!=fact.generation:
+                            reasons.append('FACT_GENERATION_CHANGED')
+                        if now//Q*Q!=fact.boundary: reasons.append('FACT_BOUNDARY_CHANGED')
+                        if mono>=fact.expires_ns: reasons.append('FACT_ORIGINAL_LEASE_EXPIRED')
+                        if raw and all(mono>=row.expires_ns for row in raw):
+                            reasons.append('FACT_OBSERVED_LEASE_EXPIRED')
+                        if any(row.pair!=fact.pair for row in raw):
+                            reasons.append('FACT_PAIR_CHANGED')
+                        cap=h.tap.caps.get((fact.symbol,fact.pair))
+                        if cap is not None and mono>=cap:
+                            reasons.append('FACT_GENERATION_CAP_EXPIRED')
+                        if raw and not rows and mono<fact.expires_ns and cap is not None and mono<cap:
+                            reasons.append('FACT_EMPTY_AFTER_CYCLE_FILTERS')
                 if label=='minute':
                     if not owner_lane.cycle_headroom(): reasons.append('NO_CYCLE_HEADROOM')
                     if run.queue.inflight: reasons.append('MINUTE_ORIGINAL_WIRE_BUSY')
