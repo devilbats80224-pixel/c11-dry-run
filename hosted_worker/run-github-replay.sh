@@ -14,8 +14,18 @@ tar -xzf "$out/input.tgz" --directory "$out/fixture" --no-same-owner --no-same-p
 # Only make the reviewed fixture mounts readable to UID 1000, not the run log folder.
 find "$out/fixture" -type d -exec chmod 0755 '{}' +
 find "$out/fixture" -type f -exec chmod 0444 '{}' +
+warm_sha=078ac05c01d6fd2b1aed5910adf21e7f99ed9c13f86c626edf61adbec5341f9c
+warm_url=https://github.com/devilbats80224-pixel/c11-dry-run/releases/download/c11-ci-replay-fixtures-v1/c11-ci-warm-replay-v1.tar.gz
+curl -fsSL --retry 2 --max-time 180 -o "$out/warm-input.tgz" "$warm_url"
+printf '%s  %s\n' "$warm_sha" "$out/warm-input.tgz" | sha256sum -c -
+mkdir -m 755 "$out/warm"
+tar -xzf "$out/warm-input.tgz" --directory "$out/warm" --no-same-owner --no-same-permissions
+find "$out/warm" -type d -exec chmod 0755 '{}' +
+find "$out/warm" -type f -exec chmod 0444 '{}' +
+cp "$d/warm_acceptance.py" "$out/warm/warm_acceptance.py"
+chmod 0444 "$out/warm/warm_acceptance.py"
 docker pull --platform linux/arm64 "docker.io/freqtradeorg/freqtrade@$base"
-python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base"
+python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" "$out/warm/baked_catalog"
 DOCKER_BUILDKIT=0 docker build --pull=false --network=none --iidfile "$out/image.iid" "$out/stage"
 image=$(cat "$out/image.iid")
 docker run --rm --pull never --network none --read-only --cap-drop ALL \
@@ -26,12 +36,26 @@ if docker run --rm --pull never --network none --read-only --cap-drop ALL \
     exit 2
 fi
 grep -Fx 'C11_NO_NEW_BAKED_OWNER_AUTHORIZATION_NO_OPERATIONAL_ENTRY' "$out/activation.log"
-fail=0
-for mode in early-roster-return auto-stale reviewed-partial; do
+warm() {
+    pin=$(sha256sum "$out/stage/opt/c11_owned_modules/release_stage_runtime.json" | awk '{print $1}')
+    docker run --rm --pull never --network none --read-only --user 1000:2000 \
+      --cpus 1 --memory 768m --pids-limit 64 --cap-drop ALL --security-opt=no-new-privileges \
+      --tmpfs /tmp:rw,nosuid,nodev,mode=1777 \
+      --tmpfs /c11-paper:rw,nosuid,nodev,uid=1000,gid=2000,mode=0700 \
+      --mount "type=bind,src=$out/warm/warm_fixture,dst=/fixture,readonly" \
+      --mount "type=bind,src=$out/warm,dst=/proof,readonly" \
+      -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e C11_EXACT_FINAL_RUNTIME_SHA="$pin" \
+      -e C11_OFFLINE_EXPECT_BAKED_SCOPE=no -e C11_FUNCTIONAL_TRIAL=yes -e C11_INTENT_CASE=flat \
+      --entrypoint python "$image" -B /proof/warm_acceptance.py >"$out/warm-runtime.log" 2>&1 &&
+      grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" ||
+      { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
+}
+cold() {
+    mode=$1
     if sh "$d/native_history_scheduler/run_jct_worker_review.sh" "$image" "$out/fixture/jct" \
         "$out/fixture/stopped-paper-only.tgz" "$out/$mode" no "$mode" >"$out/$mode.log" 2>&1; then
         if python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log"; then
-            continue
+            return 0
         fi
     fi
     # CI jobs are public; do not print raw fixture diagnostics or archive rows.
@@ -45,6 +69,14 @@ for mode in early-roster-return auto-stale reviewed-partial; do
     else
         python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log" || true
     fi
-    fail=1
+    return 1
+}
+warm & warm_pid=$!
+cold early-roster-return & blank_pid=$!
+cold auto-stale & stale_pid=$!
+cold reviewed-partial & partial_pid=$!
+fail=0
+for pid in "$warm_pid" "$blank_pid" "$stale_pid" "$partial_pid"; do
+    wait "$pid" || fail=1
 done
 exit "$fail"

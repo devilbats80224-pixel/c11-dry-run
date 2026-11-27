@@ -4,7 +4,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: c11-hosted-worker-${{ github.ref }}
+  group: c11-hosted-worker-${{ github.sha }}
   cancel-in-progress: true
 jobs:
   hosted-worker:

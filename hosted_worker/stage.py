@@ -39,7 +39,14 @@ files["/opt/c11-reviewed-cold-prefix/catalog.json"] = dump(cold / "catalog.json"
 })
 seeds = tree / "c11-reviewed-seeds"
 seeds.mkdir()
-catalog = dump(seeds / "review.json", {"fixture_catalog": True})
+fixtures = Path(sys.argv[4])
+for seed in fixtures.glob("*.json"):
+    assert re.fullmatch(r"(review|[A-Z0-9]+USDT\.(seed|reproduction))\.json", seed.name)
+    path = seeds / seed.name
+    shutil.copyfile(seed, path)
+    files["/opt/c11-reviewed-seeds/" + seed.name] = sha256(path.read_bytes()).hexdigest()
+assert len(list(seeds.iterdir())) == 15
+catalog = files["/opt/c11-reviewed-seeds/review.json"]
 owner = tree / "c11_owned_modules"
 runtime = dump(owner / "release_stage_runtime.json", {
     "release_enabled": False,
