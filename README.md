@@ -49,3 +49,16 @@ rank-slot and symbol boundary before native Freqtrade. It checks preserved
 rank and original Unicode identity, malformed row isolation, the 20% edge,
 and expired or malformed-frame refusal. This does not start or replace the
 production OI20 publisher and no OpenMarket key is present on the runner.
+
+The proposed fallback source under `native_ccxt_projection` is actual
+adapter code, checked out from the PR. GitHub tests it with the original
+Freqtrade provider class and a synthetic in-memory store. This is not proof
+of the real candle database, original C11 strategy or final Worker. Missing
+native evidence still blocks merge.
+
+## 靜態檢查
+
+PR 的既有必過工作會跑 `ruff check .`（全庫 Python 語法與未定義名稱等高信號錯誤）及
+`pyright --project pyrightconfig.json`（目前指定的CI 放行、公開檔案檢查、封存驗證及映像啟動檢查模組，並非全庫）。
+本機使用 Ruff 0.17.6 與 Pyright 1.1.414 即可重跑。擴大型別檢查範圍時請更新
+`pyrightconfig.json`，不要用型別檢查取代既有測試或 Docker 驗證。

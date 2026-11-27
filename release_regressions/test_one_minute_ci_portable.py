@@ -48,7 +48,7 @@ class LaunchChecks(unittest.TestCase):
     def setUp(self):
         self.verify = runpy.run_path(str(HERE / 'check_effective_launch.py'))['verify']
         self.launch = dict(Image='sha256:'+'0'*64,Path='python',
-            Args=['-B','/opt/c11_owned_modules/release_stage.py'],
+            Args=['-B','/opt/c11_owned_modules/release_stage.py'], StartupEnvironment='pinned',
             Mounts=[dict(Type='volume',Name='fixture-paper',Destination='/c11-paper',RW=True)])
         self.receipt = dict(remote_merge='1'*40,local_worker_source='2'*40,tested_launch=self.launch)
 
@@ -63,6 +63,35 @@ class LaunchChecks(unittest.TestCase):
             changed=deepcopy(self.launch)
             changed['Mounts'].append(dict(Type='bind',Source='/fixture',Destination=destination,RW=False))
             self.assertEqual(self.verify(self.receipt,changed),'MOUNT_SHADOWS_TESTED_CODE')
+        for destination in ('/opt/c11','/opt/c11/transport'):
+            changed=deepcopy(self.launch)
+            changed['Mounts'].append(dict(Type='bind',Source='/fixture',Destination=destination,RW=False))
+            # A reviewed and actual launch matching each other is insufficient
+            # if both hide code from the supposedly immutable artifact.
+            receipt={**self.receipt,'tested_launch':changed}
+            with self.subTest(destination=destination):
+                self.assertEqual(self.verify(receipt,changed),'MOUNT_SHADOWS_TESTED_CODE')
+
+    def test_effective_startup_environment_must_be_reviewed(self):
+        changed=deepcopy(self.launch)
+        changed.pop('StartupEnvironment')
+        self.assertEqual(self.verify(self.receipt,changed),'STARTUP_ENVIRONMENT_NOT_ATTESTED')
+        changed['StartupEnvironment']='rejected'
+        self.assertEqual(self.verify(self.receipt,changed),'STARTUP_ENVIRONMENT_REJECTED')
+        self.assertEqual(self.verify({**self.receipt,'tested_launch':changed},changed),
+                         'STARTUP_ENVIRONMENT_REJECTED')
+        changed['StartupEnvironment']='absent'
+        self.assertEqual(self.verify(self.receipt,changed),'STARTUP_ENVIRONMENT_MISMATCH')
+
+    def test_startup_environment_capture_uses_no_secret_values(self):
+        capture = runpy.run_path(str(HERE / 'check_effective_launch.py'))['startup_environment']
+        valid='/freqtrade:/opt/c11_worker:/opt/c11_worker/ports:/opt/c11_worker/sizing:/opt/c11_worker/strategy:/opt/c11:/opt/c11/transport'
+        self.assertEqual(capture(['ORDINARY=example-sensitive-value','PYTHONPATH='+valid]),'pinned')
+        self.assertEqual(capture(['ORDINARY=example-sensitive-value']),'absent')
+        for entries in (['PYTHONPATH=/opt/unreviewed'],['C11_HISTORY_EXTRA=example-sensitive-value'],
+                        ['FREQTRADE__MOCK=example-sensitive-value'],['PYTHONHOME=/opt/unreviewed'],
+                        ['PYTHONPATH='+valid,'PYTHONPATH='+valid]):
+            self.assertEqual(capture(entries),'rejected')
 
     def test_wrong_image_or_paper_volume_is_not_same_release(self):
         changed=deepcopy(self.launch)
@@ -136,6 +165,40 @@ class NativeStatusChecks(unittest.TestCase):
                          {'blank_state': 'missing', 'no_direct_15m': 'failure'})
         self.assertEqual(status['failures'](cases, [
             entry('blank_state', 'success'), entry('no_direct_15m', 'success')]), {})
+
+    def test_hosted_evidence_is_exact_and_does_not_clear_unproven_or_failed_cases(self):
+        e = runpy.run_path(str(HERE / 'native_replay_status.py'))
+        merge = 'a' * 40
+        outstanding = {'blank_checkpoint': 'missing', 'stale_checkpoint': 'failure',
+                       'direct_wide_data_fetch': 'missing', 'exact_package_and_entry': 'missing'}
+        combine = e['merge_hosted_evidence']
+        expected = dict(outstanding)
+        for case in ('blank_checkpoint','direct_wide_data_fetch','exact_package_and_entry'):
+            del expected[case]
+        self.assertEqual(combine(outstanding, merge, merge, True), expected)
+        self.assertEqual(combine(outstanding, merge, 'b' * 40, True), outstanding)
+        self.assertEqual(combine(outstanding, merge, merge, False), outstanding)
+        self.assertEqual(combine({'stale_checkpoint': 'missing'}, merge, merge, True), {})
+        # An external green status does not substitute for the PR build.
+        from unittest.mock import patch
+        with patch.dict('os.environ', {'GITHUB_ACTIONS': 'true', 'HOSTED_WORKER_RESULT': 'failure',
+                                      'HOSTED_VERIFIED_MERGE_SHA': merge}, clear=True):
+            self.assertEqual(e['verify'](['stale_checkpoint'], merge), {'stale_checkpoint': 'missing'})
+
+    def test_native_gate_diagnostics_keep_missing_proof_distinct_from_failure(self):
+        scope = runpy.run_path(str(HERE / 'check_pr_scope.py'))
+        summary = scope['native_failure_summary'](
+            {'stale_checkpoint': 'missing', 'direct_wide_data_fetch': 'failure',
+             'reviewed_history_preserved': 'unverified RAW_SECRET_SAMPLE'},
+            {'stale_checkpoint': 'Use recent history, not listing day.',
+             'direct_wide_data_fetch': 'Route a full 1m refill.',
+             'reviewed_history_preserved': 'Preserve reviewed corrections.'},
+        )
+        self.assertIn('stale_checkpoint', summary)
+        self.assertIn('Use recent history, not listing day.', summary)
+        self.assertIn('No exact-commit proof was registered', summary)
+        self.assertIn('Recorded replay failure', summary)
+        self.assertNotIn('RAW_SECRET_SAMPLE', summary)
 
     def test_invalid_exact_merge_identity_never_queries_github(self):
         status = runpy.run_path(str(HERE / 'native_replay_status.py'))

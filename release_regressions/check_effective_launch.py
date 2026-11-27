@@ -1,14 +1,38 @@
 """Verify sanitized Docker inspect data against an independently reviewed launch receipt."""
+from hashlib import sha256
 import json
 from pathlib import Path, PurePosixPath
 import re
 import sys
 
 CODE_ROOTS = tuple(map(PurePosixPath,(
-    '/opt/c11_owned_modules','/opt/c11_worker','/opt/c11_background_review',
+    '/opt/c11','/opt/c11_owned_modules','/opt/c11_worker','/opt/c11_background_review',
     '/opt/c11-reviewed-seeds','/opt/c11-reviewed-cold-prefix','/freqtrade',
 )))
 HEX40 = re.compile(r'[a-f0-9]{40}')
+
+# Parity with the runtime history-startup guard is exercised on the CI image.
+# Capture a profile only; never serialize unrelated environment values.
+STANDARD_IMPORT_ROOTS_SHA = '2f6cee054742b03ebb87ee8fd691ad39d6b385cf21dffeb72ef3e8bfaa98cc65'
+
+def startup_environment(entries):
+    if not isinstance(entries,list):return 'rejected'
+    roots = None
+    for entry in entries:
+        if not isinstance(entry,str):return 'rejected'
+        key, sep, value = entry.partition('=')
+        if not key or not sep or key.startswith(('C11_HISTORY','FREQTRADE__','PYTHONHOME')):
+            return 'rejected'
+        if key == 'PYTHONPATH':
+            if roots is not None or sha256(value.encode()).hexdigest()!=STANDARD_IMPORT_ROOTS_SHA:
+                return 'rejected'
+            roots = 'pinned'
+    return roots or 'absent'
+
+def sanitize_inspect(inspect):
+    return {**{key:inspect[key] for key in ('Image','Path','Args','Mounts')},
+            'StartupEnvironment':startup_environment(inspect['Config']['Env'])}
+
 
 def launch(d):
     mounts = []
@@ -48,6 +72,11 @@ def verify(receipt, actual):
                 'IMAGE_MISMATCH','EXECUTABLE_MISMATCH','ARGUMENTS_MISMATCH','MOUNT_MISMATCH')):
             if a!=b:
                 return reason
+        profiles = [item.get('StartupEnvironment') for item in (receipt['tested_launch'],actual)]
+        if 'rejected' in profiles:return 'STARTUP_ENVIRONMENT_REJECTED'
+        if any(profile not in ('pinned','absent') for profile in profiles):
+            return 'STARTUP_ENVIRONMENT_NOT_ATTESTED'
+        if profiles[0]!=profiles[1]:return 'STARTUP_ENVIRONMENT_MISMATCH'
         return 'MATCH'
     except ValueError as e:
         return str(e)
@@ -55,6 +84,14 @@ def verify(receipt, actual):
         return 'MALFORMED_RECEIPT'
 
 if __name__=='__main__':
+    if sys.argv[1:]==['--sanitize-inspect']:
+        try:
+            row, = json.load(sys.stdin)
+            result = sanitize_inspect(row)
+        except (KeyError,TypeError,ValueError):
+            raise SystemExit('MALFORMED_INSPECT') from None
+        print(json.dumps(result))
+        raise SystemExit(0)
     if len(sys.argv)!=3:
         raise SystemExit('usage: check_effective_launch.py REVIEWED_RECEIPT SANITIZED_INSPECT_JSON')
     result = verify(*(json.loads(Path(x).read_text()) for x in sys.argv[1:]))

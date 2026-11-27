@@ -3,6 +3,8 @@
     "missing_or_wrong_packaged_file": "ImageChecks.test_absence_and_manifest_mismatch_do_not_pass",
     "wrong_startup_same_image": "LaunchChecks.test_same_image_different_entry_is_rejected",
     "mount_hides_packaged_code": "LaunchChecks.test_same_image_mount_cannot_cover_tested_code",
+    "unproven_effective_startup_environment": "LaunchChecks.test_effective_startup_environment_must_be_reviewed",
+    "startup_environment_sanitization": "LaunchChecks.test_startup_environment_capture_uses_no_secret_values",
     "wrong_image_or_paper_volume": "LaunchChecks.test_wrong_image_or_paper_volume_is_not_same_release",
     "direct_wide_data_fetch": "WireChecks.test_any_direct_wider_request_fails",
     "missing_original_decision": "WireChecks.test_original_callback_and_exact_refill_required",
@@ -11,9 +13,12 @@
     "missing_regression_result": "RegistryChecks.test_missing_or_skipped_test_fails",
     "deleted_regression_case": "RegistryChecks.test_baseline_cases_cannot_disappear_or_change",
     "untrusted_or_incomplete_native_status": "NativeStatusChecks.test_mac_results_must_be_complete_current_and_trusted",
-    "wrong_native_commit_identity": "NativeStatusChecks.test_invalid_exact_merge_identity_never_queries_github"
+    "wrong_native_commit_identity": "NativeStatusChecks.test_invalid_exact_merge_identity_never_queries_github",
+    "native_red_diagnostics": "NativeStatusChecks.test_native_gate_diagnostics_keep_missing_proof_distinct_from_failure",
+    "hosted_evidence_must_link_exact_merge": "NativeStatusChecks.test_hosted_evidence_is_exact_and_does_not_clear_unproven_or_failed_cases"
   },
   "native": {
+    "exact_15m_fallback_preserves_base_history": "A verified same-close direct 15m backup is allowed only if the 1m projection is not ready; keep all admitted 1m warm refill rows and prove the original same-round strategy decision.",
     "legacy_wide_masks_base_gap": "An old stored 15m candle does not prove that its constituent closed 1m candles exist.",
     "base_refill_blocked_by_missing_analyzed_frame": "A missing analyzed 15m frame must not prevent submitting a metered closed-1m history request; prove request, durable refill and an original decision in the same test window.",
     "historic_minutes_not_saved": "Every admitted closed 1m candle and its derived bars persist atomically; raw conflicts must not partially write.",
