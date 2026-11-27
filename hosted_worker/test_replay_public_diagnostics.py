@@ -101,6 +101,18 @@ class PublicDiagnosticsTest(unittest.TestCase):
             self.assertNotEqual(run(valid,False).returncode,0)
             self.assertNotEqual(run({**valid,"original_entry_advice":[]}).returncode,0)
             self.assertNotEqual(run({**valid,"archive_public_receipts":1}).returncode,0)
+            def run_pinned(receipt):
+                log.write_text("C11_REVIEWED_REMOTE_ONLY_NO_LISTING_DISCOVERY\n"+json.dumps(receipt),encoding="utf-8")
+                return subprocess.run(
+                    [sys.executable,"-I","-B",str(Path(__file__).with_name("verify-replay.py")),
+                     "early-roster-return",str(log),"no","yes","no","no","no","yes"],
+                    capture_output=True,text=True,check=False)
+            pinned={**valid,"pinned_remote":True,"archive_public_receipts":74}
+            passed=run_pinned(pinned)
+            self.assertEqual(passed.returncode,0,passed.stderr)
+            for invalid in ({"archive_public_receipts":0},{"discovery_configured":True},{"original_entry_advice":[]}):
+                with self.subTest(invalid=invalid):
+                    self.assertNotEqual(run_pinned({**pinned,**invalid}).returncode,0)
 
     def test_optional_veto_must_be_from_exact_close_and_original_producer(self):
         with tempfile.TemporaryDirectory() as temp:

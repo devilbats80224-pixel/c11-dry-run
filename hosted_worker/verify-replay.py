@@ -18,7 +18,11 @@ assert no_listing == "no" or (cached == remote == prepared == "no" and mode == "
 background = sys.argv[7] if len(sys.argv) >= 8 else "no"
 assert background in {"yes", "no"} and (background == "no" or (cached == "yes" and mode == "yes"))
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial", "yes"}
-case_name = "unseeded-no-listing" if no_listing == "yes" else (
+pinned_no_discovery = sys.argv[8] if len(sys.argv) >= 9 else "no"
+assert pinned_no_discovery in {"yes", "no"} and (
+    pinned_no_discovery == "no" or (remote == "yes" and no_listing == "no" and mode == "early-roster-return")
+)
+case_name = "pinned-remote-no-listing" if pinned_no_discovery == "yes" else "unseeded-no-listing" if no_listing == "yes" else (
     "background-blank" if background == "yes" else mode
 )
 
@@ -199,6 +203,14 @@ elif background == "yes":
     assert all(r["replay_boundary"] - (260 * 15 + 45) * 60_000 <= start < stop <= r["replay_boundary"]
                for start,stop,_,_ in r["shared_1m_requests"]), "BACKGROUND_REQUEST_BEFORE_RECENT_WINDOW"
     assert callback_native_veto, "BACKGROUND_ORIGINAL_CALLBACK_NOT_PROVEN"
+elif pinned_no_discovery == "yes":
+    assert "C11_REVIEWED_REMOTE_ONLY_NO_LISTING_DISCOVERY" in lines
+    assert r.get("discovery_configured") is False, "PINNED_REPLAY_OPENED_LISTING_DISCOVERY"
+    assert r["archive_public_receipts"] > 0, "PINNED_REPLAY_NO_REVIEWED_BYTES"
+    if not callback_native_veto:
+        failure_summary("reviewed source used but original callback absent", "strategy handoff",
+                        "PINNED_NO_DISCOVERY_ORIGINAL_CALLBACK_NOT_PROVEN")
+        raise AssertionError("PINNED_NO_DISCOVERY_ORIGINAL_CALLBACK_NOT_PROVEN")
 elif no_listing == "yes":
     assert r.get("discovery_configured") is False, "UNSEEDED_LISTING_DISCOVERY_UNEXPECTEDLY_ENABLED"
     assert r["archive_public_receipts"] == 0

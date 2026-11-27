@@ -60,6 +60,8 @@ assert not EARLY_ROSTER or ROSTER_RETURN
 AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
 CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
 PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
+PINNED_WITHOUT_DISCOVERY=os.environ.get('C11_JCT_PINNED_WITHOUT_DISCOVERY')=='yes'
+assert not PINNED_WITHOUT_DISCOVERY or PINNED_REMOTE
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
 PREPARED_CHECKPOINT=os.environ.get('C11_JCT_PREPARED_CHECKPOINT')=='yes'
 NO_LISTING_ORIGIN=os.environ.get('C11_JCT_NO_LISTING_ORIGIN')=='yes'
@@ -553,7 +555,7 @@ else:
                     return Receipt(raw,row.get('checksum_ms',row['actual_received_ms'])
                                    if sidecar else row['actual_received_ms'])
             runtime=json.loads(Path('/opt/c11_owned_modules/release_stage_runtime.json').read_bytes())
-            if NO_LISTING_ORIGIN:
+            if NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
                 # Remove only the hosted comparator's archive-origin option.
                 # The identical market cassette and original Worker stay in place.
                 runtime.pop('unseeded_archive_discovery',None)
@@ -587,6 +589,10 @@ else:
                 if NO_LISTING_ORIGIN:
                     assert not sources and not h.archive_prep.discover_unseeded
                     print('C11_CI_ABSENT_CHECKPOINT_NO_LISTING_SETUP',flush=True)
+                if PINNED_WITHOUT_DISCOVERY:
+                    assert sources and all(src.download_only for src in sources.values())
+                    assert not h.archive_prep.discover_unseeded
+                    print('C11_REVIEWED_REMOTE_ONLY_NO_LISTING_DISCOVERY',flush=True)
                 h.cold_prefix=h.archive_prep.cold_admission(run.wall)
                 if CACHED:
                     from cold_prefix import derive
