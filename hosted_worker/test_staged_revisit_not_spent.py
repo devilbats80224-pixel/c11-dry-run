@@ -40,4 +40,10 @@ assert notes == [(proof, "REVISIT_STAGED_FRAME_PENDING")]
 phase["complete"] = True
 assert owner.one_public_revisit(strategy, PAIR) and owner.staged_frame==(proof, ("exact-native-frame",))
 assert not owner.one_public_revisit(strategy, PAIR), "C11_REVISIT_ALREADY_RESERVED_DUPLICATED"
+# The same bytes after the original lease cannot win a revisit.
+owner.spent.clear()
+owner.holds[PAIR] = proof
+clock = proof.expires
+assert not owner.one_public_revisit(strategy, PAIR)
+assert (PAIR, E) not in owner.spent
 print("C11_STAGING_WAIT_PRESERVES_ORIGINAL_SAME_CLOSE_REVISIT")

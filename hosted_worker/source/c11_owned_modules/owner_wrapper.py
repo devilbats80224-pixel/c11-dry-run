@@ -46,7 +46,8 @@ class OwnedWrapper:
             revisit_diagnostic=getattr(self.scheduler,'explain_public_revisit',None),
             revisit_frame=self.scheduler.original_revisit_frame if enabled else None,
             revisit_frame_current=self.scheduler.revisit_frame_current if enabled else None,
-            discard_revisit_frame=self.scheduler.discard_revisit_frame if enabled else None)
+            discard_revisit_frame=self.scheduler.discard_revisit_frame if enabled else None,
+            requires_staged_revisit_frame=self.scheduler.requires_staged_revisit_frame if enabled else None)
         self.bot._c11_owned_data_lane=self
         self.yielded=True
 
