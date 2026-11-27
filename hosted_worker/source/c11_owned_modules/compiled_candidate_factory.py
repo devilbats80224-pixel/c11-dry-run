@@ -36,6 +36,7 @@ class OriginalPlan:
         self.strict_retry={}
         self.retry_fenced=set()
         self.provisional_caps={}
+        self.original_warm_offers={}
         self.closed=False
         self.unplanned_checkpoint_count=0
         self.warm_prepare=None
@@ -85,6 +86,23 @@ class OriginalPlan:
         expires=self.provisional_caps.setdefault((g,end,pair),expires)
         if expires<=self.wall():return None
         return Scope(pair,candidate.symbol,g,end,expires)
+
+    def remember_original_warm_offer(self,scope):
+        # Called only after original entry advice requests its same-round
+        # revisit. Retain that observed cursor, not an invented prior scope.
+        if type(scope) is not Scope or get_ident()!=self.owner or self.closed:
+            return
+        key=(scope.generation,scope.end,scope.pair)
+        if key in self.last or key in self.original_warm_offers:
+            return
+        candidate=self.accepted_candidate(scope)
+        if candidate is None:
+            return
+        start=self.checkpoint_cursor(self.bot,candidate,scope.end)
+        if (type(start) is int and start%FIVE==0 and
+                3<=(scope.end-start)//FIVE<=260 and self.current(scope,self.wall())):
+            self.original_warm_offers={k:v for k,v in self.original_warm_offers.items() if k[:2]==key[:2]}
+            self.original_warm_offers[key]=(self._id(candidate),scope,start)
 
     @staticmethod
     def _id(row):
@@ -153,9 +171,11 @@ class OriginalPlan:
         g=live[0].generation
         self.last={k:v for k,v in self.last.items() if k[0]==g and k[1]==end}
         self.strict_retry={k:v for k,v in self.strict_retry.items() if k[:2]==(g,end)}
+        self.original_warm_offers={k:v for k,v in self.original_warm_offers.items() if k[:2]==(g,end)}
         self.retry_fenced={k for k in self.retry_fenced if k[:2]==(g,end)}
         live_keys={(p.generation,end,p.pair) for p in live}
         self.retry_fenced.update(k for k in self.strict_retry if k not in live_keys)
+        self.original_warm_offers={k:v for k,v in self.original_warm_offers.items() if k in live_keys}
         jobs=[]
         for row in live:
             k=(g,end,row.pair)
@@ -182,14 +202,23 @@ class OriginalPlan:
                 continue
             start=self.checkpoint_cursor(bot,row,end)
             count=(end-start)//FIVE if type(start) is int and start<end and (end-start)%FIVE==0 else 0
-            # No pre-E offer exists for this exact generation; never invent one.
+            # Once the original warmup finishes the cursor, it is too late
+            # to infer an earlier start. Only reuse a still-current cursor
+            # actually witnessed by original entry advice in this generation.
+            recovered_offer=False
             if not 3<=count<=499:
-                self.unplanned_checkpoint_count+=1
-                continue
+                seen=self.original_warm_offers.get(k)
+                if (seen is None or type(start) is not int or start%FIVE!=0
+                        or not end-3*FIVE<start<=end or self._id(row)!=seen[0]
+                        or not now<lease<=seen[1].expires or not self.current(seen[1],now)):
+                    self.unplanned_checkpoint_count+=1
+                    continue
+                start=seen[2]
+                recovered_offer=True
             group=[]
             if self.warm_prepare is not None and self.warm_prepare(scope,start):
                 lanes=('1m',)
-            elif self.warm_keep_legacy is None or self.warm_keep_legacy(scope):
+            elif not recovered_offer and (self.warm_keep_legacy is None or self.warm_keep_legacy(scope)):
                 lanes=('15m','1m','5m')
             else:
                 self.unplanned_checkpoint_count+=1

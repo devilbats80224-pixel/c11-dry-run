@@ -278,7 +278,10 @@ class UnifiedScheduler:
         if (owned is not None and self.marker==(owned.generation,owned.end)
                 and end<=now<owned.expires and self.adapter.ready.authority(owned,now)):
             return owned
-        return self.plan.provisional_scope(pair,end)
+        provisional=self.plan.provisional_scope(pair,end)
+        if provisional is not None:
+            self.plan.remember_original_warm_offer(provisional)
+        return provisional
 
     def original_revisit_frame(self,proof,provider_frame):
         self._owner()
