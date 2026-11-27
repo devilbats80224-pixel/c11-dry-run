@@ -70,7 +70,8 @@ class NativeCandles:
             return
         self.filled_nw_lanes={x for x in self.filled_nw_lanes if x[1]>=end-QUARTER}
         waiting=False
-        for width,count in ((QUARTER,NW_WARM),(MINUTE,30)):
+        minute_waiting=False
+        for width,count in ((MINUTE,30),(QUARTER,NW_WARM)):
             start=end-count*width
             lane=pair,end,width
             if lane in self.filled_nw_lanes:continue
@@ -83,6 +84,8 @@ class NativeCandles:
                 continue
             if owned.covers_native_public(symbol,width,start,end,count):
                 waiting=True
+                if width==MINUTE:
+                    minute_waiting=True
                 continue
             if not end<=now<end+MINUTE:
                 waiting=True
@@ -107,7 +110,28 @@ class NativeCandles:
                         symbol,((MINUTE,()),(FIVE,()),(QUARTER,quarters)),still_current)
                     self.filled_nw_lanes.add(lane)
                     continue
-            self.query(bot,symbol,width,start,end,count,primary_pull=True,
+                if minute_waiting:
+                    # An already-owned terminal receipt can complete our 1m
+                    # basis. Defer only if all earlier minutes are present;
+                    # legitimate absence farther back still allows backup.
+                    old_end=end-30*MINUTE
+                    have,=self.store.db.execute(
+                        'SELECT count(*) FROM candle WHERE symbol=? AND width=? AND open_ms>=? '
+                        'AND open_ms<? AND received_ms<=?',(symbol,MINUTE,start,old_end,now)).fetchone()
+                    if have==(old_end-start)//MINUTE:
+                        continue
+            wire_start,wire_end,wire_count=start,end,count
+            if width==MINUTE:
+                present={row[0] for row in self.store.db.execute(
+                    'SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? '
+                    'AND open_ms<? AND received_ms<=?',(symbol,MINUTE,start,end,now))}
+                missing=[t for t in range(start,end,MINUTE) if t not in present]
+                if missing:
+                    # One bounded request, no surrounding contiguous bars.
+                    # Any present islands inside it keep their original rows.
+                    wire_start,wire_end=missing[0],missing[-1]+MINUTE
+                    wire_count=(wire_end-wire_start)//MINUTE
+            self.query(bot,symbol,width,wire_start,wire_end,wire_count,primary_pull=True,
                        fallback_lease_ns=candidate.expires_ns)
             if self.store.range(symbol,width,start,end,time.time_ns()//1_000_000):
                 self.filled_nw_lanes.add(lane)
