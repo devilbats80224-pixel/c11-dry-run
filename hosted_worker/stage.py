@@ -69,7 +69,7 @@ USER 0:0
 COPY --chown=0:0 opt /opt
 RUN find /opt/c11* -type f -exec chmod 0444 {{}} + && groupadd -f -g 2000 replay
 WORKDIR /freqtrade
-ENV PYTHONPATH=/freqtrade:/opt/c11_owned_modules:/opt/c11_worker:/opt/c11_worker/ports:/opt/c11_worker/sizing:/opt/c11_worker/strategy:/opt/c11:/opt/c11/transport:/opt/c11_background_review
+ENV PYTHONPATH=/freqtrade:/opt/c11_worker:/opt/c11_worker/ports:/opt/c11_worker/sizing:/opt/c11_worker/strategy:/opt/c11:/opt/c11/transport
 USER 1000:2000
 ENTRYPOINT ["python","-B","/opt/c11_owned_modules/release_stage.py"]
 """)

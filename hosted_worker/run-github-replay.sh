@@ -53,10 +53,22 @@ echo "C11_EXACT_REPLAY_IMAGE $image $runtime_pin"
 # image entry below still has no activation authorization and checks real time.
 docker run --rm --pull never --network none --read-only --cap-drop ALL \
     --security-opt=no-new-privileges --entrypoint python "$image" -B -c '
-import time
+import os,sys,time
+# The real absolute-path entry has this script directory automatically.
+# Recreate only that entry directory for the inline check, not PYTHONPATH.
+sys.path.insert(0, "/opt/c11_owned_modules")
+from history_startup_receipt import Hold,_env_guard
 from release_stage import check
+_env_guard(os.environ)
+try:
+    _env_guard(dict(os.environ, PYTHONPATH="/opt/unreviewed"))
+except Hold as e:
+    assert str(e) == "HISTORY_ENV_INJECTION_REFUSED"
+else:
+    raise AssertionError("C11_STARTUP_IMPORT_INJECTION_NOT_REJECTED")
 time.time_ns = lambda: 1795773600000000000
-check()'
+check()
+print("C11_PACKAGED_IMPORT_ROOTS_AND_INJECTION_NEGATIVE_PASS")'
 if docker run --rm --pull never --network none --read-only --cap-drop ALL \
     --security-opt=no-new-privileges "$image" >"$out/activation.log" 2>&1; then
     echo "CI_IMAGE_UNEXPECTEDLY_ENABLED"
