@@ -61,6 +61,7 @@ AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
 CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
 PINNED_REMOTE=os.environ.get('C11_JCT_REVIEWED_REMOTE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
+LEASE_CLOCK = REVIEWED_PARTIAL or EARLY_ROSTER or AUTO_STALE
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
 assert not (CACHED and PINNED_REMOTE)
@@ -225,7 +226,7 @@ else:
             return now*1_000_000
         def monotonic_ns(self):
             nonlocal last_mono
-            if not REVIEWED_PARTIAL:
+            if not LEASE_CLOCK:
                 return real_mono()
             last_mono=max(last_mono,mono_epoch+(now-replay_epoch)*1_000_000+(real_mono()-cycle_wall_start))
             return last_mono
@@ -246,7 +247,7 @@ else:
                 received_at=source.isoformat(),lease_until=lease.isoformat(),rows=roster)
     feed=entry_feed.EntryFeed(Wire(),1)
     feed.classification=N(verified={SYMBOL:PAIR},received_monotonic_ns=time.monotonic_ns())
-    if REVIEWED_PARTIAL:
+    if LEASE_CLOCK:
         # Moving the replay across closed boundaries also ages metadata.
         # Reload only the same fixture-verified market, never public network.
         feed._reviewed_metaclass_fetch=lambda:N(verified={SYMBOL:PAIR},
@@ -504,7 +505,7 @@ else:
         h.shared_minute=SharedHistoryForwarder(run.queue.limiter,run.wall,spawn,trace=trace)
         h.minute_admission=MinuteAdmissionLoop(h,h.shared_minute.lane)
         h.primary_admission=NativePrimaryLane(h,h.shared_minute.lane)
-        if REVIEWED_PARTIAL:
+        if LEASE_CLOCK:
             observed('minute',h.minute_admission)
             observed('primary',h.primary_admission)
         if AUTO_MODE:
@@ -825,7 +826,7 @@ else:
     factory=installed.installed_site_factory(RUNTIME_SHA,lambda *_:None)
     try:
         with ExitStack() as patches:
-            if REVIEWED_PARTIAL:
+            if LEASE_CLOCK:
                 import refresh
                 # Align the fixture's monotonic lease with its market time,
                 # without changing the original per-cycle CPU budget or the
