@@ -448,6 +448,27 @@ def main(outer):
             if end==E and not rollover:
                 rollover.append((observed.costs,tuple(observed.boundary_spend),observed.meta))
                 print('NATIVE_AUTHENTIC_CURRENT_SPEND_BEFORE_OPTIONAL_RESERVE',rollover[0],flush=True)
+                if os.environ.get('C11_MIXED_HISTORY_PRESSURE')=='yes':
+                    from primary_only_route import PrimaryMinuteJob
+                    # Test load ONLY: charge a synthetic seven-symbol history
+                    # tape on the installed meter before genuine Freqtrade
+                    # analysis. The replay sink does not send this load over
+                    # the network or certify synthetic candles or decisions.
+                    for _ in range(25):
+                        observed.account_incumbent_before_wire(2)
+                    for peer in range(7):
+                        right=E
+                        for part in range(8):
+                            left=right-(495 if part<7 else 435)*60_000
+                            page=PrimaryMinuteJob(f'SYNTH{peer}USDT',g,E,E+60_000,left,right,
+                                                  f'{2**120+8*peer+part:032x}')
+                            assert page.valid(clock[0])
+                            token=observed.try_reserve_history(page)
+                            assert token is not None, ('C11_MIXED_HISTORY_STARVED',peer,part,observed.last_history_hold)
+                            assert observed.claim_history_send(token,page), ('C11_MIXED_HISTORY_GRANT_FAILED',peer,part,observed.last_history_hold)
+                            right=left
+                    assert observed.history_costs==(56,112) and observed.costs[1]>144
+                    print('C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY',flush=True)
         observed.set_scope=track_set_scope
         print('EXACT_BOOT_HEADER_OWNED_BEFORE_CURRENT_WORKER_OPTIONAL_BIND',flush=True)
         binding=learner.scheduler.isolated_history
