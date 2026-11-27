@@ -76,7 +76,6 @@ class ReconfirmDispatch:
     def step(self,scopes):
         self.last_reconfirm_events=()
         q=self.queue
-        now=q.wall()
         if self.scope is not None and not self.actor._ready(self.scope):
             self.release('RC_DISPATCH_AUTHORITY_OR_PHASE_LOST')
         elif self.scope is not None and any(k not in q.inflight for k in self.waiting):
@@ -84,8 +83,9 @@ class ReconfirmDispatch:
         scopes=tuple(dict.fromkeys(scopes))
         if self.scope is None:
             for s in scopes:
-                if s.end==self.blocked_end:continue
-                if self.actor.offer(s,q.limiter.reconfirm_limit(q.max_pending-len(q.inflight),3*self.latency_ms))!='SIX_NO_EXTRA_CALLS_RESERVED':continue
+                slots=q.reconfirm_slots(s)
+                if s.end==self.blocked_end or slots<3:continue
+                if self.actor.offer(s,q.limiter.reconfirm_limit(slots,3*self.latency_ms))!='SIX_NO_EXTRA_CALLS_RESERVED':continue
                 self.scope=s
                 self.terminal=None
                 self._note(s,'RC_ESCROW_HELD')
@@ -94,7 +94,9 @@ class ReconfirmDispatch:
                 break
         s=self.scope
         if s is None or self.waiting:return
-        jobs=self.actor.wave(s,q.limiter.reconfirm_limit(q.max_pending-len(q.inflight),3*self.latency_ms),self.plan.ticket_counter+1)
+        slots=q.reconfirm_slots(s)
+        if slots<3:return
+        jobs=self.actor.wave(s,q.limiter.reconfirm_limit(slots,3*self.latency_ms),self.plan.ticket_counter+1)
         self.plan.ticket_counter+=len(jobs)
         for t in jobs:
             rid=f'{self.plan.namespace}.{s.end}.{t.ticket}'

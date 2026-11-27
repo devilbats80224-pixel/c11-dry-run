@@ -55,6 +55,15 @@ class WorkerOwnedPublicQueue:
         self.limiter.set_scope(g,e)
         return True
 
+    def reconfirm_slots(self,scope):
+        self._check()
+        if (self.closed or self.protection_due() or self.current!=(scope.generation,scope.end)
+                or not scope.end<=self.wall()<scope.expires):
+            return 0
+        # Preserve the legacy two-wave headroom (a three-ticket wave in a
+        # four-ticket envelope), not its old global candidate/queue cap.
+        return max(0,4-len(self.inflight))
+
     def submit(self,j):
         self._check()
         self.last_submit_status='submit_shape'
