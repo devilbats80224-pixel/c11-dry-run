@@ -14,15 +14,18 @@ root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -m 755 "$out"
 cp "$root/native_history_scheduler/replay_jct_worker.py" "$root/native_ccxt_projection/current_locked_startup_check.py" "$out/"
 set --
+if [ "${C11_REPLAY_VERIFIED_RAW_CACHE:-no}" = yes ]; then
+    set -- -e C11_JCT_REVIEWED_CACHE=yes
+fi
 if [ "$automatic" = roster-return ] || [ "$automatic" = early-roster-return ]; then
     if [ "$automatic" = early-roster-return ]; then
-        set -- -e C11_JCT_EARLY_ROSTER=yes
+        set -- "$@" -e C11_JCT_EARLY_ROSTER=yes
     fi
     automatic=yes
     set -- "$@" -e C11_JCT_ROSTER_RETURN=yes
 fi
 case "$automatic" in early-deliver|early-hold|early-start|early-no-start)
-    set -- -e "C11_JCT_EARLY_EXPECT=${automatic#early-}"
+    set -- "$@" -e "C11_JCT_EARLY_EXPECT=${automatic#early-}"
     automatic=yes
     ;;
 esac

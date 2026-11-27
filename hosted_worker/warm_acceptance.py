@@ -175,7 +175,15 @@ def main(outer):
     # Scope is intentionally not loaded or consumed by this test. No use
     # of activate(): ABI and native engine provenance, not an authorization test.
     from release_stage import check as check_image
-    check_image()
+    # Check file custody at the combined fixture review time, not the earlier
+    # warm market event. No closed cache is supplied to this warm worker.
+    check_ms=os.environ.get("C11_ARCHIVE_CATALOG_CHECK_MS")
+    if check_ms is None:
+        check_image()
+    else:
+        assert check_ms.isdecimal()
+        with patch.object(time,'time_ns',lambda:int(check_ms)*1_000_000):
+            check_image()
     print('ORDINARY_PACKAGE_MODULES_NO_INJECTED_OVERLAY',flush=True)
     for filename,pin in locked_stage['files'].items():
         p=Path(filename)

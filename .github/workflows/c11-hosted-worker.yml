@@ -31,7 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [warm, early-roster-return, auto-stale, reviewed-partial]
+        case: [warm, early-roster-return, auto-stale, reviewed-partial, cached-blank, cached-stale]
     steps:
       - name: Check out candidate merge
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683

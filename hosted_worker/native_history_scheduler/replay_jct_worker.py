@@ -58,9 +58,11 @@ ROSTER_RETURN=os.environ.get('C11_JCT_ROSTER_RETURN')=='yes'
 EARLY_ROSTER=os.environ.get('C11_JCT_EARLY_ROSTER')=='yes'
 assert not EARLY_ROSTER or ROSTER_RETURN
 AUTO_MODE=os.environ.get('C11_JCT_AUTO_ARCHIVE')=='yes'
+CACHED=os.environ.get('C11_JCT_REVIEWED_CACHE')=='yes'
 AUTO_STALE=os.environ.get('C11_JCT_AUTO_STALE')=='yes'
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
+assert not CACHED or (AUTO_MODE and not (HAN_MODE or INIT_MODE or EARLY_EXPECT))
 assert EARLY_EXPECT is None or (AUTO_MODE and not (ROSTER_RETURN or HAN_MODE or INIT_MODE) and EARLY_EXPECT in ('deliver','hold','start','no-start'))
 assert not (AUTO_MODE and REPLAY_MODE)
 assert not REVIEWED_PARTIAL or not (AUTO_MODE or REPLAY_MODE)
@@ -410,8 +412,25 @@ else:
                     lambda _self,*args:tape_http.get(*args)))
                 patches.enter_context(patch.object(AutomaticArchive,'start',
                     lambda _self,fact,cancel:start(_self,fact,cancel,grid_shift=SHIFT)))
-                h.archive_prep=plan(runtime,{},run.wall,HISTORY_PREP_ENABLED)
+                sources={}
+                cache_origins={}
+                if CACHED:
+                    from dataclasses import replace
+                    from cold_archive_release import installed_sources
+                    cache_origins=installed_sources(runtime,run.wall(),verify_content=True)
+                    assert cache_origins and SYMBOL in cache_origins
+                    sources={name:replace(src, origin=src.origin+SHIFT,cutoff=src.cutoff+SHIFT)
+                             for name,src in cache_origins.items()}
+                h.archive_prep=plan(runtime,sources,run.wall,HISTORY_PREP_ENABLED)
                 h.cold_prefix=h.archive_prep.cold_admission(run.wall)
+                if CACHED:
+                    from cold_prefix import derive
+                    h.cold_prefix.reviewed.prepare=lambda sym,_spec,wall,cancel: derive(
+                        sym,cache_origins[sym],wall,cancel,grid_shift=SHIFT)
+                    # A cache-only recovery may not silently reopen the listing scan.
+                    def deny_archive_download(*_args):
+                        raise AssertionError('C11_CACHED_RECOVERY_USED_ARCHIVE_NETWORK')
+                    patches.enter_context(patch.object(OfficialArchiveHTTP,'get',deny_archive_download))
                 auto_lane=h.cold_prefix.public
             else:
                 auto=AutomaticArchive(TapeHTTP(),run.wall)
@@ -466,9 +485,11 @@ else:
             result=original_cycle(self,*a,**kw)
         cycle_count+=1
         why=history.minute_admission.reason.get(SYMBOL)
-        if EARLY_ROSTER and not first_cold_start and history.cold_prefix.public.active is not None:
-            assert history.cold_prefix.public.active[0]==SYMBOL
-            first_cold_start.append(now%Q)
+        if EARLY_ROSTER and not first_cold_start:
+            lane=history.cold_prefix.reviewed if CACHED else history.cold_prefix.public
+            if lane.active is not None:
+                assert lane.active[0]==SYMBOL
+                first_cold_start.append(now%Q)
         if why is not None and why not in seed_seen:
             seed_seen.append(why)
         if REPLAY_MODE and cycle_count>=2:
@@ -542,7 +563,7 @@ else:
             step=1000 if phase=='cold' and (cursor is None or (AUTO_STALE and cursor==ORIGIN)) and AUTO_MODE else 5000
             next_now+=step
         if EARLY_ROSTER and cycle_count%4==0:
-            slot=history.cold_prefix.public.pending.get(SYMBOL)
+            slot=None if CACHED else history.cold_prefix.public.pending.get(SYMBOL)
             f=slot.fact if slot else None
             data=dict(age=now%Q,cursor=cursor,ready=bool(slot and slot.result is not None),
                       status=slot.status if slot else None,current=bool(f and history.tap.current(f)),
@@ -578,7 +599,7 @@ else:
                 else:
                     assert recovered[1]==base['archive_manifest_sha'] and saved_rpd is None
             if AUTO_MODE:
-                expected_requests=0 if RESTART=='resume' else 56 if HAN_MODE else 88 if INIT_MODE else 74
+                expected_requests=0 if RESTART=='resume' or CACHED else 56 if HAN_MODE else 88 if INIT_MODE else 74
                 assert len(archive_wire)==expected_requests and len({url for url,_ in archive_wire})==expected_requests
                 if HAN_MODE:
                     assert all('%E7%89%9B%E6%9D%A5USDT' in url for url,_ in archive_wire)
@@ -616,7 +637,7 @@ else:
                    original_entry_advice=advice_sources,
                    initial_cold_start_age_ms=first_cold_start[0] if first_cold_start else None,
                    uncovered_tape_requests=len(uncovered_tape),
-                   automatic_archive=AUTO_MODE,automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
+                   automatic_archive=AUTO_MODE,verified_raw_archive_cache=CACHED,automatic_stale_repair=AUTO_STALE,reviewed_partial_repair=REVIEWED_PARTIAL,roster_drop_return_verified=saw_absent,archive_public_receipts=len(archive_wire),
                    retained_stages=dict(Counter(x.get('stage',x.get('reason')) for x in loop_trace)))),flush=True)
             raise Done
         if cycle_count>=36:

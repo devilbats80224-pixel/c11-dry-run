@@ -3,7 +3,9 @@ import json
 from pathlib import Path
 import sys
 
-mode, log = sys.argv[1:]
+mode, log = sys.argv[1:3]
+cached = sys.argv[3] if len(sys.argv) == 4 else "no"
+assert cached in {"yes", "no"}
 assert mode in {"early-roster-return", "auto-stale", "reviewed-partial"}
 records = []
 for line in Path(log).read_text(errors="replace").splitlines():
@@ -21,13 +23,25 @@ r = records[0]
 status = r["status"]
 recent = "AUTO_RECENT_MINUTES_ONLY_ORIGINAL_STATE_UNVERIFIED" in r.get("prefix_statuses", [])
 stages = r.get("retained_stages", {})
-print("C11_HOSTED_REPLAY", mode, status, "lacks_state", recent,
+missing = r.get("uncovered_tape_requests", 0)
+assert type(missing) in (int, list)
+missing_count = missing if type(missing) is int else len(missing)
+print("C11_HOSTED_REPLAY", mode, status, "lacks_state", recent, "cache_required", cached,
       "pages_requested", len(r.get("shared_1m_requests", [])),
       "pages_persisted", int(stages.get("PERSISTED", 0)),
       "replies_rejected", int(stages.get("REPLY_REJECTED", 0)),
       "budget_held", int(stages.get("BUDGET_HELD", 0)),
-      "tape_windows_missing", len(r.get("uncovered_tape_requests", [])))
+      "tape_windows_missing", missing_count)
+safe_refusals = {"STALE_SCOPE_OR_DELIVERY", "PROTOCOL", "HTTP_STATUS", "NO_HTTP_RECEIPT",
+                 "NOT_DISPATCHED_BY_CHILD", "WEIGHT_HEADER", "RECEIPT_TIME", "ROW_COUNT"}
+refusals = sorted({row.get("stage_reason") for row in r.get("reply_refusals", [])
+                   if isinstance(row, dict) and row.get("stage_reason") in safe_refusals})
+if refusals:
+    print("C11_HOSTED_REPLAY_REJECTION", mode, ",".join(refusals))
 assert status == "JCT_ORIGINAL_5M_VETO" and r.get("zero_orders") is True
+assert bool(r.get("verified_raw_archive_cache")) == (cached == "yes")
+if cached == "yes":
+    assert r["archive_public_receipts"] == 0, "CACHE_REOPENED_ARCHIVE_NETWORK"
 assert any(item.get("status") == "VETO" and item.get("method") == "record_verified_veto"
            for item in r.get("decision_sources", [])), "ORIGINAL_STRATEGY_VERDICT_NOT_PROVEN"
 assert r.get("automatic_archive") is (mode != "reviewed-partial")

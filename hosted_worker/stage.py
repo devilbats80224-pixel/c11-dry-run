@@ -5,6 +5,9 @@ from pathlib import Path
 import re
 import shutil
 import sys
+from runpy import run_path
+
+copy_archives = run_path(str(Path(__file__).with_name("stage_archive_cache.py")))["copy_archives"]
 
 def dump(path, obj):
     path.write_text(json.dumps(obj, sort_keys=True, separators=(",", ":")) + "\n")
@@ -34,9 +37,10 @@ for f, rel in inputs + overlay:
 assert len(files) > 150
 cold = tree / "c11-reviewed-cold-prefix"
 cold.mkdir()
-files["/opt/c11-reviewed-cold-prefix/catalog.json"] = dump(cold / "catalog.json", {
+cold_catalog = (copy_archives(sys.argv[5], cold) if len(sys.argv) == 6 else {
     "schema": "c11-reviewed-cold-prefix-v1", "sources": {}
 })
+files["/opt/c11-reviewed-cold-prefix/catalog.json"] = dump(cold / "catalog.json", cold_catalog)
 seeds = tree / "c11-reviewed-seeds"
 seeds.mkdir()
 fixtures = Path(sys.argv[4])
