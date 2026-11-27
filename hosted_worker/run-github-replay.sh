@@ -37,11 +37,15 @@ if [ "$2" = build ]; then
       --mount "type=bind,src=$out/prepare-input/opt,dst=/raw-build,readonly" \
       --mount "type=bind,src=$d/build_prepared_checkpoint.py,dst=/prepare.py,readonly" \
       --entrypoint python "docker.io/freqtradeorg/freqtrade@$base" -B /prepare.py "$catalog_pin" >"$out/prepared-prefix.json"
-    # Exact separately reproduced checkpoint for this frozen public fixture.
+    # Package only the exact independently reviewed reference, never the
+    # host's potentially CPU-dependent rederived floating-point bytes.
     prepared_pin=002fd0a569094afef11b4ae6b14722e616598aaff20b4ed8734b5934f10cb820
-    printf '%s  %s\n' "$prepared_pin" "$out/prepared-prefix.json" | sha256sum -c -
+    reference="$d/fixtures/jct-reviewed-prefix.json"
+    printf '%s  %s\n' "$prepared_pin" "$reference" | sha256sum -c -
+    python3 -B "$d/test_prepared_reproduction.py"
+    python3 -I -B "$d/verify_prepared_reproduction.py" "$reference" "$out/prepared-prefix.json"
     C11_ISOLATED_UNSEEDED_DISCOVERY=yes python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base" \
-      "$out/warm/baked_catalog" "$out/fixture/jct" "$out/prepared-prefix.json" "$prepared_pin"
+      "$out/warm/baked_catalog" "$out/fixture/jct" "$reference" "$prepared_pin"
     DOCKER_BUILDKIT=0 docker build --pull=false --network=none --iidfile "$artifact/image.iid" "$out/stage"
     image=$(cat "$artifact/image.iid")
     sha256sum "$out/stage/opt/c11_owned_modules/release_stage_runtime.json" | awk '{print $1}' >"$artifact/runtime.sha"
