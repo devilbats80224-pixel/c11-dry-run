@@ -378,9 +378,51 @@ else:
             state_box[0].check_locked()
             assert h.store.db.execute('PRAGMA database_list').fetchall()==[(0,'main','/c11-paper/causal-candles.sqlite')]
         h.check_store=store_check
-        h.shared_minute=SharedHistoryForwarder(run.queue.limiter,run.wall,spawn,trace=loop_trace.append)
+        # Fixture-only: identify which original predicate is holding a page.
+        # Every acceptance decision still comes from the unmodified authority.
+        last_refusal={}
+        def observed(label, owner_lane):
+            book=owner_lane.pending
+            decide=book.authority
+            def authority(job, witness):
+                ok=decide(job,witness)
+                last_refusal.clear()
+                if ok or not REVIEWED_PARTIAL:
+                    return ok
+                fact=witness if label=='minute' else witness.fact
+                now=run.wall()
+                reasons=[]
+                if not job.valid(now): reasons.append('JOB_INVALID')
+                if not h.tap.current(fact): reasons.append('FACT_NOT_CURRENT')
+                if label=='minute':
+                    if not owner_lane.cycle_headroom(): reasons.append('NO_CYCLE_HEADROOM')
+                    if run.queue.inflight: reasons.append('MINUTE_ORIGINAL_WIRE_BUSY')
+                else:
+                    scope=witness.scope
+                    hold=owner_lane.phase_hold()
+                    if hold: reasons.append(hold)
+                    if not scope.end<=now<scope.expires: reasons.append('OUTSIDE_SCOPE')
+                    if (job.symbol,job.generation)!=(fact.symbol,fact.generation):
+                        reasons.append('JOB_FACT_MISMATCH')
+                    if any((other.symbol,other.end)==(scope.symbol,scope.end)
+                           for other,_,_ in run.queue.inflight.values()):
+                        reasons.append('SAME_SYMBOL_WIRE_BUSY')
+                    if not run.plan.current(scope,now): reasons.append('PLAN_NOT_CURRENT')
+                    if (scope.generation,scope.end,scope.pair) in run.plan.last:
+                        reasons.append('ALREADY_DECIDED')
+                last_refusal.update(lane=label,reasons=reasons or ['HOLD_NOT_REOBSERVED'])
+                return ok
+            book.authority=authority
+        def trace(event):
+            if event.get('stage_reason') in ('SCOPE_INVALID_AT_READ','SCOPE_AND_PARENT_DELIVERY_EXPIRED'):
+                event={**event,'fixture_scope_read':dict(last_refusal)}
+            loop_trace.append(event)
+        h.shared_minute=SharedHistoryForwarder(run.queue.limiter,run.wall,spawn,trace=trace)
         h.minute_admission=MinuteAdmissionLoop(h,h.shared_minute.lane)
         h.primary_admission=NativePrimaryLane(h,h.shared_minute.lane)
+        if REVIEWED_PARTIAL:
+            observed('minute',h.minute_admission)
+            observed('primary',h.primary_admission)
         if AUTO_MODE:
             from auto_cold_archive import AutoColdAdmission, AutomaticArchive, Hold, Receipt
             cassette=Path('/archive-wire')

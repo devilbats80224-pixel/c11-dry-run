@@ -39,6 +39,17 @@ refusals = sorted({row.get("stage_reason") for row in r.get("reply_refusals", []
                    if isinstance(row, dict) and row.get("stage_reason") in safe_refusals})
 if refusals:
     print("C11_HOSTED_REPLAY_REJECTION", mode, ",".join(refusals))
+safe_scope_reasons = {
+    "JOB_INVALID", "FACT_NOT_CURRENT", "NO_CYCLE_HEADROOM", "MINUTE_ORIGINAL_WIRE_BUSY",
+    "OWNER_CYCLE_UNAVAILABLE", "PROTECTION_PRIORITY", "OUTSIDE_SCOPE", "JOB_FACT_MISMATCH",
+    "SAME_SYMBOL_WIRE_BUSY", "PLAN_NOT_CURRENT", "ALREADY_DECIDED", "HOLD_NOT_REOBSERVED",
+}
+for row in r.get("reply_refusals", [])[:10]:
+    scope = row.get("fixture_scope_read") if isinstance(row, dict) else None
+    if isinstance(scope, dict) and scope.get("lane") in ("minute", "primary"):
+        reasons = scope.get("reasons", [])
+        if isinstance(reasons, list) and all(isinstance(x, str) and x in safe_scope_reasons for x in reasons):
+            print("C11_HOSTED_REPLAY_SCOPE_DIAGNOSTIC", mode, scope["lane"], ",".join(reasons))
 assert status == "JCT_ORIGINAL_5M_VETO" and r.get("zero_orders") is True
 assert bool(r.get("verified_raw_archive_cache")) == (cached == "yes")
 if cached == "yes":
