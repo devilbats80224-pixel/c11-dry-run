@@ -11,7 +11,7 @@ printf '%s\n' "$image" | grep -Eq '^sha256:[a-f0-9]{64}$'
 case "$baseline:$automatic" in yes:no|no:yes|no:han|no:han-restart|no:init|no:no|no:reviewed-partial|no:auto-stale|no:roster-return|no:early-roster-return|no:early-deliver|no:early-hold|no:early-start|no:early-no-start) ;; *) exit 64;; esac
 test "$(shasum -a 256 "$stopped" | awk '{print $1}')" = 470d26f561f5ef25e8467fc67b3250e36fb4f54f280e20afa8f725c5767c2eac
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-mkdir -m 700 "$out"
+mkdir -m 755 "$out"
 cp "$root/native_history_scheduler/replay_jct_worker.py" "$root/native_ccxt_projection/current_locked_startup_check.py" "$out/"
 set --
 if [ "$automatic" = roster-return ] || [ "$automatic" = early-roster-return ]; then
@@ -35,7 +35,7 @@ if [ "$automatic" = reviewed-partial ]; then
     set -- -e C11_JCT_REVIEWED_PARTIAL=yes
 fi
 if [ "$automatic" != no ]; then
-    mkdir -m 700 "$out/fixture"
+    mkdir -m 755 "$out/fixture"
     for file in receipt.json jct-after-archive.native.json contract.json; do
         cp "$fixture/$file" "$out/fixture/$file"
     done
@@ -62,6 +62,13 @@ set -- "$@" --rm --pull never --network none --read-only --user 1000:2000 \
     --mount "type=bind,src=$out,dst=/fixture-driver,readonly" \
     --mount "type=bind,src=$fixture,dst=/jct,readonly" \
     --mount "type=bind,src=$stopped,dst=/stopped.tar.gz,readonly"
+# Hosted Docker runs the worker as UID 1000, not the runner's host UID.
+# Require the exact isolated mounts to be readable before entering the replay.
+docker run "$@" --entrypoint /bin/sh "$image" -ec '
+    test -r /fixture-driver/replay_jct_worker.py &&
+    test -r /jct/receipt.json && test -r /stopped.tar.gz &&
+    { test ! -d /archive-wire || test -r /archive-wire/manifest.json; }' ||
+   { echo C11_REPLAY_FIXTURE_NOT_READABLE >&2; exit 67; }
 if [ "${restart:-no}" = yes ]; then
     docker run "$@" --entrypoint /bin/sh "$image" -ec '
         C11_HAN_RESTART_PHASE=prepare python -B /fixture-driver/replay_jct_worker.py

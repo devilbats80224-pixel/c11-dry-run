@@ -11,6 +11,9 @@ curl -fsSL --retry 2 --max-time 180 -o "$out/input.tgz" "$fixture_url"
 printf '%s  %s\n' "$fixture_sha" "$out/input.tgz" | sha256sum -c -
 mkdir -m 700 "$out/fixture"
 tar -xzf "$out/input.tgz" --directory "$out/fixture" --no-same-owner --no-same-permissions
+# Only make the reviewed fixture mounts readable to UID 1000, not the run log folder.
+find "$out/fixture" -type d -exec chmod 0755 '{}' +
+find "$out/fixture" -type f -exec chmod 0444 '{}' +
 docker pull --platform linux/arm64 "docker.io/freqtradeorg/freqtrade@$base"
 python3 -I -B "$d/stage.py" "$d/source" "$out/stage" "$base"
 DOCKER_BUILDKIT=0 docker build --pull=false --network=none --iidfile "$out/image.iid" "$out/stage"
@@ -33,7 +36,15 @@ for mode in early-roster-return auto-stale reviewed-partial; do
     fi
     # CI jobs are public; do not print raw fixture diagnostics or archive rows.
     echo "C11_HOSTED_WORKER_CASE_FAILED $mode"
-    python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log" || true
+    if grep -q 'C11_REPLAY_FIXTURE_NOT_READABLE' "$out/$mode.log"; then
+        echo "C11_REPLAY_FIXTURE_NOT_READABLE $mode"
+    elif grep -q 'Permission denied' "$out/$mode.log"; then
+        echo "C11_REPLAY_PERMISSION_ERROR $mode"
+    elif grep -q 'docker: ' "$out/$mode.log"; then
+        echo "C11_REPLAY_DOCKER_START_ERROR $mode"
+    else
+        python3 -I -B "$d/verify-replay.py" "$mode" "$out/$mode.log" || true
+    fi
     fail=1
 done
 exit "$fail"
