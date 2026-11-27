@@ -4,6 +4,7 @@ All unclassified paths are treated as execution-affecting. The public
 workflow reads only verified status summaries, never private replay data.
 """
 import json
+import re
 from pathlib import Path
 import runpy
 import subprocess
@@ -16,6 +17,8 @@ PORTABLE = frozenset({
     ".gitignore",
     "release_regressions/check_public_tracked_files.py",
     "release_regressions/check_pr_scope.py",
+    "release_regressions/check_version_record.py",
+    "release_regressions/test_version_record.py",
     "release_regressions/native_replay_status.py",
     "release_regressions/public_freqtrade_replay.py",
     "release_regressions/oi20_contract/__init__.py",
@@ -30,7 +33,8 @@ PORTABLE = frozenset({
 
 
 def requires_native_replay(paths):
-    return sorted(set(paths) - PORTABLE)
+    return sorted(path for path in set(paths) - PORTABLE
+                  if not re.fullmatch(r"docs/version-records/[a-z0-9][a-z0-9-]*\.md", path))
 
 
 def main():

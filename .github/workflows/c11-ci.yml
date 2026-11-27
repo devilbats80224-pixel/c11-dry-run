@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Verify CI shell syntax
         run: |
           sh -n release_regressions/build_and_run_one_minute_ci.sh
@@ -28,6 +28,11 @@ jobs:
           sh -n release_regressions/run_merged_main_ci.sh
           sh -n native_history_scheduler/run_integrated_cold_warm_review.sh
           sh -n native_history_scheduler/run_prior_invariants.sh
+      - name: Verify version record rules
+        run: python3 -I -B release_regressions/test_version_record.py
+      - name: Require a traceable version record for this PR
+        if: github.event_name == 'pull_request'
+        run: python3 -I -B release_regressions/check_version_record.py HEAD^1 HEAD^2
       - name: Reject tracked local-only files
         run: python3 -I -B release_regressions/check_public_tracked_files.py
       - name: Run portable regression tests
