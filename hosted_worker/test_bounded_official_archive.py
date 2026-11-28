@@ -74,6 +74,9 @@ def main():
         attempted[0]=True
         scoped=lane.request(fact,spans)
         assert len(scoped)==1 and not lane.request(fact,spans)
+        # The primary source can fill the first gap before the archive is
+        # done. The remaining gap still resolves to the same official ZIP.
+        assert not lane.request(fact,(spans[-1],)), 'C11_ARCHIVE_REMAINDER_REDOWLOADS_SAME_DAY'
         next(iter(lane.pending.values()))[2].result(timeout=5)
         eligible[0]=False
         assert lane.drain()==((scoped[0],'C11_ARCHIVE_FALLBACK_SCOPE_LOST',0),)
@@ -83,6 +86,22 @@ def main():
         next(iter(lane.pending.values()))[2].result(timeout=5)
         assert lane.drain()==((scope,'C11_ARCHIVE_FALLBACK_RAW_COMMITTED',0),)
         assert len(committed)==1 and committed[0][1].rows==proof.rows
+    finally:
+        lane.close()
+    # A new still-qualified generation can accept data-only overlap for
+    # the same authenticated contract/close without reviving the old rank.
+    active_generation=[fact.generation]
+    receipts=[]
+    transport,calls=transcript(checksum,now)
+    lane=policy.BoundedArchiveFallback(lambda:now,qualified=lambda s:s.generation==active_generation[0],
+        receipt_qualified=lambda s:s.symbol==fact.symbol and s.boundary==end and active_generation[0]>=s.generation,
+        attempted=lambda _:True,commit_raw=lambda scope,receipt:not receipts.append((scope,receipt)),transport=transport)
+    try:
+        prior=lane.request(fact,spans)[0]
+        active_generation[0]+=1
+        next(iter(lane.pending.values()))[2].result(timeout=5)
+        assert lane.drain()==((prior,'C11_ARCHIVE_FALLBACK_RAW_COMMITTED',0),)
+        assert len(receipts)==1 and calls==[url+'.CHECKSUM',url]
     finally:
         lane.close()
     print('C11_BOUNDED_ARCHIVE_BACKUP_EXACT_REQUIRED_DAYS_PASS')
