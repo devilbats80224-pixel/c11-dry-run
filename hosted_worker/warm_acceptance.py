@@ -852,7 +852,7 @@ def main(outer):
                     actual.append(value)
                 return value
             with patch.object(strategy,'primary_inputs',side_effect=observe_primary):
-                strategy.analyze_pair(PAIR)
+                w.freqtrade.process()
                 strategy.analyze_pair(PAIR)
             calls=[a for a in advice if a==(62_000,PAIR,'ORIGINAL_NATIVE_CALLBACK')]
             assert len(calls)==1 and actual, (
