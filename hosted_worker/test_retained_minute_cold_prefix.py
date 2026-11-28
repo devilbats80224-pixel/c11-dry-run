@@ -147,7 +147,44 @@ def old_listing_with_blank_state_uses_recent_required_rows():
         store.db.close()
 
 
+def complete_cached_candidates_share_one_ready_owner_pass():
+    """Regression: ready candidate installation was serialized after worker completion."""
+    names=('CACHEDONE','CACHEDTWO','CACHEDTHREE')
+    facts=tuple(N(symbol=x+'USDT',pair=x+'/USDT:USDT',origin=ORIGIN,
+                  boundary=END,generation=11) for x in names)
+    store=CausalBars(':memory:')
+    AtrErCheckpoint(store)
+    permitted={f.symbol for f in facts}
+    ready=lambda f:f.symbol in permitted and any(f is x for x in facts)
+    owner=N(store=store,check_store=lambda:None,tap=N(current=ready),
+            cold_delivery_window=lambda:True,cold_delivery_allows=ready)
+    def unexpected_archive(*_):
+        raise AssertionError('C11_READY_COLD_CANDIDATE_UNEXPECTED_REFETCH')
+    lane=AutoColdAdmission(lambda:WALL,unexpected_archive)
+    try:
+        for f in facts:
+            store.record(f.symbol,MINUTE,tuple(ClosedBar(t,t+MINUTE,100,101,99,100,10,1000)
+                         for t in range(ORIGIN,CUTOFF,MINUTE)))
+            assert lane.offer_retained(owner,f)=='AUTO_RETAINED_MINUTES_QUEUED'
+        lane.tick(owner,prepare_only=True)
+        assert set(lane.active_jobs)==permitted
+        for _,_,worker in tuple(lane.active_jobs.values()):
+            worker.result(timeout=10)
+        revoked=facts[1].symbol
+        permitted.remove(revoked)
+        lane.tick(owner,ready_only=True)
+        actual={f.symbol for f in facts if store.segment(f.symbol) is not None}
+        assert actual==permitted, ('C11_READY_COLD_OWNER_SERIALIZED_INSTALL',
+                                   'expected_current',len(permitted),'installed',len(actual))
+        assert store.segment(revoked) is None
+    finally:
+        lane.close()
+        store.db.close()
+    print('C11_ALL_CURRENT_READY_COLD_PREFIXES_INSTALL_IN_OWNER_PASS')
+
+
 if __name__=='__main__':
     main()
     older_but_fully_retained_can_queue_without_archive()
     old_listing_with_blank_state_uses_recent_required_rows()
+    complete_cached_candidates_share_one_ready_owner_pass()
