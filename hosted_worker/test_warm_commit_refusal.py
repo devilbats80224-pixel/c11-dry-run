@@ -127,4 +127,26 @@ assert route.frame(proof)==terminal15, (
 assert store.range(symbol,FIVE,t,t+FIVE,stamp)==(direct_five,)
 assert store.range(symbol,MINUTE,E-QUARTER,E,stamp)==now_minutes
 assert store.range(symbol,QUARTER,E-QUARTER,E,stamp)==terminal15
+assert any(n[2:4]==("atomic_phase", "ATOMIC_HISTORICAL_FIVE_BASIS_RETAINED") for n in notes)
 print("C11_WARM_HISTORICAL_FIVE_SAME_EXACT_BASIS_PRESERVES_RAW_AND_COMMITS_NEW")
+
+# The same alternate calculation cannot hide an added quantity, a
+# different constituent receipt, or a conflict in the just-closed quarter.
+for seq,kind in enumerate(("different-quantity","different-minute","terminal"),5):
+    sym="FIVEPROOFNEG"+str(seq)+"USDT"
+    fence=SimpleNamespace(generation=seq,symbol=sym,end=E)
+    store.record(sym,MINUTE,old_minutes)
+    if kind=="terminal":
+        store.record(sym,FIVE,(replace(terminal5[0],volume=2.),))
+        variant=(now_minutes,terminal5)
+    else:
+        store.record(sym,FIVE,(direct_five,))
+        variant=(old_minutes+now_minutes,(replace(computed_five,quote=decimal_sum+1.) if kind=="different-quantity" else computed_five,)+terminal5)
+        if kind=="different-minute":
+            variant=((replace(old_minutes[0],quote=9.),)+variant[0][1:],variant[1])
+    notes.clear()
+    route.prepared=(proof,fence,object(),((MINUTE,variant[0]),(FIVE,variant[1]),(QUARTER,terminal15)),False)
+    assert route.frame(proof)==(), ("C11_WARM_FIVE_BASIS_ON_UNPROVEN_INPUT",kind)
+    assert not store.range(sym,QUARTER,E-QUARTER,E,stamp)
+    assert not any(n[3]=="ATOMIC_HISTORICAL_FIVE_BASIS_RETAINED" for n in notes)
+print("C11_WARM_FIVE_BASIS_NEGATIVES_EXACTLY_REFUSED")
