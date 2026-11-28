@@ -2,7 +2,7 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import csv
-from dataclasses import dataclass, replace
+from dataclasses import astuple, dataclass, replace
 from hashlib import sha256
 import io
 import json
@@ -41,6 +41,88 @@ def unusable_retained_prior(db,prior,fact,now):
                 and db.execute(f'SELECT 1 FROM {table} WHERE symbol=?',(fact.symbol,)).fetchone()):
             return False
     return True
+
+
+def advanced_missing_minutes(db,prior,fact,now,start):
+    """Yield missing recoverable-minute opens before the current input window."""
+    if (prior.symbol!=fact.symbol or not prior.segment or prior.checkpoint is None
+            or not fact.origin<start or start%QUARTER):
+        return
+    listing, proven=prior.segment
+    if listing!=fact.origin or not 0<listing<=proven<=now:
+        return
+    try:
+        state=RpdState.restore(prior.checkpoint)
+    except (Refused,ValueError,KeyError,TypeError):
+        return
+    cursor=state.next_open
+    if ((state.symbol,state.origin)!=(fact.symbol,listing) or type(state.n) is not int or state.n<=0
+            or type(cursor) is not int or type(state.observed) is not int
+            or cursor!=listing+state.n*FIVE or not cursor<=state.observed<=now or cursor>=start):
+        return
+    # Native validated 5m is already authoritative. Otherwise require every
+    # exact 1m open in that slot; timestamps beyond now never fill a gap.
+    native=iter(db.execute('SELECT open_ms FROM candle WHERE symbol=? AND width=? '
+                           'AND open_ms>=? AND open_ms<? AND received_ms<=? ORDER BY open_ms',
+                           (fact.symbol,FIVE,cursor,start,now)))
+    minutes=iter(db.execute('SELECT open_ms FROM candle WHERE symbol=? AND width=? '
+                            'AND open_ms>=? AND open_ms<? AND received_ms<=? ORDER BY open_ms',
+                            (fact.symbol,MINUTE,cursor,start,now)))
+    five=next(native,None)
+    minute=next(minutes,None)
+    while cursor<start:
+        if five==(cursor,):
+            five=next(native,None)
+        else:
+            while minute is not None and minute[0]<cursor:
+                minute=next(minutes,None)
+            for opened in range(cursor,cursor+FIVE,MINUTE):
+                if minute==(opened,):
+                    minute=next(minutes,None)
+                else:
+                    yield opened
+        cursor+=FIVE
+
+
+def advanced_retained_gap(db,prior,fact,now,start):
+    first=next(advanced_missing_minutes(db,prior,fact,now,start),None)
+    return first//FIVE*FIVE if first is not None else None
+
+
+def prefer_recent_input(store,prior,fact,now):
+    """Conservative data-only choice, even before recent raw input is complete."""
+    from atr_er_state import REQUIRED_QUARTERS
+    cutoff=fact.boundary-QUARTER
+    start=cutoff-REQUIRED_QUARTERS*QUARTER
+    if not fact.origin<start or not fact.boundary<=now<fact.boundary+QUARTER:
+        return False
+    (available,)=store.db.execute('SELECT COUNT(*) FROM candle WHERE symbol=? AND width=? '
+                                  'AND open_ms>=? AND open_ms<? AND received_ms<=? AND open_ms % ?=0',
+                                  (fact.symbol,MINUTE,start,cutoff,now,MINUTE)).fetchone()
+    recent_missing=REQUIRED_QUARTERS*(QUARTER//MINUTE)-available
+    return any(i>recent_missing for i,_ in enumerate(
+        advanced_missing_minutes(store.db,prior,fact,now,start),1))
+
+
+def archive_advanced_prior(db,prior,start,manifest,gap):
+    symbol=prior.symbol
+    def rows(table, ordered=''):
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone():
+            return ()
+        return tuple(db.execute(f'SELECT * FROM {table} WHERE symbol=?'+ordered,(symbol,)))
+    prior_data=json.dumps(dict(segment=prior.segment,rpd=prior.checkpoint,atr=prior.atr,
+                               samples=rows('atr_er_sample',' ORDER BY width,clock'),
+                               lineage=rows('cold_prefix_lineage')),
+                          ensure_ascii=False,separators=(',',':'),allow_nan=False)
+    db.execute('CREATE TABLE IF NOT EXISTS retained_bootstrap_advanced_prior ('
+               'symbol TEXT NOT NULL,start_ms INTEGER NOT NULL,first_missing_5m INTEGER NOT NULL,'
+               'manifest_sha TEXT NOT NULL,previous_state TEXT NOT NULL,previous_sha TEXT NOT NULL,'
+               'PRIMARY KEY(symbol,start_ms))')
+    db.execute('INSERT INTO retained_bootstrap_advanced_prior VALUES (?,?,?,?,?,?)',
+               (symbol,start,gap,manifest,prior_data,sha256(prior_data.encode()).hexdigest()))
+    for table in ('atr_er_sample','atr_er_checkpoint','cold_prefix_lineage'):
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone():
+            db.execute(f'DELETE FROM {table} WHERE symbol=?',(symbol,))
 
 
 @dataclass(frozen=True)
@@ -424,8 +506,22 @@ class ColdPrefixAdmission:
             if not allowed() or not owner.tap.current(f):
                 return False
             if prior is not None:
-                if snapshot(db,f.symbol)!=prior or not unusable_retained_prior(db,prior,f,now):
+                if snapshot(db,f.symbol)!=prior:
                     return True
+                unusable_at_start=unusable_retained_prior(db,prior,f,now)
+                if not unusable_at_start:
+                    gap=advanced_retained_gap(db,prior,f,now,origin)
+                    available=owner.store.range(f.symbol,MINUTE,origin,source.cutoff,now)
+                    allows=getattr(owner,'advanced_bootstrap_allowed',None)
+                    if (gap is None or not available or not callable(allows) or not allows(f)
+                            or not allowed() or not owner.tap.current(f)):
+                        return True
+                    rebuilt=sha256(json.dumps(['owner-verified-minutes-v2',f.symbol,f.origin,origin,source.cutoff,
+                                               [astuple(bar) for bar in available]],separators=(',',':'),
+                                              allow_nan=False).encode()).hexdigest()
+                    if rebuilt!=source.manifest_sha:
+                        return True
+                    archive_advanced_prior(db,prior,origin,source.manifest_sha,gap)
                 db.execute('CREATE TABLE IF NOT EXISTS retained_bootstrap_prior ('
                            'symbol TEXT NOT NULL, start_ms INTEGER NOT NULL, '
                            'listing_ms INTEGER NOT NULL, proven_ms INTEGER NOT NULL, '
@@ -462,6 +558,7 @@ class ColdPrefixAdmission:
                                (f.symbol,width,source.cutoff,now,1,count,sample['atr'],
                                 sample['multiplier'],sample['signed']))
             if (not allowed() or not owner.tap.current(f)
+                    or (prior is not None and not unusable_at_start and not owner.advanced_bootstrap_allowed(f))
                     or (expires is not None and self.wall()>=expires)):
                 db.rollback()
                 return False
