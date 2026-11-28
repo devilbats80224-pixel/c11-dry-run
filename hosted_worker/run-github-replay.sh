@@ -205,7 +205,7 @@ if errors:
     counts=[row.split()[1:] for row in rows if re.fullmatch(r'C11_LATE_DELIVERY_COUNTS [0-9]+ [0-9]+ [0-9]+',row)]
     if counts:
         cb,inputs,wire=counts[-1]
-        print('late delivery (expected callbacks=1, valid inputs>=1, new requests=0): actual callbacks='+cb+', valid inputs='+inputs+', new requests='+wire)
+        print('late delivery (expected callbacks=1, native input reads=1, new requests=0): actual callbacks='+cb+', native input reads='+inputs+', new requests='+wire)
     print('first failing fixture site: '+(sites[-1] if sites else 'unknown')+'; '+name+'; '+(', '.join(reasons) if reasons else 'no allowlisted code'))
 else:
     print('no exception signature; last confirmed stage: immutable image and fixture loaded')
