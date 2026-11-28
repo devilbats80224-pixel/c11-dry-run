@@ -22,6 +22,7 @@ class MinuteAdmissionLoop:
         self._archive_attempts={}
         self.archive_fallback=BoundedArchiveFallback(
             lambda:self.owner.run.wall(),qualified=self._archive_qualified,
+            receipt_qualified=self._archive_receipt_qualified,
             attempted=self._archive_attempted,commit_raw=self._archive_raw_commit)
 
     @staticmethod
@@ -31,6 +32,22 @@ class MinuteAdmissionLoop:
     def _archive_qualified(self,scope):
         return (get_ident()==self.thread and self.owner.tap.current(scope)
                 and self.blank_bootstrap(scope) and self.bootstrap_contract(scope))
+
+    def _archive_receipt_qualified(self,scope):
+        if self._archive_qualified(scope):
+            return True
+        if get_ident()!=self.thread:
+            return False
+        # An archive already acquired under its authenticated initial grant
+        # may feed raw history for a newer still-matching rank. This does not
+        # accept initial requests from an expired generation or restore its
+        # strategy permission. A new contract/close must start separately.
+        for fact in self.owner.tap.facts():
+            if ((fact.pair,fact.symbol,fact.origin,fact.boundary)==
+                (scope.pair,scope.symbol,scope.origin,scope.boundary)
+                and fact.generation>scope.generation and self._archive_qualified(fact)):
+                return True
+        return False
 
     def _archive_attempted(self,scope):
         done=self._archive_attempts.get(self._archive_key(scope),())
@@ -44,7 +61,7 @@ class MinuteAdmissionLoop:
         self.archive_fallback.request(f,((j.start,j.stop),))
 
     def _archive_raw_commit(self,scope,receipt):
-        if not (self.phase() and self._archive_qualified(scope) and self._archive_attempted(scope)):
+        if not (self.phase() and self._archive_receipt_qualified(scope) and self._archive_attempted(scope)):
             return False
         o=self.owner
         o.check_store()
@@ -54,10 +71,16 @@ class MinuteAdmissionLoop:
         try:
             with store.db:
                 store.db.execute('BEGIN IMMEDIATE')
-                if not (self._archive_qualified(scope) and self._archive_attempted(scope)):
+                if not (self._archive_receipt_qualified(scope) and self._archive_attempted(scope)):
                     return False
-                store._record_checked_rows(scope.symbol,M,receipt.rows)
-                if not (self._archive_qualified(scope) and self._archive_attempted(scope)):
+                # Re-filter live canonical coverage, because the primary
+                # route can fill a subset while one day archive is in flight.
+                rows=tuple(row for row in receipt.rows if not store.db.execute(
+                    'SELECT 1 FROM candle WHERE symbol=? AND width=? AND open_ms=? AND received_ms<=?',
+                    (scope.symbol,M,row.open_ms,o.run.wall())).fetchone())
+                if rows:
+                    store._record_checked_rows(scope.symbol,M,rows)
+                if not (self._archive_receipt_qualified(scope) and self._archive_attempted(scope)):
                     raise ValueError('C11_ARCHIVE_RAW_SCOPE_CHANGED')
         except (Refused,ValueError):
             return False
