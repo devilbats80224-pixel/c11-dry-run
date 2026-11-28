@@ -34,6 +34,7 @@ class ClosedPrefixSource:
     download_only: bool = False
     prepared_sha256: str | None = None
     reviewed_at_ms: int | None = None
+    daily_fallback: bool = False
 
 
 @dataclass(frozen=True)

@@ -87,7 +87,8 @@ class SharedHistoryForwarder:
             return
         now = self.wall()
         end = now//900_000*900_000
-        if not end <= now < end+60_000:
+        from retained_page_schema import ARCHIVE_EVIDENCE_REASONS
+        if not end <= now < end+(900_000 if reason in ARCHIVE_EVIDENCE_REASONS else 60_000):
             return
         event = dict(schema='c11-primary-schedule-v1', end_ms=end, at_ms=now, reason=reason)
         if fact is not None:

@@ -233,6 +233,7 @@ class ArchiveProgress:
         self.recurrence=ArchiveRecurrence(symbol,origin,grid_shift)
         self.ledger=[]
         self.rejected_file_bytes=0
+        self.daily_substitution=False
         self.max_received=0
 
     def require_current_review(self):
@@ -289,6 +290,7 @@ class ArchiveProgress:
             raise Hold(DISCOVERY_LIMIT if self.discovered else 'AUTO_ARCHIVE_BUDGET')
         i=len(self.ledger)
         self.parts=tuple(self.parts[:i])+tuple(replacements)+tuple(self.parts[i+1:])
+        self.daily_substitution=True
         return True
 
     def resume(self,event):
@@ -363,7 +365,8 @@ class ArchiveProgress:
         source=ClosedPrefixSource(Path('/unused-automatic-download'),
                                   self.reviewed.manifest_sha if self.reviewed else sha256(raw).hexdigest(),
                                   self.origin+self.shift,self.cutoff+self.shift,
-                                  self.reviewed.review_expires_ms if self.reviewed else None)
+                                  self.reviewed.review_expires_ms if self.reviewed else None,
+                                  daily_fallback=self.daily_substitution)
         return source,self.recurrence.finish(self.cutoff,self.max_received)
 
 
@@ -568,7 +571,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
         else:
             if isinstance(result,ArchiveProgress):
                 slot.continuation=result
-                slot.status='AUTO_ARCHIVE_SEGMENT_VERIFIED'
+                slot.status=('AUTO_ARCHIVE_DAILY_FALLBACK_PLANNED' if result.daily_substitution
+                             else 'AUTO_ARCHIVE_SEGMENT_VERIFIED')
                 self.pending.pop(symbol)
                 self.pending[symbol]=slot
             else:
@@ -623,6 +627,10 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 if installed:
                     self.pending.pop(symbol,None)
                     self.repair_prior.pop(symbol,None)
+                    if getattr(source,'daily_fallback',False) is True:
+                        emit=getattr(getattr(owner,'primary_admission',None),'gate',None)
+                        if callable(emit):
+                            emit('AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED',slot.fact)
                 return True
         if ready_only or self.active is not None or not allowed():
             return

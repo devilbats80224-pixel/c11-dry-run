@@ -5,7 +5,9 @@ from exact_symbol import quote_contract_shape
 PAGE_SCHEMA = 'c11-shared-history-page-v1'
 SCHEDULE_SCHEMA = 'c11-primary-schedule-v1'
 
-SCHEDULE_REASONS = frozenset((
+ARCHIVE_EVIDENCE_REASONS = frozenset(('AUTO_ARCHIVE_DAILY_FALLBACK_PLANNED',
+                                      'AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED'))
+SCHEDULE_REASONS = ARCHIVE_EVIDENCE_REASONS | frozenset((
     'NO_CURRENT_FACTS', 'OWNER_CYCLE_UNAVAILABLE', 'PROTECTION_PRIORITY',
     'WRONG_BOUNDARY', 'NW_LOOKBACK_UNAVAILABLE', 'OTHER_HISTORY_PENDING',
     'NO_PROVISIONAL_SCOPE', 'SCOPE_NOT_CURRENT', 'NO_PID_HEADROOM',
@@ -68,7 +70,8 @@ def accepted_history_trace(event):
     if event['schema'] == SCHEDULE_SCHEMA:
         keys = {'schema', 'end_ms', 'at_ms', 'reason'}
         reason = event.get('reason')
-        return (now < end+TTL and type(reason) is str and reason in SCHEDULE_REASONS
+        return (type(reason) is str and reason in SCHEDULE_REASONS
+                and now < end+(900_000 if reason in ARCHIVE_EVIDENCE_REASONS else TTL)
                 and (set(event) == keys or
                      (set(event) == keys | {'symbol', 'generation'} and valid_identity(event))))
     if event['schema'] != PAGE_SCHEMA or not PAGE_KEYS <= event.keys() or not valid_identity(event):
