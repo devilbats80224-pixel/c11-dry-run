@@ -24,7 +24,7 @@ sys.path[:0]=['/opt/c11_owned_modules','/opt/c11_worker','/opt/c11_worker/ports'
 
 import aiohttp
 import async_native_ccxt
-from causal_bars import FIVE, MINUTE as M, QUARTER as Q
+from causal_bars import ClosedBar, FIVE, MINUTE as M, QUARTER as Q
 from c11_paper_exchange import C11PaperExchange
 import entry_feed
 from freqtrade.exchange import Binance, Exchange
@@ -74,8 +74,9 @@ assert not BACKGROUND_REVIEWED or (CACHED and AUTO_MODE and not PREPARED_CHECKPO
 assert not NO_LISTING_ORIGIN or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT))
 assert not PREPARED_CHECKPOINT or (CACHED and AUTO_MODE)
 MIXED=os.environ.get('C11_JCT_MIXED_PACKAGED','')
-assert MIXED in ('','blank','unusable','advanced')
-ADVANCED=MIXED=='advanced'
+assert MIXED in ('','blank','unusable','advanced','advanced-direct-conflict')
+DIRECT_CONFLICT=MIXED=='advanced-direct-conflict'
+ADVANCED=MIXED in ('advanced','advanced-direct-conflict')
 assert not MIXED or (AUTO_MODE and not (HAN_MODE or INIT_MODE or REVIEWED_PARTIAL or AUTO_STALE))
 EXACT_CALLBACK_CLOCK = bool(MIXED) or REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT or BACKGROUND_REVIEWED
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
@@ -219,6 +220,7 @@ def main():
     mixed_callbacks=[]
     mixed_shared=[]
     mixed_old=None
+    mixed_direct=None
     original_enter=PaperState.__enter__
     lock_identity=None
     def state_enter(state):
@@ -461,7 +463,7 @@ else:
         print('C11_REVIEWED_FIXTURE_LEASE_CONTROLS_PASS',flush=True)
 
     def attach(run):
-        nonlocal loaded,mixed_old
+        nonlocal loaded,mixed_old,mixed_direct
         from atr_er_checkpoint import AtrErCheckpoint
         from current_history import CurrentHistory
         if REVIEWED_PARTIAL:
@@ -495,6 +497,29 @@ else:
             # Each must acquire it before its respective initial-state path.
             h.store.record(SYMBOL,M,tuple(mixed_rows[t].closed() for t in range(mixed_start,mixed_cutoff,M)
                 if ADVANCED or t!=mixed_hole))
+            if DIRECT_CONFLICT:
+                # Only this 15m historical key has a different direct-source
+                # value. Recent 1m rows and terminal tape are the green control.
+                at=mixed_cutoff-2*Q
+                one=tuple(mixed_rows[t].closed() for t in range(at,at+Q,M))
+                aggregate=ClosedBar(at,now,one[0].op,max(b.high for b in one),min(b.low for b in one),
+                                    one[-1].close,sum(b.volume for b in one),sum(b.quote for b in one))
+                changed=(aggregate.low+aggregate.high)/2
+                assert changed!=aggregate.close and aggregate.valid(Q)
+                mixed_direct=ClosedBar(at,now,aggregate.op,aggregate.high,aggregate.low,
+                                       changed,aggregate.volume+1,aggregate.quote+1)
+                h.store.record(SYMBOL,Q,(mixed_direct,))
+                raw_write=h.store._record_checked_rows
+                def observe_raw_write(symbol,width,rows,**kw):
+                    try:
+                        return raw_write(symbol,width,rows,**kw)
+                    except ValueError as exc:
+                        if symbol==SYMBOL and width==Q and str(exc)=='C11_CLOSED_CANDLE_CHANGED':
+                            if any(b.open_ms==at and b.payload()!=mixed_direct.payload() for b in rows):
+                                print('C11_RETAINED_DIRECT_OVERLAP_WRITE_CONFLICT expected=preserve_raw_and_install_verified_1m actual=immutable_write_refused',flush=True)
+                        raise
+                h.store._record_checked_rows=observe_raw_write
+
         if REVIEWED_PARTIAL or AUTO_STALE:
             # Simulate the real half-initialized shape in this private
             # temporary store using the separately pinned JCT origin.
@@ -841,6 +866,9 @@ else:
                         assert saved and sha256(saved[0].encode()).hexdigest()==saved[1]
                         assert json.loads(saved[0])['rpd']==payload
                         assert history.store.range(SYMBOL,FIVE,old_bar.open_ms,old_bar.open_ms+FIVE,now)==(old_bar,)
+                        if DIRECT_CONFLICT:
+                            assert history.store.range(SYMBOL,Q,mixed_direct.open_ms,mixed_direct.open_ms+Q,now)==(mixed_direct,), (
+                                'C11_DIRECT_OVERLAP_RAW_NOT_PRESERVED')
                         old_archived=True
                     print(json.dumps(dict(status='C11_FINAL_MIXED_PACKAGED_PASS',variant=MIXED,
                         callback_count=len(mixed_callbacks),read_count=len(mixed_reads),

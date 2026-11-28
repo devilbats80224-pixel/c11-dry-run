@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank|mixed-blank|mixed-unusable|mixed-advanced) ;; *) exit 64;; esac
+case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank|mixed-blank|mixed-unusable|mixed-advanced|mixed-advanced-direct-conflict) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -286,7 +286,7 @@ reviewed_opg() {
     echo 'C11_REVIEWED_OLD_CORRECTIONS_AND_ORIGINAL_STRATEGY_PASS'
 }
 mixed() {
-    case "$1" in mixed-blank|mixed-unusable|mixed-advanced) ;; *) exit 64;; esac
+    case "$1" in mixed-blank|mixed-unusable|mixed-advanced|mixed-advanced-direct-conflict) ;; *) exit 64;; esac
     if sh "$d/native_history_scheduler/run_jct_worker_review.sh" "$image" "$out/fixture/jct"         "$out/fixture/stopped-paper-only.tgz" "$out/mixed" no "$1" >"$out/mixed.log" 2>&1; then
         if python3 -I -B - "$out/mixed.log" "${1#mixed-}" <<'PY_MIXED'
 import json
@@ -300,7 +300,7 @@ for line in Path(sys.argv[1]).read_text(errors='replace').splitlines():
 assert len(events)==1, 'C11_MIXED_RESULT_COUNT'
 e,=events
 assert e['variant']==sys.argv[2]
-if e['variant']=='advanced':
+if e['variant'] in ('advanced','advanced-direct-conflict'):
     assert e['generation'] in (7,8) and e['historical_requests']==0 and e['old_advanced_archived'] is True
 else:
     assert e['generation']==8
@@ -398,8 +398,8 @@ cold() {
 }
 # Proof branch uses a spare existing workflow matrix entry; no permissions
 # to change workflow definitions are needed to run the independent CI.
-if [ "${GITHUB_HEAD_REF:-}" = c11/advanced-retained-live-regression ] && [ "$2" = mixed-unusable ]; then
-    mixed mixed-advanced
+if [ "${GITHUB_HEAD_REF:-}" = c11/retained-direct-conflict ] && [ "$2" = mixed-unusable ]; then
+    mixed mixed-advanced-direct-conflict
     exit
 fi
-case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; mixed-blank|mixed-unusable|mixed-advanced) mixed "$2";; *) cold "$2";; esac
+case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; mixed-blank|mixed-unusable|mixed-advanced|mixed-advanced-direct-conflict) mixed "$2";; *) cold "$2";; esac
