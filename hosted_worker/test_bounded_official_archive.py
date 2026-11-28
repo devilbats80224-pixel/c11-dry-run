@@ -74,6 +74,9 @@ def main():
         attempted[0]=True
         scoped=lane.request(fact,spans)
         assert len(scoped)==1 and not lane.request(fact,spans)
+        # The primary source can fill the first gap before the archive is
+        # done. The remaining gap still resolves to the same official ZIP.
+        assert not lane.request(fact,(spans[-1],)), 'C11_ARCHIVE_REMAINDER_REDOWLOADS_SAME_DAY'
         next(iter(lane.pending.values()))[2].result(timeout=5)
         eligible[0]=False
         assert lane.drain()==((scoped[0],'C11_ARCHIVE_FALLBACK_SCOPE_LOST',0),)
