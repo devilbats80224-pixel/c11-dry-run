@@ -22,7 +22,10 @@ RECONFIRM_PROGRESS=(frozenset(('RC_OWNER_NOT_CURRENT','RC_UNMATCHED_RECEIPT','RC
  'RC_W1_TRIAD_ACCEPTED','RC_W2_CHAIN_ACCEPTED','RC_W2_PEER_LINEAGE_REJECTED','RC_W2_FIVE_LINEAGE_REJECTED',
  'RC_W2_PROJECTED_ROW_REJECTED','RC_W2_XTF_REJECTED','RC_W2_COMPOSE_REJECTED'))|
  frozenset(f'RC_W{w}_{s}' for w in (1,2) for s in ('RAW_RECEIPT_REJECTED','RECEIPT_ACCEPTED','TRIAD_PROOF_REJECTED','SUBMIT_REFUSED','SUBMITTED')))
-EXTRA={'reconfirm_progress':(RECONFIRM_PROGRESS,'reconfirm_progress'),
+PREWIRE_REFUSALS=frozenset(('PREWIRE_QUEUE_CLOSED','PREWIRE_SCOPE_REPLACED','PREWIRE_SCOPE_EXPIRED',
+    'PREWIRE_PROTECTION_HELD','PREWIRE_RANK_AUTHORITY_LOST','PREWIRE_SHARED_METER_REFUSED'))
+EXTRA={'prewire_refusal':(PREWIRE_REFUSALS,'prewire_refusals'),
+       'reconfirm_progress':(RECONFIRM_PROGRESS,'reconfirm_progress'),
        'owner_receipt_clock':(OWNER_CLOCKS,'owner_receipt_clocks'),
        'atomic_refusal':(ATOMIC_REFUSALS,'atomic_refusals'),
        'atomic_phase':(ATOMIC_PHASES,'atomic_phases'),

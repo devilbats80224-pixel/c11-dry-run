@@ -29,6 +29,8 @@ class WorkerOwnedPublicQueue:
         self.current=None
         self.inflight={}
         self._completion_boxes={}
+        self._prewire_boxes={}
+        self._completed_prewire_refusals={}
         self.closed=False
         self.last_submit_status=None
 
@@ -42,6 +44,7 @@ class WorkerOwnedPublicQueue:
         self._check()
         now=self.wall()
         if self.current is not None and (g<self.current[0] or e<self.current[1]):raise ValueError('OLDER_SCOPE')
+        if self.current!=(g,e):self._completed_prewire_refusals.clear()
         self.current=g,e
         for key,(job,future,token) in tuple(self.inflight.items()):
             # Transport admitted old debits are never released or applied to a new generation.
@@ -81,14 +84,25 @@ class WorkerOwnedPublicQueue:
         if token is None:
             self.last_submit_status=getattr(self.limiter,'last_reserve_status',None) or 'submit_rate'
             return False
+        refused=[None]
         def claim_before_wire():
             # All callbacks here are transport-thread-safe publications in an
             # approved factory. No native worker DB access from this thread.
             now=self.wall()
-            if self.closed or self.current!=(j.generation,j.end) or not j.end<=now<j.expires or self.protection_due() or not self.prewire_authority(j,now):
+            reason=None
+            if self.closed:reason='PREWIRE_QUEUE_CLOSED'
+            elif self.current!=(j.generation,j.end):reason='PREWIRE_SCOPE_REPLACED'
+            elif not j.end<=now<j.expires:reason='PREWIRE_SCOPE_EXPIRED'
+            elif self.protection_due():reason='PREWIRE_PROTECTION_HELD'
+            elif not self.prewire_authority(j,now):reason='PREWIRE_RANK_AUTHORITY_LOST'
+            if reason is not None:
+                if refused[0] is None:refused[0]=(now,reason)
                 self.limiter.release_if_never_sent(token)
                 return False
-            return self.limiter.claim_send(token,j)
+            admitted=self.limiter.claim_send(token,j)
+            if admitted is False and refused[0] is None:
+                refused[0]=(now,'PREWIRE_SHARED_METER_REFUSED')
+            return admitted
         # Executor invokes claim in the exact signed-to-plan before-send hook.
         try:future=self.executor.submit_original_public(j,token,claim_before_wire)
         except Exception:
@@ -96,6 +110,7 @@ class WorkerOwnedPublicQueue:
             self.limiter.release_if_never_sent(token)
             return False
         self.inflight[j.ticket]=(j,future,token)
+        self._prewire_boxes[j.ticket]=refused
         self._watch_completion(j.ticket,future)
         self.last_submit_status=None
         return True
@@ -110,9 +125,17 @@ class WorkerOwnedPublicQueue:
             except Exception:pass
         future.add_done_callback(done)
 
-    def _drop(self,key):
+    def _drop(self,key,*,observe_refusal=False):
         del self.inflight[key]
         self._completion_boxes.pop(key,None)
+        box=self._prewire_boxes.pop(key,None)
+        if observe_refusal and box is not None and box[0] is not None:
+            self._completed_prewire_refusals[key]=box[0]
+
+    def take_prewire_refusal(self,ticket):
+        # Observer-only transfer of constant enum and measured wall time.
+        self._check()
+        return self._completed_prewire_refusals.pop(ticket,None)
 
     def revoke_unissued(self,tickets):
         self._check()
@@ -192,7 +215,7 @@ class WorkerOwnedPublicQueue:
         ready=[]
         for k,(j,f,token) in tuple(self.inflight.items()):
             if not choose(j) or not f.done():continue
-            self._drop(k)
+            self._drop(k,observe_refusal=not getattr(j.native_task,'triad_only',False))
             try:result=f.result()
             except Exception:
                 self.limiter.release_if_never_sent(token)
@@ -213,3 +236,5 @@ class WorkerOwnedPublicQueue:
         self.executor.stop_and_join()
         self.inflight.clear()
         self._completion_boxes.clear()
+        self._prewire_boxes.clear()
+        self._completed_prewire_refusals.clear()

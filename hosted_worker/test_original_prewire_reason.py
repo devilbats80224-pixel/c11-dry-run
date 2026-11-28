@@ -51,7 +51,7 @@ def scenario(expected):
     protected[0]=False
     assert not queue.poll()
     reason=getattr(queue,'take_prewire_refusal',lambda _:None)(ticket.ticket)
-    actual=None if expected=="unobserved" else expected
+    actual = (now[0],expected) if expected not in (None,"unobserved") else None
     assert reason==actual, ("C11_ZERO_WIRE_RETIRED_WITHOUT_MEASURED_FIRST_REFUSAL", actual, reason)
     assert debit.charged_for_diagnostic(ticket.ticket) is (expected is None)
     assert getattr(queue,'take_prewire_refusal',lambda _:None)(ticket.ticket) is None
@@ -61,3 +61,20 @@ for case in ("PREWIRE_PROTECTION_HELD","PREWIRE_RANK_AUTHORITY_LOST","PREWIRE_SC
              "PREWIRE_SHARED_METER_REFUSED",None,"unobserved"):
     scenario(case)
 print("C11_ORIGINAL_PREWIRE_REASON_IS_FIRST_MEASURED_REFUSAL")
+
+# Existing private startup sink only receives its allowlisted detail schema.
+import json
+from diagnostic_schema import accepted_symbol_event
+from first_gate import FirstGate
+packets=[]
+gate=FirstGate(packets.append)
+gate.start(E)
+gate.watch(E+3500,GEN,'SYNTHUSDT',E+21_421)
+gate.note(GEN,'SYNTHUSDT','prewire_refusal','PREWIRE_PROTECTION_HELD',E+3501)
+gate.note(GEN,'SYNTHUSDT','prewire_refusal','untrusted raw payload must not pass',E+3502)
+gate.start(E+60_000)
+envelopes=tuple(map(json.loads,packets))
+assert all(map(accepted_symbol_event,envelopes))
+details=[p for p in envelopes if p.get('kind')=='prewire_refusal']
+assert len(details)==1 and details[0]['values']=={'PREWIRE_PROTECTION_HELD':[3501,3501,1]}
+print("C11_PREWIRE_REASON_PRIVATE_SINK_SCHEMA_PASS")

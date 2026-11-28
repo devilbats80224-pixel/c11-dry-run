@@ -241,6 +241,11 @@ class UnifiedScheduler:
                     # yet. Preserve it for the next owner cycle instead.
                     continue
                 self._retired_diagnostic(ticket,debit)
+                read_refusal=getattr(self.queue,'take_prewire_refusal',None)
+                reason=read_refusal(ticket) if callable(read_refusal) else None
+                if debit is False and reason is not None and self.first_gate is not None:
+                    at,label=reason
+                    self.first_gate.note(scope.generation,scope.symbol,'prewire_refusal',label,at)
                 self.retired.add(ticket)
                 reissue=getattr(self.plan,'reissue_unwired_minute',None)
                 if debit is False and forgotten and callable(reissue):
