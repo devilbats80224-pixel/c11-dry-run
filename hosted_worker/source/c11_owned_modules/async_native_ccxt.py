@@ -65,10 +65,14 @@ class SharedNativeAsync:
         if any(getattr(self.exchange,k,None) for k in ('apiKey','secret','password','uid','accountId','walletAddress','privateKey')):
             raise ValueError('C11_ASYNC_UNSIGNED_ONLY')
 
-    async def page(self,params,before_wire):
+    async def page(self,params,before_wire,*,bootstrap=False):
         if (set(params)!={'symbol','interval','startTime','endTime','limit'}
             or params['interval']!='1m' or type(params['limit']) is not int
-            or not 15<=params['limit']<=495 or params['limit']%15
+            or type(bootstrap) is not bool
+            or not (1<=params['limit']<=495 if bootstrap else
+                    15<=params['limit']<=495 and params['limit']%15==0)
+            or (bootstrap and (any(type(params[k]) is not int for k in ('startTime','endTime'))
+                   or params['startTime']%60000 or (params['endTime']+1)%60000))
             or params['endTime']+1-params['startTime']!=params['limit']*60000):
             raise ValueError('C11_ASYNC_PAGE_SHAPE')
         stamp=Ticket({k:str(v) for k,v in params.items()},before_wire)
@@ -78,7 +82,7 @@ class SharedNativeAsync:
                 rows=await self.exchange.fapiPublicGetKlines(params)
                 if not (stamp.entered and stamp.status==200 and type(stamp.weight) is int and 0<=stamp.weight<=50000):
                     return stamp,()
-                rows=sanitize(rows,'1m',params['endTime']+1,params['limit'],stamp.sent)
+                rows=sanitize(rows,'1m',params['endTime']+1,params['limit'],stamp.sent,bootstrap=bootstrap)
             except (ValueError,TypeError,ArithmeticError,aiohttp.ClientError):
                 return stamp,()
             except Exception as err:

@@ -1,6 +1,6 @@
 """Data-only 1m jobs for a current candidate, not entry authorization."""
 from dataclasses import dataclass
-from native_cold_minute_page import PAGE,Q,M,resolve_range,missing_intervals
+from native_cold_minute_page import PAGE,Q,M,resolve_range,missing_intervals,bootstrap_bounds,bootstrap_missing
 import re
 
 MAX_ANALYZER_QUARTERS=260
@@ -20,19 +20,28 @@ class MinuteHistoryJob:
     ticket:str
     start:int
     stop:int
+    bootstrap:bool=False
     @property
     def n(self):return (self.stop-self.start)//M
     @property
     def weight(self):return 2 if self.n>=100 else 1
     def valid(self,now):
-        return (type(now) is int and self.end<=now<self.end+Q
-            and self.end%Q==self.start%Q==self.stop%Q==0
-            and 0<self.origin<=self.start<self.stop<=self.end-Q
-            and self.stop-self.start<=PAGE
-            and self.generation>0 and type(self.symbol) is str and self.symbol.endswith('USDT')
-            and type(self.ticket) is str and bool(re.fullmatch('[0-9a-f]{32}',self.ticket)))
+        if (type(self.bootstrap) is not bool or type(now) is not int
+                or any(type(x) is not int for x in (self.end,self.origin,self.start,self.stop,self.generation))
+                or not self.end<=now<self.end+Q
+                or self.end%Q or not 0<self.origin<=self.start<self.stop<=self.end-Q
+                or self.stop-self.start>PAGE
+                or self.generation<=0 or type(self.symbol) is not str or not self.symbol.endswith('USDT')
+                or type(self.ticket) is not str or not re.fullmatch('[0-9a-f]{32}',self.ticket)):
+            return False
+        if self.bootstrap:
+            bounds=bootstrap_bounds(self.origin,self.end)
+            return bounds is not None and bounds[0]<=self.start<self.stop<=bounds[1] and self.start%M==self.stop%M==0
+        return self.start%Q==self.stop%Q==0
+
     def child(self):
-        return dict(symbol=self.symbol,start=self.start,stop=self.stop,count=self.n,width=M)
+        page=dict(symbol=self.symbol,start=self.start,stop=self.stop,count=self.n,width=M)
+        return dict(page,bootstrap=True) if self.bootstrap else page
 
 def make_job(fact,verified_cursor,analysis_gaps,now,ticket):
     if not repairable_checkpoint(fact,verified_cursor):
@@ -48,5 +57,13 @@ def iter_jobs(fact,verified_cursor,analysis_gaps,now,blocked,next_ticket):
     for page in missing_intervals(fact.boundary,verified_cursor,analysis_gaps,blocked):
         j=MinuteHistoryJob(fact.symbol,fact.generation,fact.boundary,fact.origin,
                            next_ticket(),page.start,page.stop)
+        if j.valid(now):
+            yield j
+
+
+def iter_bootstrap_jobs(fact,available_opens,now,blocked,next_ticket):
+    for page in bootstrap_missing(fact.origin,fact.boundary,available_opens,blocked):
+        j=MinuteHistoryJob(fact.symbol,fact.generation,fact.boundary,fact.origin,
+                           next_ticket(),page.start,page.stop,bootstrap=True)
         if j.valid(now):
             yield j
