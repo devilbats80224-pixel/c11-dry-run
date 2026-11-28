@@ -122,3 +122,44 @@ if __name__ == "__main__":
     print("C11_ORIGINAL_SAME_SCOPE_WARM_OFFER_SURVIVES_RECOVERY")
     completed_input_uses_fresh_same_close_rank_after_old_expiry()
     ready_decision_does_not_inherit_the_same_generation_wire_cap()
+
+
+def readable_decision_ignores_old_same_generation_scope_before_close_plus_60():
+    now = [END + 3_271]
+    row = SimpleNamespace(pair=PAIR, symbol="EXAMPLEUSDT", generation=8,
+        expires_ns=(END + 4_201)*1_000_000, rank=1, ratio=Decimal(".25"),
+        received_at=1, classification_seen_ns=1)
+    feed = SimpleNamespace(latest_owner_observation=(row,))
+    bot = SimpleNamespace(feed=feed, observed_ranked=lambda x: x is row)
+    plan = OriginalPlan(SimpleNamespace(freqtrade=bot),lambda:now[0],lambda:now[0]*1_000_000,
+                        lambda *_:END-6*FIVE)
+    old = plan.provisional_scope(PAIR,END)
+    offered = plan(bot)
+    assert old is not None and offered and offered[2]
+    # The provider is still live but the first, shortened wire scope expired.
+    row.expires_ns = (END+61_456)*1_000_000
+    row.classification_seen_ns = 2
+    now[0] = END + 7_797
+    ready_scope = getattr(plan,"confirmed_readable_scope",plan.provisional_scope)
+    assert ready_scope(PAIR,END) is None, "A read attempt cannot claim readiness"
+    ready_ms = END + 7_750
+    plan.verified_readiness_at = lambda r,e,at:ready_ms if r is row and e==END and at>=ready_ms else None
+    current = ready_scope(PAIR,END)
+    assert current is not None, "C11_READABLE_DECISION_INHERITS_EXPIRED_PRE_WARM_SCOPE"
+    assert (current.generation,current.end,current.expires)==(8,END,END+61_456)
+    assert not plan.current(old,now[0])
+    assert plan.current_readable_scope(current,now[0])
+    assert not plan(bot)[2], "A post-ready decision cannot reopen old wire work"
+    row.generation = 9
+    row.expires_ns = (END+121_468)*1_000_000
+    row.received_at = 2
+    now[0] = END + 63_000
+    current = ready_scope(PAIR,END)
+    assert current is not None and current.expires==ready_ms+60_000
+    now[0] = ready_ms+60_000
+    assert ready_scope(PAIR,END) is None and not plan.current_readable_scope(current,now[0])
+    print("C11_READABLE_DECISION_CLOCK_DOES_NOT_INHERIT_PRE_WARM_SCOPE")
+
+
+if __name__ == "__main__":
+    readable_decision_ignores_old_same_generation_scope_before_close_plus_60()
