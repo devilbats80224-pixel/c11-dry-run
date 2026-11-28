@@ -232,6 +232,7 @@ class ArchiveProgress:
         self.parts,self.reviewed,self.discovered=parts,reviewed,discovered
         self.recurrence=ArchiveRecurrence(symbol,origin,grid_shift)
         self.ledger=[]
+        self.rejected_file_bytes=0
         self.max_received=0
 
     def require_current_review(self):
@@ -266,8 +267,9 @@ class ArchiveProgress:
         return zipped,dict(name=name,sha256=expected,url=url,bytes=size,actual_received_ms=zipped.received_ms)
 
     def substitute_closed_days(self,name,closed_at):
-        # Pinned manifests cannot change assets. Only an actual 404/410
-        # from the official unpinned monthly route reaches this method.
+        # Pinned manifests cannot change assets. An official unpinned
+        # monthly source can be replaced only after its actual 404/410
+        # or a checksum-verified file exhibits a real requested-grid gap.
         match=re.fullmatch(re.escape(self.recurrence.symbol)+r'-1m-(\d{4}-\d{2})\.zip',name)
         if self.reviewed is not None or match is None:
             return False
@@ -292,7 +294,7 @@ class ArchiveProgress:
     def resume(self,event):
         cancel=JobLimit(event)
         self.require_current_review()
-        budget=self.archive.max_bytes-sum(item['bytes'] for item in self.ledger)
+        budget=self.archive.max_bytes-self.rejected_file_bytes-sum(item['bytes'] for item in self.ledger)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
             if len(self.ledger)==len(self.parts):
@@ -338,9 +340,15 @@ class ArchiveProgress:
             except (ValueError,RuntimeError,OSError,TypeError,KeyError,BadZipFile) as exc:
                 if event.is_set():
                     raise Hold('AUTO_ARCHIVE_CANCELLED') from exc
-                if exc.args==('COLD_ARCHIVE_ORIGIN_GAP',):
-                    raise Hold('AUTO_ARCHIVE_ORIGIN_GAP') from exc
-                if exc.args in (('COLD_ARCHIVE_GRID',),('COLD_ARCHIVE_INCOMPLETE',)):
+                if exc.args in (('COLD_ARCHIVE_ORIGIN_GAP',),('COLD_ARCHIVE_GRID',),('COLD_ARCHIVE_INCOMPLETE',)):
+                    # The failed parse used a disposable recurrence copy.
+                    # Retry the same interval with independently verified
+                    # daily evidence; never publish a partial monthly parse.
+                    if self.substitute_closed_days(name,closed_at):
+                        self.rejected_file_bytes+=item['bytes']
+                        return self
+                    if exc.args==('COLD_ARCHIVE_ORIGIN_GAP',):
+                        raise Hold('AUTO_ARCHIVE_ORIGIN_GAP') from exc
                     raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP') from exc
                 raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
             self.recurrence=candidate
