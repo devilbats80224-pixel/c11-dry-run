@@ -66,7 +66,7 @@ def main():
         prep=plan(config,{},lambda:NOW,True)
         lane=prep.cold_admission(lambda:NOW)
         try:
-            assert lane.discover_unseeded is True and lane.allows_unseeded_minutes(fact) is expected
+            assert prep.discover_unseeded is True and lane.allows_unseeded_minutes(fact) is expected
         finally:
             lane.close()
             prep.close()
