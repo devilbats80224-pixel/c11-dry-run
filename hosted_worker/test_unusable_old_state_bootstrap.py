@@ -30,8 +30,9 @@ def main():
                      for t in range(START,CUTOFF,MINUTE)))
     def unexpected(*_):
         raise AssertionError('C11_UNUSABLE_STATE_FETCHED_FROM_2020_LISTING_DAY')
-    owner=N(store=store,check_store=lambda:None,tap=N(current=lambda x:x is f),
-            cold_delivery_window=lambda:True,cold_delivery_allows=lambda x:x is f)
+    eligible=[True]
+    owner=N(store=store,check_store=lambda:None,tap=N(current=lambda x:x is f and eligible[0]),
+            cold_delivery_window=lambda:True,cold_delivery_allows=lambda x:x is f and eligible[0])
     lane=AutoColdAdmission(lambda:END+100,unexpected)
     owner.cold_prefix=lane
     loop=MinuteAdmissionLoop(owner,unexpected)
@@ -42,6 +43,21 @@ def main():
             'C11_2020_UNUSABLE_CURSOR_BYPASSES_VERIFIED_RECENT_CANDLES',
             slot.status if slot is not None else 'NONE')
         assert store.segment(SYMBOL)==old
+        lane.tick(owner,prepare_only=True)
+        assert lane.active is not None
+        _,prefix=lane.active[2].result(timeout=25)
+        assert (prefix.rpd.origin,prefix.rpd.next_open)==(START,CUTOFF)
+        eligible[0]=False
+        lane.tick(owner,ready_only=True)
+        assert store.segment(SYMBOL)==old, 'C11_STALE_REPLACEMENT_BYPASSED_ROSTER'
+        eligible[0]=True
+        lane.tick(owner,ready_only=True)
+        proof=store.contract_segment(SYMBOL,LISTING,END+100)
+        assert proof is not None and proof.open_ms==START
+        assert store.db.execute(
+            'SELECT previous_rpd FROM retained_bootstrap_prior WHERE symbol=?',(SYMBOL,)).fetchone()==(state.pack(),)
+        rows=store.range(SYMBOL,MINUTE,START,CUTOFF,END+100)
+        assert len(rows)==(CUTOFF-START)//MINUTE and rows[0].received_ms==START+MINUTE
     finally:
         loop.close()
         lane.close()
