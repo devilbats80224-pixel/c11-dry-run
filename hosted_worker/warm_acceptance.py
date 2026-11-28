@@ -645,8 +645,6 @@ def main(outer):
             policy.bars.record('STBLUSDT',QUARTER,(legacy,))
             assert policy.bars.range('STBLUSDT',QUARTER,E-QUARTER,E,clock[0])==(legacy,)
             assert policy.bars.range('STBLUSDT',MINUTE,E-45*MINUTE,E,clock[0])==()
-          if i==1:
-            assert not Trade.get_open_trades()
             if mixed_pressure:
                 # Keep one earlier 5m bucket immutable while another older
                 # missing bucket still demands the original 45-minute reply.
@@ -662,6 +660,8 @@ def main(outer):
                 sample=next(row for row in original['raw_kline_rows'] if row[0]==at)
                 old_overlap=ClosedBar(at,old_seen,*(float(sample[j]) for j in (1,2,3,4,5)),float(sample[7])+1.)
                 policy.bars.record('STBLUSDT',MINUTE,(old_overlap,))
+          if i==1:
+            assert not Trade.get_open_trades()
             if intent_case=='orphan_entry':
                 from c11_native_paper_runner import EntryJournal
                 assert EntryJournal.reserve(policy.slots,'entry',PAIR,E-900_000,1.0)
@@ -748,7 +748,13 @@ def main(outer):
                       'HOLD_ANALYZER_NOT_DURABLE_NATIVE_FRAME':'C11_ANALYZER_FRAME_HELD',
                       'HOLD_NATIVE_MINUTE_NOT_COMMITTED':'C11_NATIVE_MINUTE_NOT_COMMITTED',
                       'HOLD_NOT_READY':'C11_ORIGINAL_NOT_READY'}
-            raise AssertionError('C11_MIXED_NATIVE_CALLBACK_MISSING',*(statuses[k] for k in observed))
+            actual=set()
+            for (_g,symbol),states in sc.first_gate.rows.items():
+                if symbol=='STBLUSDT':
+                    actual.update('C11_'+k for k in states['atomic_refusals'])
+                    actual.update('C11_'+k for k in states['atomic_phases'])
+            raise AssertionError('C11_MIXED_NATIVE_CALLBACK_MISSING',
+                                 *(statuses[k] for k in observed),*sorted(actual))
         assert len([a for a in advice if a[1:]==(PAIR,'ORIGINAL_NATIVE_CALLBACK')])==1,advice
         assert not any(a[1:]==(UNKNOWN_PAIR,'ORIGINAL_NATIVE_CALLBACK') for a in advice)
         assert not Trade.get_trades().all()
