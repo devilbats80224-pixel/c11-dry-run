@@ -178,9 +178,10 @@ class BoundedArchiveFallback:
     and its final authority check; this adapter cannot write any SQLite table.
     Request/drain/close must run on the originating owner thread.
     """
-    def __init__(self, wall, *, qualified, attempted, commit_raw, transport=None):
+    def __init__(self, wall, *, qualified, attempted, commit_raw, receipt_qualified=None, transport=None):
         self.wall=wall
         self.qualified=qualified
+        self.receipt_qualified=receipt_qualified or qualified
         self.attempted=attempted
         self.commit_raw=commit_raw
         self.transport=OfficialArchiveHTTP(wall) if transport is None else transport
@@ -192,9 +193,10 @@ class BoundedArchiveFallback:
         if get_ident()!=self.owner:
             raise RuntimeError('C11_ARCHIVE_FALLBACK_WRONG_OWNER')
 
-    def _active(self, scope):
+    def _active(self, scope, *, received=False):
         now=self.wall()
-        return (not self.closed and self.qualified(scope) is True
+        qualified=self.receipt_qualified if received else self.qualified
+        return (not self.closed and qualified(scope) is True
                 and self.attempted(scope) is True
                 and bounded_archive_days(scope,scope.spans,now)==((scope.day,scope.spans),))
 
@@ -207,7 +209,9 @@ class BoundedArchiveFallback:
             return ()
         result=[]
         for day,spans in bounded_archive_days(fact,missing,self.wall()):
-            key=(fact.symbol,day,spans)
+            # All differently sized spans on the day download the same
+            # signed official ZIP. Do not duplicate its in-flight read.
+            key=(fact.symbol,day)
             scope=ArchiveFallbackScope(fact.symbol,fact.pair,fact.generation,fact.boundary,
                                        fact.origin,fact.expires_ns,day,spans)
             if key in self.pending or not self._active(scope):
@@ -239,7 +243,7 @@ class BoundedArchiveFallback:
             return ()
         results=[]
         for key,(scope,cancel,done) in tuple(self.pending.items()):
-            if not self._active(scope):
+            if not self._active(scope,received=True):
                 cancel.set()
             if not done.done():
                 continue
@@ -255,7 +259,7 @@ class BoundedArchiveFallback:
                 except Exception:
                     results.append((scope,'AUTO_ARCHIVE_UNVERIFIED',0))
                     continue
-                if not self._active(scope) or not scope.matches(receipt,self.wall()):
+                if not self._active(scope,received=True) or not scope.matches(receipt,self.wall()):
                     results.append((scope,'C11_ARCHIVE_FALLBACK_RECEIPT_DENIED',0))
                     continue
                 committed=self.commit_raw(scope,receipt) is True
