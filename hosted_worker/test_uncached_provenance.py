@@ -159,7 +159,7 @@ def discovered_archives_use_existing_bounds():
 
 
 
-def missing_month_finds_daily_without_a_catalogue():
+def missing_month_finds_daily_without_a_catalogue(month_has_gap=False):
     from datetime import datetime, timezone
     from io import BytesIO
     from zipfile import ZipFile
@@ -170,7 +170,7 @@ def missing_month_finds_daily_without_a_catalogue():
     now=cutoff+2*QUARTER
     symbol='陌生候選USDT'
     fact=Ns(symbol=symbol,pair=symbol[:-4]+'/USDT:USDT',origin=origin,boundary=now)
-    _,monthly=archive_location(symbol,'2026-10')
+    month_name,monthly=archive_location(symbol,'2026-10')
     name,daily=archive_location(symbol,'2026-10-31')
     data=BytesIO()
     with ZipFile(data,'w') as zip_file:
@@ -178,12 +178,23 @@ def missing_month_finds_daily_without_a_catalogue():
             f'{t},100,101,99,100,10,{t+59_999},1000,1,0,0,0\n'
             for t in range(origin,cutoff,60_000)))
     body=data.getvalue()
+    monthly_data=BytesIO()
+    with ZipFile(monthly_data,'w') as zip_file:
+        zip_file.writestr(month_name.removesuffix('.zip')+'.csv',''.join(
+            f'{t},100,101,99,100,10,{t+59_999},1000,1,0,0,0\n'
+            for t in range(origin,cutoff,60_000) if t!=origin+5*60_000))
+    bad_month=monthly_data.getvalue()
     calls=[]
     def fetch(url,maximum,cancel):
         assert not cancel.is_set()
         calls.append(url)
         if url==monthly+'.CHECKSUM':
+            if month_has_gap:
+                return Receipt(f'{sha256(bad_month).hexdigest()}  {month_name}'.encode(),now)
             raise Hold('AUTO_ARCHIVE_FILE_MISSING')
+        if url==monthly:
+            assert month_has_gap and len(bad_month)<=maximum
+            return Receipt(bad_month,now)
         if url==daily+'.CHECKSUM':
             return Receipt(f'{sha256(body).hexdigest()}  {name}'.encode(),now)
         assert url==daily and len(body)<=maximum
@@ -192,10 +203,12 @@ def missing_month_finds_daily_without_a_catalogue():
     try:
         source,prefix=archive.prepare(fact,Event())
     except Hold as exc:
-        raise AssertionError('C11_NO_CATALOGUE_MISSING_MONTH_DID_NOT_TRY_DAILY') from exc
+        raise AssertionError('C11_VALID_MONTHLY_GAP_DID_NOT_TRY_EXACT_DAILY' if month_has_gap
+                             else 'C11_NO_CATALOGUE_MISSING_MONTH_DID_NOT_TRY_DAILY') from exc
     assert (source.origin,source.cutoff,prefix.rpd.next_open)==(origin,cutoff,cutoff)
     assert len(prefix.quarters)==96 and set(width for width,_ in prefix.atr)=={FIVE,QUARTER}
-    assert calls==[monthly+'.CHECKSUM',daily+'.CHECKSUM',daily]
+    expected=[monthly+'.CHECKSUM']+([monthly] if month_has_gap else [])+[daily+'.CHECKSUM',daily]
+    assert calls==expected
     with patch('auto_cold_archive.MAX_FILES',0):
         limited=ArchiveProgress(archive,symbol,origin,cutoff,0,((name,monthly,cutoff),))
         try:
@@ -247,6 +260,7 @@ def production_archive_mode_discovers_for_current_unseeded_candidates():
 
 if __name__ == "__main__":
     missing_month_finds_daily_without_a_catalogue()
+    missing_month_finds_daily_without_a_catalogue(month_has_gap=True)
     expired_completed_source_cannot_block_ready_peer()
     production_archive_mode_discovers_for_current_unseeded_candidates()
     boundary_cases()
