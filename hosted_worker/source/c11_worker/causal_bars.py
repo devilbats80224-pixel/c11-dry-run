@@ -275,7 +275,11 @@ class CausalBars:
         signal=classify(end,as_of,candles,last[0].close if last else None) if quarters else None
         return candles,minutes,signal
 
-    def inputs(self,symbol,end,as_of,*,primary=None,state=None):
+    def inputs(self,symbol,end,as_of,*,primary=None,state=None,valid_until_ms=None):
+        deadline=end+MINUTE if valid_until_ms is None else valid_until_ms
+        if valid_until_ms is not None and (type(deadline) is not int or
+                not end<=as_of<deadline<=end+QUARTER or primary is None or state is None):
+            return None
         candles,minutes,signal=primary if primary is not None else self.recent_primary(symbol,end,as_of)
         if signal is None or signal.status!='NW15_PRIMARY_SIGNAL' or not minutes or state is None:
             return None
@@ -283,7 +287,7 @@ class CausalBars:
         status,_=join(scope,as_of,[state])
         if status!='PASS':
             return None
-        return dict(scope=scope,candle_symbol=symbol,valid_until_ms=end+MINUTE,candles15=candles,
+        return dict(scope=scope,candle_symbol=symbol,valid_until_ms=deadline,candles15=candles,
                     minutes=tuple(MinuteInput(symbol,row.received_ms,ClosedMinute(
                         row.open_ms+MINUTE,row.high,row.low,row.close)) for row in minutes),
                     rpd_segment=None,completed_bars5=(),rpd_checkpoint=state)

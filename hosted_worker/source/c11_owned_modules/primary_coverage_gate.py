@@ -39,6 +39,11 @@ class NativePrimaryHandoff:
         try:yield
         finally:self.active=None
 
+    def validated_expiry(self,pair,candidate,end_ms):
+        if self.resolve(pair,candidate,end_ms) is None:
+            return None
+        return self.active.expires_ms
+
     def entry_atr(self,pair,candidate,end_ms):
         if not callable(self.scoped_atr) or self.resolve(pair,candidate,end_ms) is None:return None
         return self.scoped_atr(pair,end_ms)
