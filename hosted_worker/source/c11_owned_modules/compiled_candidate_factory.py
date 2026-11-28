@@ -109,6 +109,43 @@ class OriginalPlan:
         if expires<=self.wall():return None
         return Scope(pair,candidate.symbol,g,end,expires)
 
+    def _readable_authority(self,pair,end,now):
+        # Evaluation only: verify durable first readiness and a separate
+        # current OI witness; never consult, extend, or reissue a wire scope.
+        if get_ident()!=self.owner or self.closed or not callable(self.verified_readiness_at):
+            return None
+        actual,live=self.entries()
+        if end!=actual or not end<=now<end+QUARTER:
+            return None
+        row=next((r for r in live if r.pair==pair),None)
+        if row is None or not self.bot.observed_ranked(row):
+            return None
+        at=self.verified_readiness_at(row,end,now)
+        if type(at) is not int or not end<=at<=now<at+60_000:
+            return None
+        wall=self.wall()
+        publisher_until=wall+(row.expires_ns-self.mono())//1_000_000
+        expires=min(at+60_000,publisher_until,end+QUARTER)
+        if self.wall()>=expires:
+            return None
+        return row,Scope(pair,row.symbol,row.generation,end,expires)
+
+    def confirmed_readable_scope(self,pair,end):
+        result=self._readable_authority(pair,end,self.wall())
+        return result[1] if result is not None else None
+
+    def accepted_readable_candidate(self,scope,now):
+        if type(scope) is not Scope or not scope.end<=now<scope.expires:
+            return None
+        result=self._readable_authority(scope.pair,scope.end,now)
+        if result is None:
+            return None
+        row,current=result
+        return row if (current.symbol,current.generation)==(scope.symbol,scope.generation) else None
+
+    def current_readable_scope(self,scope,now):
+        return self.accepted_readable_candidate(scope,now) is not None
+
     def _provisional_cap(self,key,row,expires,now):
         epoch=key[:2]
         for book in (self.provisional_caps,self.provisional_witness,self.replaced_provisional_caps):

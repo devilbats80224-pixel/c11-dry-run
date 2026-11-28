@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from causal_bars import HOUR, MINUTE
 from causal_exit_basis import CausalExitBasis
 from live_signal_evidence import owned_priority
+from entry_verdict_receipt import unavailable_order_fact
 from c11_native_rules import PositionFacts, archived_buffered_liquidation
 from native_protection import FeatureSpan, archived_half_window, next_open, replay_early, wall_ms
 
@@ -39,26 +40,31 @@ class NativeEvidence:
 
     def entry_clock(self, bot, pair, end_ms):
         if not bot.native_paper_exchange():
-            return None
+            return unavailable_order_fact('ENTRY_FACTS_NOT_PAPER')
         from primary_coverage_gate import NativePrimaryHandoff
         view=getattr(bot,'_c11_native_primary_handoff',None)
         if type(view) is NativePrimaryHandoff and view.scoped_atr is not None:
             if (getattr(bot,'_owned_revisit_no_positions',False) is not True
-                    or getattr(bot,'_owned_revisit_reconciled',False) is not True):return None
+                    or getattr(bot,'_owned_revisit_reconciled',False) is not True):
+                return unavailable_order_fact('ENTRY_FACTS_ATR_SCOPE_UNAVAILABLE')
             feature=view.entry_atr(pair,view.scoped_candidate,end_ms)
         else:
             feature = self.features.read(bot, pair, end_ms)
         if feature is None:
-            return None
+            return unavailable_order_fact('ENTRY_FACTS_ATR_UNAVAILABLE')
         symbol = bot.exchange.markets[pair]['id']
         close = self.policy.bars.range(symbol, MINUTE, end_ms-MINUTE, end_ms, wall_ms())
         if not close:
-            return None
+            return unavailable_order_fact('ENTRY_FACTS_SIGNAL_CLOSE_UNAVAILABLE')
         quote = next_open(bot.exchange._api, symbol, end_ms, 'buy')
         # The frozen C11 entry price is the signal-bar close. A next-open that
         # differs cannot stand in for that exact archived price.
-        if quote is None or quote.price != close[-1].close or feature['observed_at_ms'] > quote.received_ms:
-            return None
+        if quote is None:
+            return unavailable_order_fact('ENTRY_FACTS_CLOCK_UNAVAILABLE')
+        if quote.price != close[-1].close:
+            return unavailable_order_fact('ENTRY_FACTS_CLOSED_OPEN_PRICE_MISMATCH')
+        if feature['observed_at_ms'] > quote.received_ms:
+            return unavailable_order_fact('ENTRY_FACTS_ATR_AFTER_QUOTE')
         return EntryClock(pair, end_ms, quote.price, quote.side_quantity, quote.expires_ms, True)
 
     def campaign_entry(self, trade):
