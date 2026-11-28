@@ -168,12 +168,13 @@ class NativeCandles:
         if type(launch) is not int or launch<=0 or launch%FIVE or launch>=end:
             return None
         now=time.time_ns()//1_000_000
-        proof=self.store.segment(symbol)
-        need(proof is None or proof.open_ms==launch,'C11_RPD_GENESIS_CHANGED')
+        existing=self.store.segment(symbol)
+        proof=self.store.contract_segment(symbol,launch,now) if existing is not None else None
+        need(existing is None or proof is not None,'C11_RPD_GENESIS_CHANGED')
         state=self.store.rpd_progress(symbol,end,now) if proof is not None else None
         if state is not None and state.next_open==end:
             return state
-        first=state.next_open if state is not None else launch
+        first=state.next_open if state is not None else proof.open_ms if proof is not None else launch
         # The local checkpoint may catch up one page per loop. Network only
         # fills a genuinely recent tail or a genuinely recent listing origin.
         count=(end-first)//FIVE

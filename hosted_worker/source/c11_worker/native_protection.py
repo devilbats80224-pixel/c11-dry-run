@@ -1,4 +1,5 @@
 """Credential-free next-open and protection evidence for archived C11."""
+from atr_er_state import REQUIRED_QUARTERS
 from dataclasses import dataclass, replace
 from decimal import Decimal
 import math
@@ -93,10 +94,11 @@ class FeatureSpan:
         symbol, launch = market['id'], market['info'].get('onboardDate')
         if type(launch) is not int or launch <= 0 or launch % QUARTER or launch > end:
             return 'ATR_ER_ORIGIN_UNVERIFIED', None
-        warming = (end // QUARTER * QUARTER - launch) // QUARTER < 401
-        proof = self.store.segment(symbol)
-        if proof is None or proof.open_ms != launch or proof.proven_at_ms > now:
+        warming = (end // QUARTER * QUARTER - launch) // QUARTER < REQUIRED_QUARTERS
+        proof = self.store.contract_segment(symbol,launch,now)
+        if proof is None:
             return ('WARMUP_LT_401_15M' if warming else 'ATR_ER_TRUSTED_ORIGIN_REQUIRED'), None
+        warming = (end // QUARTER * QUARTER - proof.open_ms) // QUARTER < REQUIRED_QUARTERS
         targets = {width: end // width * width for width in (FIVE, QUARTER)}
         for width, target in targets.items():
             self._extend(bot, symbol, width, proof, target, wall_ms(), allow_fetch)
@@ -112,7 +114,7 @@ class FeatureSpan:
                          {targets[QUARTER]: m15, targets[QUARTER] - QUARTER: previous})
         if not result['known']:
             return 'ATR_ER_WARMUP_INCOMPLETE', None
-        return 'ATR_ER_KNOWN', dict(result, origin_ms=launch,
+        return 'ATR_ER_KNOWN', dict(result, origin_ms=proof.open_ms,
             observed_at_ms=max(x['actual_received_ms'] for x in (m5, m15, previous)))
 
     def read(self, bot, pair, end, *, allow_fetch=True):

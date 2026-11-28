@@ -101,7 +101,10 @@ def old_listing_with_blank_state_uses_recent_required_rows():
     # Supply only actual usable recent 1m rows, not a fake market start or 2020 replay.
     listing=1_577_836_800_000  # 2020-01-01 UTC, exact quarter boundary
     fact=N(symbol=SYMBOL,pair=FACT.pair,origin=listing,boundary=END)
-    store=CausalBars(':memory:')
+    from tempfile import TemporaryDirectory
+    ledger=TemporaryDirectory()
+    path=Path(ledger.name)/'causal.sqlite'
+    store=CausalBars(path)
     AtrErCheckpoint(store)
     owner=N(store=store,check_store=lambda:None,tap=N(current=lambda x:x is fact),
             cold_delivery_window=lambda:True,cold_delivery_allows=lambda x:x is fact)
@@ -120,9 +123,28 @@ def old_listing_with_blank_state_uses_recent_required_rows():
         assert actual=='AUTO_RETAINED_MINUTES_QUEUED',(
             'C11_BLANK_OLD_CONTRACT_IGNORED_COMPLETE_RECENT_CANONICAL_HISTORY',actual)
         assert fact.origin==listing and store.segment(SYMBOL) is None
+        lane.tick(owner,prepare_only=True)
+        source,prefix=lane.active[2].result(timeout=25)
+        assert (source.origin,source.retained_listing_ms,prefix.rpd.next_open)==(earliest,listing,CUTOFF)
+        assert prefix.rpd.origin==earliest
+        assert tuple(row.open_ms for row in prefix.quarters)==tuple(range(CUTOFF-260*QUARTER,CUTOFF,QUARTER))
+        lane.tick(owner,ready_only=True)
+        proof=store.contract_segment(SYMBOL,listing,WALL)
+        assert proof is not None and proof.open_ms==earliest
+        assert store.contract_segment(SYMBOL,listing+QUARTER,WALL) is None
+        assert store.contract_segment(SYMBOL,listing,WALL-1) is None
+        reopened=CausalBars(path)
+        try:
+            assert reopened.contract_segment(SYMBOL,listing,WALL)==proof
+            assert reopened.db.execute(
+                'SELECT count(*) FROM atr_er_checkpoint WHERE symbol=?',(SYMBOL,)).fetchone()==(2,)
+        finally:
+            reopened.db.close()
+        print('C11_2020_LISTING_RECENT_LOCAL_RECONSTRUCTION_PASS')
     finally:
         lane.close()
         store.db.close()
+        ledger.cleanup()
 
 
 if __name__=='__main__':
