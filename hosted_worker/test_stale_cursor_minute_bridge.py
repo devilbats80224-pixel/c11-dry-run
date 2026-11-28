@@ -146,6 +146,8 @@ def verified_cursor_prefetch_uses_capacity_and_waits_for_missing_predecessor():
         store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(symbol,state.pack()))
     peer_proof=SegmentStart(other,other_origin,other_origin+M)
     store.set_segment(peer_proof)
+    # The prior completed quarter is already retained for this candidate.
+    store.record(other,Q,(ClosedBar(other_origin,other_first,100,104,99,101,10,1000),))
     peer_state=RpdState.start(peer_proof)
     for t in range(other_origin,other_first,FIVE):
         peer_state.advance(ClosedBar(t,t+FIVE,100,104,99,101,10,1000),other_first)
