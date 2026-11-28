@@ -1,5 +1,7 @@
 """Durable, causal bars for pinned C11 admission. No inferred segment start."""
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
+from hashlib import sha256
+import json
 import math
 import sqlite3
 
@@ -135,6 +137,73 @@ class CausalBars:
             else:
                 self.db.execute('INSERT INTO candle VALUES (?,?,?,?,?,?,?,?,?,?)', (*key, bar.received_ms, *values))
 
+    def stage_retained_quarter_selection(self, symbol, listing, origin, cutoff, observed,
+                                         captured, manifest, quarters):
+        """Owner transaction only. Bind divergent immutable rows to a complete 1m basis."""
+        need(self.db.in_transaction, 'C11_RETAINED_QUARTER_OWNER_TX')
+        from closed_minute_basis import project_closed_minutes
+        preserved = []
+        for row in quarters:
+            raw = self.range(symbol, QUARTER, row.open_ms, row.open_ms + QUARTER, observed)
+            if raw and raw[0].payload() != row.payload():
+                preserved.append((raw[0], row))
+        if not preserved:
+            return ()
+        basis = self.range(symbol, MINUTE, origin, cutoff, captured)
+        computed = sha256(json.dumps(['owner-verified-minutes-v2', symbol, listing, origin, cutoff,
+                                      [astuple(bar) for bar in basis]], separators=(',', ':'),
+                                     allow_nan=False).encode()).hexdigest()
+        need(basis and computed == manifest, 'C11_RETAINED_QUARTER_BASIS_PIN')
+        self.db.execute('CREATE TABLE IF NOT EXISTS retained_quarter_selection ('
+                        'symbol TEXT NOT NULL, manifest TEXT NOT NULL, opened INTEGER NOT NULL, '
+                        'captured INTEGER NOT NULL, visible INTEGER NOT NULL, '
+                        'raw_pin TEXT NOT NULL, projected_pin TEXT NOT NULL, '
+                        'PRIMARY KEY(symbol,manifest,opened))')
+        for direct, row in preserved:
+            at = row.open_ms
+            expected = project_closed_minutes(self, symbol, QUARTER, at, at + QUARTER, captured)
+            need(origin <= at and at + QUARTER <= cutoff and expected and
+                 expected[0].payload() == row.payload(), 'C11_RETAINED_QUARTER_PROJECTION_PIN')
+            values = (symbol, manifest, at, captured, observed, self._retained_bar_sha(direct),
+                      self._retained_bar_sha(expected[0]))
+            self.db.execute('INSERT INTO retained_quarter_selection VALUES (?,?,?,?,?,?,?)', values)
+        return tuple((QUARTER, r.open_ms) for _, r in preserved)
+
+    @staticmethod
+    def _retained_bar_sha(bar):
+        return sha256(json.dumps(astuple(bar), separators=(',', ':'),
+                                 allow_nan=False).encode()).hexdigest()
+
+    def strategy_quarters(self, symbol, start, end, as_of, *, terminal_end=None):
+        """Read proven retained projections while leaving raw observations untouched."""
+        raw = self.range(symbol, QUARTER, start, end, as_of)
+        if not raw or self.db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='retained_quarter_selection'"
+        ).fetchone() is None:
+            return raw
+        from closed_minute_basis import project_closed_minutes
+        strategy = {row.open_ms: row for row in raw}
+        eligible_end = end if terminal_end is None else min(end, terminal_end - QUARTER)
+        selected = self.db.execute(
+            'SELECT q.opened,q.captured,q.raw_pin,q.projected_pin '
+            'FROM retained_quarter_selection q JOIN retained_bootstrap_contract c '
+            'ON c.symbol=q.symbol AND c.manifest_sha=q.manifest '
+            'JOIN segment s ON s.symbol=c.symbol AND s.open_ms=c.start_ms '
+            'JOIN cold_prefix_lineage l ON l.symbol=s.symbol AND l.origin=s.open_ms '
+            'AND l.manifest_sha=q.manifest AND l.owner_ready=q.visible AND l.source_ready=q.captured '
+            'WHERE q.symbol=? AND c.proven_ms=q.visible AND q.visible<=? AND q.opened>=? '
+            'AND q.opened+?<=? AND c.listing_ms<c.start_ms '
+            'AND q.opened>=c.start_ms AND q.opened+?<=l.cutoff',
+            (symbol, as_of, start, QUARTER, eligible_end, QUARTER)).fetchall()
+        for at, captured, raw_pin, projected_pin in selected:
+            prior = strategy[at]
+            projected = project_closed_minutes(self, symbol, QUARTER, at, at + QUARTER, captured)
+            need(self._retained_bar_sha(prior) == raw_pin and projected and
+                 self._retained_bar_sha(projected[0]) == projected_pin,
+                 'C11_RETAINED_QUARTER_READ_PIN')
+            strategy[at] = projected[0]
+        return tuple(strategy[row.open_ms] for row in raw)
+
     def _warm_immutable_minutes(self, symbol, batches, scope):
         """Select stored prefix rows only when no planned 5m aggregate depends on that new value."""
         end=scope.end
@@ -185,6 +254,23 @@ class CausalBars:
                     batches,preserved=self._warm_immutable_minutes(symbol,batches,scope)
                     if preserved:
                         phases.append('ATOMIC_HISTORICAL_MINUTE_RETAINED')
+                    ready = tuple(r for r in dict(batches)[QUARTER]
+                                  if r.open_ms + QUARTER <= scope.end - QUARTER)
+                    if ready:
+                        as_of = wall() if callable(wall) else max(r.received_ms for r in ready)
+                        viewed = self.strategy_quarters(symbol, ready[0].open_ms,
+                            ready[-1].open_ms + QUARTER, as_of, terminal_end=scope.end)
+                        # Only a provenance-proven alternative to the exact raw key
+                        # can permit a non-equal immutable store write to be skipped.
+                        raw = self.range(symbol, QUARTER, ready[0].open_ms,
+                            ready[-1].open_ms + QUARTER, as_of)
+                        if viewed and raw:
+                            reviewed_keys = tuple((QUARTER, incoming.open_ms)
+                                for incoming, direct, projected in zip(ready, raw, viewed)
+                                if incoming.open_ms == direct.open_ms == projected.open_ms
+                                and projected.payload() != direct.payload()
+                                and incoming.payload() == projected.payload())
+
                 if multi is not None:
                     from multilane_history_view import FrozenReadView
                     need(type(multi) is FrozenReadView and historical is None and callable(wall),'C11_OWNER_BATCH_SHAPE')
@@ -293,7 +379,7 @@ class CausalBars:
 
     def recent_primary(self,symbol,end,as_of,*,scoped_quarters=None):
         from c11_nw15_primary_signal_port_v1.primary15 import WARM as NW_WARM, classify
-        quarters=self.range(symbol,QUARTER,end-NW_WARM*QUARTER,end,as_of) if scoped_quarters is None else scoped_quarters
+        quarters=self.strategy_quarters(symbol,end-NW_WARM*QUARTER,end,as_of,terminal_end=end) if scoped_quarters is None else scoped_quarters
         if scoped_quarters is not None:
             need(type(quarters) is tuple and len(quarters)==NW_WARM and all(
                 type(r) is ClosedBar and r.valid(QUARTER) and r.open_ms==end-(NW_WARM-i)*QUARTER

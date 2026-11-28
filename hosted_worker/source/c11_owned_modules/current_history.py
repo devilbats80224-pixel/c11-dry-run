@@ -15,7 +15,7 @@ class CurrentHistory:
         if type(bot.feed) is not EntryFeed:raise ValueError('EXACT_HISTORY_FEED_REQUIRED')
         self.bot=bot;self.feed=bot.feed;self.wall=wall;self.mono=mono
         self.quarantined=frozenset(quarantined)
-        self.thread=get_ident();self.cycle_stamp=-1;self.caps={}
+        self.thread=get_ident();self.cycle_stamp=-1;self.caps={};self.classification_witness={}
         self.generation=None
     def before_protection(self):
         self.cycle_stamp=self.feed.owner_cycle_stamp() if get_ident()==self.thread else -1
@@ -26,7 +26,7 @@ class CurrentHistory:
         if any(type(r) is not Ranked or r.generation!=g for r in rows):
             return ()
         if self.generation is not None and g<self.generation:return ()
-        if g!=self.generation:self.caps={};self.generation=g
+        if g!=self.generation:self.caps={};self.classification_witness={};self.generation=g
         out=[]
         for r in rows:
             if r.symbol in self.quarantined or r.ratio<Decimal('.20'):continue
@@ -39,7 +39,19 @@ class CurrentHistory:
                     continue
             except Exception:continue
             key=r.symbol,r.pair
-            cap=min(r.expires_ns,self.caps.get(key,r.expires_ns))
+            identity=(r.pair,r.symbol,r.generation,r.rank,r.ratio,r.received_at,origin)
+            stamp=r.classification_seen_ns
+            prior=self.classification_witness.get(key)
+            earlier=self.caps.get(key,r.expires_ns)
+            if prior is None or (prior[0]==identity and type(stamp) is int
+                                 and type(prior[1]) is int and stamp>prior[1] and now>=earlier):
+                # This is a new verified Fact, not a longer lifetime for any
+                # already granted page: current(previous) checks its old cap.
+                self.classification_witness[key]=(identity,stamp)
+                earlier=r.expires_ns
+            elif prior[0]!=identity:
+                continue
+            cap=min(r.expires_ns,earlier)
             self.caps[key]=cap
             if now<cap:out.append(Fact(r.symbol,r.pair,g,E,origin,cap))
         return tuple(out)

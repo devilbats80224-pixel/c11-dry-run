@@ -57,7 +57,7 @@ def bootstrap_bounds(listing,end):
     """The exact retained strategy input, separate from contract genesis."""
     from atr_er_state import REQUIRED_QUARTERS
     if (type(listing) is not int or type(end) is not int
-            or listing%Q or end%Q or not 0<listing<end-Q):
+            or listing%F or end%Q or not 0<listing<end-Q):
         return None
     cutoff=end-Q
     start=cutoff-REQUIRED_QUARTERS*Q

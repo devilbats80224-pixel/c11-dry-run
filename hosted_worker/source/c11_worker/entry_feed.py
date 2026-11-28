@@ -28,6 +28,7 @@ class Ranked:
     generation: int
     received_at: str
     expires_ns: int
+    classification_seen_ns: int | None = None
 
 
 class EntryFeed:
@@ -87,7 +88,8 @@ class EntryFeed:
             pair = metadata.verified.get(symbol)
             if value >= Decimal('0.20'):
                 if pair:
-                    out.append(Ranked(pair, symbol, rank, value, frame['generation'], frame['received_at'], deadline))
+                    out.append(Ranked(pair, symbol, rank, value, frame['generation'], frame['received_at'],
+                                      deadline, metadata.received_monotonic_ns))
                     watch[symbol] = pair
                 elif symbol in self._last_tracking:
                     # Missing classification is not authoritative removal.
