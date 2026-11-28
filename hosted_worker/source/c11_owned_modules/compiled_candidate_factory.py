@@ -36,6 +36,8 @@ class OriginalPlan:
         self.strict_retry={}
         self.retry_fenced=set()
         self.provisional_caps={}
+        self.provisional_witness={}
+        self.replaced_provisional_caps={}
         self.ready_provisional_caps={}
         self.original_warm_offers={}
         self.closed=False
@@ -103,11 +105,40 @@ class OriginalPlan:
             if identity!=self._id(candidate):
                 return None
         else:
-            self.provisional_caps={k:v for k,v in self.provisional_caps.items() if k[:2]==(g,end)}
-            # An acquisition scope must not be extended past its first witness.
-            expires=self.provisional_caps.setdefault(key,expires)
+            expires=self._provisional_cap(key,candidate,expires,at)
         if expires<=self.wall():return None
         return Scope(pair,candidate.symbol,g,end,expires)
+
+    def _provisional_cap(self,key,row,expires,now):
+        epoch=key[:2]
+        for book in (self.provisional_caps,self.provisional_witness,self.replaced_provisional_caps):
+            for old in tuple(book):
+                if old[:2]!=epoch:book.pop(old,None)
+        seen=self.provisional_caps.setdefault(key,expires)
+        stamp=getattr(row,'classification_seen_ns',None)
+        identity=self._id(row)
+        prior=self.provisional_witness.setdefault(key,(identity,stamp))
+        if prior[0]!=identity:return 0
+        if (seen<=now<expires and type(stamp) is int and type(prior[1]) is int
+                and stamp>prior[1] and key not in self.last and key not in self.strict_retry
+                and key not in self.retry_fenced):
+            # A fresh market classifier can mint a new pre-wire scope for
+            # the exact same still-live publication. No ticket, authorized
+            # receipt, consumed callback or old clock is ever extended.
+            self.replaced_provisional_caps.setdefault(key,set()).add(seen)
+            self.provisional_witness[key]=(identity,stamp)
+            self.provisional_caps[key]=seen=expires
+        return min(expires,seen)
+
+    def can_rebind_provisional(self,first,fresh,now):
+        if ((first.pair,first.symbol,first.end)!=(fresh.pair,fresh.symbol,fresh.end)
+                or not self.current(fresh,now)):
+            return False
+        if fresh.generation>first.generation:return True
+        key=(fresh.generation,fresh.end,fresh.pair)
+        return (fresh.generation==first.generation and first.expires<=now<fresh.expires
+                and first.expires in self.replaced_provisional_caps.get(key,())
+                and fresh.expires==self.provisional_caps.get(key))
 
     def remember_original_warm_offer(self,scope):
         # Called only after original entry advice requests its same-round
@@ -221,8 +252,8 @@ class OriginalPlan:
                 continue
             if k in self.retry_fenced:continue
             now=self.wall()
-            lease=min(end+60000,now+max(0,(row.expires_ns-self.mono())//1_000_000),
-                      self.provisional_caps.get((g,end,row.pair),end+60000))
+            lease=min(end+60000,now+max(0,(row.expires_ns-self.mono())//1_000_000))
+            if k in self.provisional_caps:lease=self._provisional_cap(k,row,lease,now)
             if lease<=now:continue
             scope=Scope(row.pair,row.symbol,g,end,lease)
             prior=self.last.get(k)

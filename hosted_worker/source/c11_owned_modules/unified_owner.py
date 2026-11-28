@@ -344,7 +344,9 @@ class UnifiedScheduler:
         if not current:
             fresh=self.plan.provisional_scope(pair,end)
             if (type(fresh) is Scope and (fresh.pair,fresh.symbol,fresh.end)==(pair,first.symbol,end)
-                    and fresh.generation>first.generation and self.plan.current(fresh,now)):
+                    and (self.plan.can_rebind_provisional(first,fresh,now)
+                         if callable(getattr(self.plan,'can_rebind_provisional',None))
+                         else fresh.generation>first.generation and self.plan.current(fresh,now))):
                 warm=self.warm.revisit(first,pair,end,fresh_source=fresh)
                 if warm is not None:return warm
         if not end<=now<first.expires:

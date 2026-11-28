@@ -824,6 +824,12 @@ else:
                     and not getattr(history,'_mixed_stage_verified',False)):
                 history._mixed_stage_verified=True
                 print('C11_MIXED_STAGE NATIVE_CANONICAL_STATE_PERSISTED',flush=True)
+            if THIN_RANK and now==END+9_000:
+                # Read already-observed receipts; never force another feed
+                # read or promote a prior classification during inspection.
+                observed=next((r for r in feed.latest_owner_observation if r.symbol==SYMBOL),None)
+                if observed is not None and observed.expires_ns>scheduler.plan.mono():
+                    print('C11_MIXED_STAGE FRESH_SAME_GENERATION_CLASSIFIER_OBSERVED',flush=True)
             if now>=END+120_000 or cycle_count>=300:
                 slot=history.cold_prefix.public.pending.get(SYMBOL)
                 proof_status=('absent' if observed_proof is None else

@@ -277,7 +277,9 @@ class WarmReleaseBinding:
              or (source.pair,source.symbol,source.generation,source.end)!=(s.pair,s.symbol,s.generation,s.end)
              or s.expires>source.expires or (pair,end) in self.claimed
              or (fresh_source is not None and
-                 (source.generation<=first.generation or not sc.plan.current(source,sc.wall())))):
+                 not (sc.plan.can_rebind_provisional(first,source,sc.wall())
+                      if callable(getattr(sc.plan,'can_rebind_provisional',None))
+                      else source.generation>first.generation and sc.plan.current(source,sc.wall())))):
             self._report_hold(first,'WARM_REVISIT_SCOPE_NOT_OWNED')
             return False
         reason=self._current_reason(s)
