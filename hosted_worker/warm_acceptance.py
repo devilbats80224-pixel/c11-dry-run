@@ -679,6 +679,15 @@ def main(outer):
             lane=w.freqtrade.strategy._c11_native_entry_owner
             assert delayed_frames and lane.holds.get(PAIR) is delayed_frames[0] and (PAIR,E) not in lane.spent
             assert not any((pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK') for _,pair,status in advice)
+            held=delayed_frames[0]
+            scheduler=w._c11_owned_scheduler
+            scheduler=getattr(getattr(scheduler,'active',scheduler),'scheduler')
+            row=scheduler.first_gate.rows.get((held.generation,held.symbol),{})
+            recorded=row.get('atomic_refusals',{}).get('ATOMIC_SQLITE_BUSY')
+            assert recorded and recorded[:2]==[7000,7000] and recorded[2]>=1, (
+                'C11_WARM_SQLITE_BUSY_REASON_MISSING', 'warm atomic write',
+                'ATOMIC_SQLITE_BUSY at +7000ms', row.get('atomic_refusals',{}))
+            print('C11_MIXED_WARM_ATOMIC_SQLITE_BUSY_RECORDED',flush=True)
           else:
             w.freqtrade.process()
           if i==1:
