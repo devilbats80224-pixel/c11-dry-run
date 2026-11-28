@@ -104,4 +104,26 @@ def main():
     print("C11_MIXED_CLOSE_PRESSURE_REASON_AND_GRANT_ACCOUNTING_PASS")
 
 
+
+def refill_uses_measured_ip_headroom_not_a_static_reserve():
+    meter=make_meter(used=2398)
+    def job(index,symbol):
+        return PrimaryMinuteJob(symbol,GENERATION,E,E+60_000,E-900_000,E,
+                                f"{900+index:032x}")
+    # Verified header leaves two weight. Distinct candidates should both
+    # reserve before either completes; a third cannot overrun the true cap.
+    a,b,c=(job(i,x) for i,x in enumerate(('FIRSTUSDT','SECONDUSDT','THIRDUSDT')))
+    ta=meter.try_reserve_history(a)
+    tb=meter.try_reserve_history(b)
+    assert ta is not None and tb is not None,(
+        'C11_FIXED_RESERVE_BLOCKS_REAL_IP_HEADROOM',meter.last_history_hold)
+    assert meter.try_reserve_history(c) is None
+    assert meter.claim_history_send(ta,a) and meter.claim_history_send(tb,b)
+    assert meter.try_reserve_history(c) is None
+    meter.optional_wire_fault(429,90_000)
+    assert meter.try_reserve_history(c) is None
+    assert meter.last_history_hold=='HISTORY_BUDGET_PAUSED'
+    print('C11_DATA_REFILL_HONORS_ACTUAL_IP_HEADROOM_AND_BACKOFF')
+
+refill_uses_measured_ip_headroom_not_a_static_reserve()
 main()

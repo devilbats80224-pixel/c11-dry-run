@@ -197,6 +197,51 @@ def verified_cursor_prefetch_uses_capacity_and_waits_for_missing_predecessor():
         store.db.close()
 
 
+def retained_minutes_repair_only_missing_derivatives_without_wire():
+    symbol='只缺衍生USDT'
+    first=T-Q-PAGE
+    cutoff=T-Q
+    origin=first-Q
+    wall=T+1000
+    fact=N(symbol=symbol,origin=origin,boundary=T,generation=8)
+    store=CausalBars(':memory:')
+    proof=SegmentStart(symbol,origin,origin+M)
+    store.set_segment(proof)
+    state=RpdState.start(proof)
+    def bar(t,width):
+        return ClosedBar(t,t+width,100,104,99,101,10*(width//M),1000*(width//M))
+    for t in range(origin,first,FIVE):
+        state.advance(bar(t,FIVE),first)
+    with store.db:
+        store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(symbol,state.pack()))
+    atr=AtrErCheckpoint(store)
+    for width in (FIVE,Q):
+        store.record(symbol,width,tuple(bar(t,width) for t in range(origin,first,width)))
+        assert atr.extend(symbol,width,proof,first,wall)==first
+    store.record(symbol,M,tuple(bar(t,M) for t in range(first,cutoff,M)))
+    gap=first+FIVE
+    store.record(symbol,FIVE,tuple(bar(t,FIVE) for t in range(first,cutoff,FIVE) if t!=gap))
+    store.record(symbol,Q,tuple(bar(t,Q) for t in range(first,cutoff,Q)))
+    previous=store.range(symbol,FIVE,first,first+FIVE,wall)
+    def unexpected_wire(_guard):
+        raise AssertionError('C11_RETAINED_FULL_1M_REDOWNLOADS_FOR_MISSING_5M')
+    owner=N(store=store,atr=atr,check_store=lambda:None,tap=N(current=lambda f:f is fact),
+            run=N(wall=lambda:wall,queue=N(inflight={})))
+    loop=MinuteAdmissionLoop(owner,unexpected_wire)
+    loop.cycle_headroom=lambda:True
+    try:
+        loop.tick([fact])
+        assert store.range(symbol,FIVE,first,first+FIVE,wall)==previous
+        assert len(store.range(symbol,FIVE,first,cutoff,wall))==99
+        payload,=store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
+        assert RpdState.restore(payload).next_open==cutoff
+        assert all(atr.cursor(symbol,width,proof)==cutoff for width in (FIVE,Q))
+        print('C11_RETAINED_1M_REPAIRS_DERIVED_GAP_WITHOUT_NETWORK')
+    finally:
+        loop.close()
+        store.db.close()
+
+
 def main():
     for symbol in ('NEWCONTRACTUSDT', '陌生候選USDT'):
         fact = N(symbol=symbol, origin=ORIGIN, boundary=T, generation=8)
@@ -220,6 +265,7 @@ def main():
         assert make_job(fact, None, (), T + 1, TOKEN) is None
     owner_replay()
     owner_replay(atr_must_continue=True)
+    retained_minutes_repair_only_missing_derivatives_without_wire()
     verified_cursor_prefetch_uses_capacity_and_waits_for_missing_predecessor()
     owner_replay(primary_occupied="disjoint")
     owner_replay(primary_occupied="overlap")
