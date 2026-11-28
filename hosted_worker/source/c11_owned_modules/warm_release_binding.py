@@ -79,36 +79,60 @@ class WarmReleaseBinding:
         x=self.prefix[s]
         return DEFAULT if type(x) is tuple else select_minute_span(s.end,x.items)
 
-    def _current(self,s):
+    def _current_reason(self,s):
         sc=self.sc
         now=sc.wall()
         bot=sc.worker.freqtrade
-        return (s in self.selected and sc.marker==(s.generation,s.end)
-            and any(owned is s for owned in sc.covers.values())
-            and bot.config.get('dry_run') is True
-            and getattr(bot,'_owned_revisit_no_positions',False) is True
-            and getattr(bot,'_owned_revisit_reconciled',False) is True
-            and s.end<=now<min(s.expires,sc.adapter.ready.effective_expiry(s,now))
-            and sc.adapter.ready.authority(s,now) is True
-            and sc.commit_and_decide.remaining()>sc.adapter.ready.latency_budget)
+        if (s not in self.selected or sc.marker!=(s.generation,s.end)
+                or not any(owned is s for owned in sc.covers.values())):
+            return 'WARM_REVISIT_SCOPE_NOT_OWNED'
+        if (bot.config.get('dry_run') is not True
+                or getattr(bot,'_owned_revisit_no_positions',False) is not True
+                or getattr(bot,'_owned_revisit_reconciled',False) is not True):
+            return 'WARM_REVISIT_PROTECTION_NOT_READY'
+        if not s.end<=now<min(s.expires,sc.adapter.ready.effective_expiry(s,now)):
+            return 'WARM_REVISIT_SOURCE_LEASE_LOST'
+        if sc.adapter.ready.authority(s,now) is not True:
+            return 'WARM_REVISIT_CURRENT_AUTHORITY_LOST'
+        if sc.commit_and_decide.remaining()<=sc.adapter.ready.latency_budget:
+            return 'WARM_REVISIT_OWNER_HEADROOM'
+        return None
+
+    def _current(self,s):
+        return self._current_reason(s) is None
+
+    def _report_hold(self,s,label):
+        record=getattr(self.sc,'_transition',None)
+        if callable(record):
+            record(s,label)
 
     def _preview(self,s):
         sc=self.sc
-        if not self._current(s):return None
+        reason=self._current_reason(s)
+        if reason is not None:
+            self._report_hold(s,reason)
+            return None
         matches=[r for r in sc.adapter._proven.values() if r.ticket.scope is s and r.ticket.lane=='1m']
-        if len(matches)!=1:return None
+        if len(matches)!=1:
+            self._report_hold(s,'WARM_REVISIT_NO_WITNESSED_MINUTE')
+            return None
         row=matches[0]
         prefix=self.prefix[s]
         if type(prefix) is not tuple:
             prefix=fill_previous_five(prefix,s.end,row.raw,row.received_ms)
-            if prefix is None:return None
+            if prefix is None:
+                self._report_hold(s,'WARM_REVISIT_PREFIX_CANNOT_COMPLETE')
+                return None
         def finality(scope,minute,record):
             return (scope is s and minute is row and admitted_closed_clock(
                 s.end,min(s.expires,sc.adapter.ready.effective_expiry(s,sc.wall())),
                 record['request_ms'],row.received_ms,sc.wall(),row.raw))
         values=sc.adapter.normalize_native_minute(s,row,prefix_five=prefix[0],
                             prefix_quarter=prefix[1],finality=finality)
-        return (row,values) if values is not None else None
+        if values is None:
+            self._report_hold(s,'WARM_REVISIT_NATIVE_INPUTS_REFUSED')
+            return None
+        return row,values
 
     def revisit(self,first,pair,end):
         sc=self.sc
@@ -116,7 +140,12 @@ class WarmReleaseBinding:
         s=next((q for q in sc.covers.values() if (q.pair,q.end)==(pair,end) and q in self.selected),None)
         if s is None:return None
         if ((first.pair,first.symbol,first.generation,first.end)!=(s.pair,s.symbol,s.generation,s.end)
-             or s.expires>first.expires or not self._current(s)):
+             or s.expires>first.expires):
+            self._report_hold(first,'WARM_REVISIT_SCOPE_NOT_OWNED')
+            return False
+        reason=self._current_reason(s)
+        if reason is not None:
+            self._report_hold(s,reason)
             return False
         by_ticket={ticket:key for key,ticket in sc.tickets.items()}
         sc.queue.accept_completed_original_scope(s,
