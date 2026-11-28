@@ -53,7 +53,7 @@ class NativeEntryAdviceMixin:
         return lane.advise(self,original,dataframe,metadata)
 
 class NativeEntryOwner:
-    def __init__(self, *, trusted_owner_input, record, provisional=None, revisit_ready=None,revisit_diagnostic=None,revisit_frame=None,revisit_frame_current=None,discard_revisit_frame=None,requires_staged_revisit_frame=None,analysis_diagnostic=None):
+    def __init__(self, *, trusted_owner_input, record, provisional=None, revisit_ready=None,revisit_diagnostic=None,revisit_frame=None,revisit_frame_current=None,discard_revisit_frame=None,requires_staged_revisit_frame=None,analysis_diagnostic=None,visible_warm_minute=None):
         self.thread=get_ident()
         self.trusted_owner_input=trusted_owner_input
         self.record=record
@@ -61,6 +61,7 @@ class NativeEntryOwner:
         self.revisit_ready=revisit_ready
         self.revisit_diagnostic=revisit_diagnostic
         self.analysis_diagnostic=analysis_diagnostic
+        self.visible_warm_minute=visible_warm_minute
         self.revisit_frame=revisit_frame
         self.revisit_frame_current=revisit_frame_current
         self.staged_frame=None
@@ -95,9 +96,15 @@ class NativeEntryOwner:
                 self._analysis_trace(pair,end,'ANALYSIS_ALREADY_CONSUMED')
                 return
             cached=strategy.dp.get_analyzed_dataframe(pair,strategy.timeframe)[0]
-            if not cached.empty and exact_frame_end(cached)>=end:
-                self._analysis_trace(pair,end,'ANALYSIS_ALREADY_CACHED')
-                return
+            if not cached.empty:
+                cached_end=exact_frame_end(cached)
+                if (cached_end>=end and
+                        not (cached_end==end and callable(self.visible_warm_minute)
+                             and self.visible_warm_minute(pair,end) is True)):
+                    self._analysis_trace(pair,end,'ANALYSIS_ALREADY_CACHED')
+                    return
+                if cached_end==end:
+                    self._analysis_trace(pair,end,'ANALYSIS_CURRENT_CACHE_HAS_OWNED_MINUTE')
         except (KeyError,AttributeError,ValueError,TypeError,IndexError):
             self._analysis_trace(pair,end,'ANALYSIS_FRAME_UNAVAILABLE')
             return
