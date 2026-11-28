@@ -160,7 +160,9 @@ class SharedHistoryForwarder:
             now=self.wall()
             expires=getattr(job,'expires',now+950)
             if now>=expires or not self.budget.claim_history_send(token,job,cold_current=lane.authority):
-                self.audit(job,'GRANT_REJECTED','SCOPE_OR_SHARED_BUDGET')
+                reason=('HISTORY_MARKER_OR_CURRENT_REFUSED' if now>=expires else
+                        getattr(self.budget,'last_history_hold',None) or 'SCOPE_OR_SHARED_BUDGET')
+                self.audit(job,'GRANT_REJECTED',reason)
                 self.finish(tag,None,cancel=True);return
             self.waiting[tag][4]=now
             # Transport timestamp and owner polling are different clocks.

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank) ;; *) exit 64;; esac
+case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -109,7 +109,7 @@ if [ "$2" = build ]; then
         --mount "type=bind,src=$d/test_baked_predecessor.py,dst=/predecessor-test.py,readonly" \
         --mount "type=bind,src=$d/../release_regressions,dst=/c11-ci-tools,readonly" \
         --entrypoint python "$image" -B /predecessor-test.py
-    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_terminal_warmup_priority.py test_idle_cold_preparation.py test_stale_cursor_minute_bridge.py test_retained_minute_cold_prefix.py; do
+    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_mixed_close_history_budget.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_staged_revisit_not_spent.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_terminal_warmup_priority.py test_idle_cold_preparation.py test_stale_cursor_minute_bridge.py test_retained_minute_cold_prefix.py; do
         docker run --rm --pull never --network none --read-only --cap-drop ALL \
             --security-opt=no-new-privileges \
             --mount "type=bind,src=$d/$test_name,dst=/provenance-test.py,readonly" \
@@ -152,7 +152,9 @@ warm() {
     ready_basis=no
     terminal_gap=no
     divergent_fallback=no
+    mixed_history_pressure=no
     if [ "$2" = warm-divergent-fallback ]; then divergent_fallback=yes; fi
+    if [ "$2" = warm-mixed-history-pressure ]; then mixed_history_pressure=yes; fi
     if [ "$2" = warm-ready-basis ]; then ready_basis=yes; fi
     if [ "$2" = warm-terminal-gap ]; then terminal_gap=yes; fi
     if [ "$2" = warm-unicode ]; then unicode=yes; fi
@@ -163,7 +165,7 @@ warm() {
       --tmpfs /c11-paper:rw,nosuid,nodev,uid=1000,gid=2000,mode=0700 \
       --mount "type=bind,src=$out/warm/warm_fixture,dst=/fixture,readonly" \
       --mount "type=bind,src=$out/warm,dst=/proof,readonly" \
-      -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e C11_WARM_MISSING_ANALYSIS_CASE="$missing" -e C11_WARM_UNICODE_CASE="$unicode" -e C11_WARM_READY_BASIS_CASE="$ready_basis" -e C11_WARM_TERMINAL_GAP_CASE="$terminal_gap" -e C11_WARM_DIVERGENT_FALLBACK_CASE="$divergent_fallback" -e C11_EXACT_FINAL_RUNTIME_SHA="$pin" \
+      -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e C11_WARM_MISSING_ANALYSIS_CASE="$missing" -e C11_WARM_UNICODE_CASE="$unicode" -e C11_WARM_READY_BASIS_CASE="$ready_basis" -e C11_WARM_TERMINAL_GAP_CASE="$terminal_gap" -e C11_WARM_DIVERGENT_FALLBACK_CASE="$divergent_fallback" -e C11_MIXED_HISTORY_PRESSURE="$mixed_history_pressure" -e C11_EXACT_FINAL_RUNTIME_SHA="$pin" \
       -e C11_ARCHIVE_CATALOG_CHECK_MS=1795773600000 -e C11_OFFLINE_EXPECT_BAKED_SCOPE=no -e C11_FUNCTIONAL_TRIAL=yes -e C11_INTENT_CASE=flat \
       --entrypoint python "$image" -B /proof/warm_acceptance.py >"$out/warm-runtime.log" 2>&1 || {
         if [ "$terminal_gap" = yes ]; then
@@ -202,6 +204,10 @@ warm() {
       grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" &&
       grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
+    if [ "$mixed_history_pressure" = yes ]; then
+      grep -Fx C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY "$out/warm-runtime.log"
+      grep -Fx C11_COMBINED_HISTORY_PRESSURE_AND_SAME_CLOSE_REVISIT_PASS "$out/warm-runtime.log"
+    fi
     if [ "$divergent_fallback" = yes ]; then
       grep -Fx C11_DIVERGENT_FALLBACK_DID_NOT_BLOCK_ORIGINAL_DECISION "$out/warm-runtime.log"
     fi
@@ -279,4 +285,4 @@ cold() {
     fi
     return 1
 }
-case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback) warm "$@";; reviewed-opg) reviewed_opg;; *) cold "$2";; esac
+case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; *) cold "$2";; esac

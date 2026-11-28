@@ -52,7 +52,7 @@ class NativeEntryAdviceMixin:
         return lane.advise(self,original,dataframe,metadata)
 
 class NativeEntryOwner:
-    def __init__(self, *, trusted_owner_input, record, provisional=None, revisit_ready=None,revisit_diagnostic=None,revisit_frame=None,revisit_frame_current=None,discard_revisit_frame=None):
+    def __init__(self, *, trusted_owner_input, record, provisional=None, revisit_ready=None,revisit_diagnostic=None,revisit_frame=None,revisit_frame_current=None,discard_revisit_frame=None,requires_staged_revisit_frame=None):
         self.thread=get_ident()
         self.trusted_owner_input=trusted_owner_input
         self.record=record
@@ -64,6 +64,7 @@ class NativeEntryOwner:
         self.staged_frame=None
         self.fallback_frame=None
         self.discard_revisit_frame=discard_revisit_frame
+        self.requires_staged_revisit_frame=requires_staged_revisit_frame
         self.holds={}
         self.spent=set()
 
@@ -103,7 +104,16 @@ class NativeEntryOwner:
             if self.revisit_diagnostic is not None:self.revisit_diagnostic(proof,'REVISIT_FT_FRAME_UNAVAILABLE')
             return False
         if callable(self.revisit_frame) and callable(self.revisit_frame_current):
+            staged_required=(callable(self.requires_staged_revisit_frame)
+                             and self.requires_staged_revisit_frame(proof))
             rows=self.revisit_frame(proof,frame)
+            if staged_required and (not rows or not self.revisit_frame_current(proof)):
+                # A warm isolated frame rejected by durability is still only
+                # a pending attempt. Keep the original immutable proof.
+                self.reset_revisit_frame()
+                if self.revisit_diagnostic is not None:
+                    self.revisit_diagnostic(proof,'REVISIT_STAGED_FRAME_PENDING')
+                return False
             if rows is not None:self.staged_frame=(proof,rows)
         self.spent={v for v in self.spent if v[1]>=proof.end}
         self.spent.add(key)

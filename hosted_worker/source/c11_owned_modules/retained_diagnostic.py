@@ -1,6 +1,6 @@
 """Only redacted protocol to Docker; no storage, threads, endpoint or authority."""
 import json,os,stat
-from retained_page_schema import PAGE_SCHEMA, SCHEDULE_SCHEMA, accepted_history_trace
+from retained_page_schema import BUDGET_REASONS, PAGE_SCHEMA, SCHEDULE_SCHEMA, accepted_history_trace
 from diagnostic_schema import MAX_LINE,accepted_symbol_event
 FIELDS={
  'c11-gate-readback-v1':frozenset(('schema','symbol','generation','end_ms','first_gate','owner_wire_charged_lanes','valid_reply_lanes','original_callbacks','observed_expiry_bound_ms','note','transition_ms')),
@@ -11,7 +11,7 @@ HISTORY_CODES=frozenset(('HISTORY_HEADROOM_OR_HOT_IO','HISTORY_NO_CURRENT_OPG',
    'HISTORY_WAITING_FOR_OTHER_WIDTH','HISTORY_PAGE_SENT_TO_OWNER_CHILD','HISTORY_PAGE_HELD',
    'HISTORY_SHARED_METER_STALE','HISTORY_SHARED_METER_UNKNOWN','HISTORY_SHARED_LIMIT',
    'HISTORY_MARKER_OR_CURRENT_REFUSED','HISTORY_PAGE_NOT_USABLE','HISTORY_REJECTED_DATA',
-   'HISTORY_PAIRED_APPEND','HISTORY_WIDTH_BUFFERED'))
+   'HISTORY_PAIRED_APPEND','HISTORY_WIDTH_BUFFERED',*BUDGET_REASONS))
 
 def accepted_history_status(d):
     e=d.get('end_ms'); age=d.get('age_ms')

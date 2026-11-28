@@ -448,6 +448,27 @@ def main(outer):
             if end==E and not rollover:
                 rollover.append((observed.costs,tuple(observed.boundary_spend),observed.meta))
                 print('NATIVE_AUTHENTIC_CURRENT_SPEND_BEFORE_OPTIONAL_RESERVE',rollover[0],flush=True)
+                if os.environ.get('C11_MIXED_HISTORY_PRESSURE')=='yes':
+                    from primary_only_route import PrimaryMinuteJob
+                    # Test load ONLY: charge a synthetic seven-symbol history
+                    # tape on the installed meter before genuine Freqtrade
+                    # analysis. The replay sink does not send this load over
+                    # the network or certify synthetic candles or decisions.
+                    for _ in range(25):
+                        observed.account_incumbent_before_wire(2)
+                    for peer in range(7):
+                        right=E
+                        for part in range(8):
+                            left=right-(495 if part<7 else 435)*60_000
+                            page=PrimaryMinuteJob(f'SYNTH{peer}USDT',g,E,E+60_000,left,right,
+                                                  f'{2**120+8*peer+part:032x}')
+                            assert page.valid(clock[0])
+                            token=observed.try_reserve_history(page)
+                            assert token is not None, ('C11_MIXED_HISTORY_STARVED',peer,part,observed.last_history_hold)
+                            assert observed.claim_history_send(token,page), ('C11_MIXED_HISTORY_GRANT_FAILED',peer,part,observed.last_history_hold)
+                            right=left
+                    assert observed.history_costs==(56,112) and observed.costs[1]>144
+                    print('C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY',flush=True)
         observed.set_scope=track_set_scope
         print('EXACT_BOOT_HEADER_OWNED_BEFORE_CURRENT_WORKER_OPTIONAL_BIND',flush=True)
         binding=learner.scheduler.isolated_history
@@ -581,6 +602,18 @@ def main(outer):
             assert cold.stdout.readline().startswith(b'WARM_NO_AUTHORITY_CONFIRMED_ABI_')
             assert cold.poll() is None
         missing_analysis_case=os.environ.get('C11_WARM_MISSING_ANALYSIS_CASE')=='yes'
+        mixed_pressure=os.environ.get('C11_MIXED_HISTORY_PRESSURE')=='yes'
+        delayed_frames=[]
+        from warm_release_binding import WarmReleaseBinding
+        exact_frame=WarmReleaseBinding.frame
+        def frame_after_wait(binding,first):
+            if first.pair==PAIR and clock[0]==E+7000:
+                assert binding.prepared is not None and binding.prepared[0] is first
+                delayed_frames.append(first)
+                # Simulate a durable frame not yet ready; leave all actual
+                # same-scope checks and normal analysis unchanged next cycle.
+                return ()
+            return exact_frame(binding,first)
         for i in range(3):
           clock[0]=E+2000+5000*i
           if i==0:
@@ -631,6 +664,12 @@ def main(outer):
                 w.freqtrade.process()
             assert withheld and dp.get_analyzed_dataframe(PAIR,'15m')[0].empty
             print('ACTUAL_ANALYZED_FRAME_MISSING',flush=True)
+          elif mixed_pressure and i==1:
+            with patch.object(WarmReleaseBinding,'frame',frame_after_wait):
+                w.freqtrade.process()
+            lane=w.freqtrade.strategy._c11_native_entry_owner
+            assert delayed_frames and lane.holds.get(PAIR) is delayed_frames[0] and (PAIR,E) not in lane.spent
+            assert not any((pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK') for _,pair,status in advice)
           else:
             w.freqtrade.process()
           if i==1:
@@ -692,6 +731,9 @@ def main(outer):
         assert any(x[0]==MISSING for x in exact_requests), 'C11_UNREADY_PEER_NOT_EXERCISED'
         (ready_at,)=tuple(t for t,pair,status in advice if (pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK'))
         assert 0<=ready_at<60_000, 'C11_UNREADY_PEER_DELAYED_SAME_CLOSE'
+        if mixed_pressure:
+            assert ready_at==12_000 and len(delayed_frames)>=1, ('C11_COMBINED_REVISIT_CLOCK',ready_at,delayed_frames)
+            print('C11_COMBINED_HISTORY_PRESSURE_AND_SAME_CLOSE_REVISIT_PASS',flush=True)
         print('C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK',ready_at,flush=True)
         print('C11_LEGACY_WIDE_DID_NOT_MASK_RAW_MINUTE_GAP',flush=True)
         if unicode_case:
