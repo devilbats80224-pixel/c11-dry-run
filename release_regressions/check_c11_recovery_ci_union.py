@@ -7,6 +7,8 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 STARTUP_REGRESSIONS={
     'test_original_revisit_offer.py',
+    'test_original_unwired_retry.py',
+    'test_stale_analyzed_cache_revisit.py',
     'test_retained_minute_cold_prefix.py',
     'test_bootstrap_minute_ranges.py',
     'test_unusable_old_state_bootstrap.py',
@@ -31,6 +33,16 @@ def main():
     absent.extend(sorted(t for t in STARTUP_REGRESSIONS if not (ROOT/'hosted_worker'/t).is_file()))
     portable=(ROOT/'release_regressions/test_one_minute_ci_portable.py').read_text()
     gate=(ROOT/'hosted_worker/check_packaged_release_facts.sh').read_text()
+    first_current={
+        'test_original_unwired_retry.py': 'C11_BUSY_DEBIT_PROBE_RECHECKED_ONLY_WITHIN_ORIGINAL_SCOPE',
+        'test_observer_classifier_lease.py': 'C11_FRESH_CLASSIFIER_BEFORE_SHORT_SCOPE_PASS',
+        'test_original_revisit_offer.py': 'C11_READABLE_DECISION_CLOCK_DOES_NOT_INHERIT_PRE_WARM_SCOPE',
+        'test_stale_analyzed_cache_revisit.py': 'C11_RECEIPT_VISIBLE_BUT_CURRENT_CACHE_HIDES_NATIVE_REVISIT',
+    }
+    for fixture,marker in first_current.items():
+        path=ROOT/'hosted_worker'/fixture
+        if not path.is_file() or marker not in path.read_text():
+            absent.append(f'{fixture}:{marker}')
     if 'test_observer_classifier_lease.py' not in portable:
         absent.append('current-rank classifier lease reproduction')
     if ('UNREADABLE_AS_UID_1000' not in gate or 'create_release_facts_layer_context.sh' not in gate):
