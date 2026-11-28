@@ -1,5 +1,6 @@
 """Continuous certainty, not old calendar age, distinguishes reusable state."""
 from types import SimpleNamespace as N
+import json
 
 from atr_er_checkpoint import AtrErCheckpoint
 from atr_er_state import REQUIRED_QUARTERS
@@ -36,12 +37,27 @@ def main():
         raise AssertionError('C11_ADVANCED_STATE_TRIED_TO_REPLAY_FROM_LISTING')
     lane=AutoColdAdmission(lambda:end+100,not_listing)
     owner=N(store=store,check_store=lambda:None,tap=N(current=lambda x:x is fact),
-            cold_delivery_window=lambda:True,cold_delivery_allows=lambda x:x is fact)
+            cold_delivery_window=lambda:True,cold_delivery_allows=lambda x:x is fact,
+            advanced_bootstrap_allowed=lambda x:x is fact)
     try:
         lane.offer_existing(owner,fact)
         slot=lane.pending.get(symbol)
         assert slot is not None and slot.retained is not None, 'C11_ADVANCED_OLD_GAP_IGNORED_RECENT_NATIVE_WINDOW'
         assert store.segment(symbol)==old
+        lane.tick(owner,prepare_only=True)
+        _,prefix=lane.active[2].result(timeout=25)
+        assert (prefix.rpd.origin,prefix.rpd.next_open)==(earliest,cutoff)
+        lane.tick(owner,ready_only=True)
+        proof=store.contract_segment(symbol,listing,end+100)
+        assert proof is not None and proof.open_ms==earliest
+        gap,raw,digest=store.db.execute(
+            'SELECT first_missing_5m,previous_state,previous_sha FROM retained_bootstrap_advanced_prior WHERE symbol=?',
+            (symbol,)).fetchone()
+        from hashlib import sha256
+        assert gap==prior.next_open and sha256(raw.encode()).hexdigest()==digest
+        assert json.loads(raw)['rpd']==prior.pack()
+        raw_minutes=store.range(symbol,MINUTE,earliest,cutoff,end+100)
+        assert len(raw_minutes)==(cutoff-earliest)//MINUTE and raw_minutes[0].received_ms==earliest+MINUTE
     finally:
         lane.close()
         store.db.close()

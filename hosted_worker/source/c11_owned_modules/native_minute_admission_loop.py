@@ -73,7 +73,10 @@ class MinuteAdmissionLoop:
                 elif segment is not None and segment.open_ms==f.origin and (row is None or
                         not repairable_checkpoint(f,RpdState.restore(row[0]).next_open)):
                     status=self.offer_reviewed_repair(f)
-                else:continue
+                else:
+                    advanced=getattr(lane,'offer_advanced_retained',None)
+                    status=advanced(o,f) if segment is not None and row is not None and callable(advanced) else None
+                    if status is None:continue
                 primary=getattr(o,'primary_admission',None)
                 if primary is not None:primary.gate(status,f)
             except (Refused,ValueError):
