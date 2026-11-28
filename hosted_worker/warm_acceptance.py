@@ -653,11 +653,14 @@ def main(outer):
                 archived=next(a for a in W['actual_public_receipts'] if a['timeframe']=='5m')
                 at=E-25*MINUTE
                 saved=next(row for row in archived['raw_kline_rows'] if row[0]==at)
-                policy.bars.record('STBLUSDT',FIVE,(ClosedBar(at,archived['receive_ms'],
+                # Explicit synthetic prior receipt, already saved in the
+                # previous audit epoch; do not use current wire clock here.
+                old_seen=E-1000
+                policy.bars.record('STBLUSDT',FIVE,(ClosedBar(at,old_seen,
                      *(float(saved[j]) for j in (1,2,3,4,5,7))),))
                 original=next(a for a in W['actual_public_receipts'] if a['timeframe']=='1m')
                 sample=next(row for row in original['raw_kline_rows'] if row[0]==at)
-                old_overlap=ClosedBar(at,E+2000,*(float(sample[j]) for j in (1,2,3,4,5)),float(sample[7])+1.)
+                old_overlap=ClosedBar(at,old_seen,*(float(sample[j]) for j in (1,2,3,4,5)),float(sample[7])+1.)
                 policy.bars.record('STBLUSDT',MINUTE,(old_overlap,))
             if intent_case=='orphan_entry':
                 from c11_native_paper_runner import EntryJournal
@@ -737,7 +740,15 @@ def main(outer):
             print('PROVEN',[(r.ticket.lane,len(r.raw))for r in sc.adapter._proven.values()],flush=True)
             if i==1:print('STRATEGY_SAME_CANDLE_OPTION',w.freqtrade.strategy.process_only_new_candles,flush=True)
           if i<2: w._sleep(w._throttle_secs)
-        assert (PAIR,E) in sc.warm.claimed,advice
+        if (PAIR,E) not in sc.warm.claimed:
+            observed=sorted({status for _,pair,status in advice if pair==PAIR
+                             and status in ('HOLD_NATIVE_RPD_LINEAGE','HOLD_ANALYZER_NOT_DURABLE_NATIVE_FRAME',
+                                            'HOLD_NATIVE_MINUTE_NOT_COMMITTED','HOLD_NOT_READY')})
+            statuses={'HOLD_NATIVE_RPD_LINEAGE':'C11_NATIVE_RPD_LINEAGE_HELD',
+                      'HOLD_ANALYZER_NOT_DURABLE_NATIVE_FRAME':'C11_ANALYZER_FRAME_HELD',
+                      'HOLD_NATIVE_MINUTE_NOT_COMMITTED':'C11_NATIVE_MINUTE_NOT_COMMITTED',
+                      'HOLD_NOT_READY':'C11_ORIGINAL_NOT_READY'}
+            raise AssertionError('C11_MIXED_NATIVE_CALLBACK_MISSING',*(statuses[k] for k in observed))
         assert len([a for a in advice if a[1:]==(PAIR,'ORIGINAL_NATIVE_CALLBACK')])==1,advice
         assert not any(a[1:]==(UNKNOWN_PAIR,'ORIGINAL_NATIVE_CALLBACK') for a in advice)
         assert not Trade.get_trades().all()
