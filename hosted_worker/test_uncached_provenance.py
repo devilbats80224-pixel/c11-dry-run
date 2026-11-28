@@ -358,12 +358,53 @@ def archive_candidates_do_not_wait_for_unrelated_inflight_prefix():
         lane.close()
 
 
+def public_archive_resumes_after_transport_slice_without_total_ceiling():
+    from auto_cold_archive import windows
+    from datetime import datetime,timezone
+    def utc(year,month,day):
+        return int(datetime(year,month,day,tzinfo=timezone.utc).timestamp()*1000)
+    end=utc(2026,11,27)+2*QUARTER
+    origin=utc(2020,2,3)
+    try:
+        cutoff,parts=windows('EXAMPLEUSDT',origin,end)
+    except Hold as exc:
+        raise AssertionError('C11_ARCHIVE_FILE_COUNT_STOPS_REQUIRED_HISTORY') from exc
+    assert cutoff==utc(2026,11,27) and len(parts)>60
+    # Two accepted files, each below the per-turn limit but together above
+    # it. The verified cursor carries over; never fetch a verified file twice.
+    class Recurrence:
+        pack=()
+        def consume(self,_name,_body,closed_at,_available,_cancel):
+            self.minute=closed_at
+        def finish(self,cutoff,_available):
+            assert self.minute==cutoff
+            return cutoff
+    archive=AutomaticArchive(Ns(),lambda:end,max_bytes=10,discover_unseeded=True)
+    plan=ArchiveProgress(archive,'EXAMPLEUSDT',origin,cutoff,0,
+                         (parts[-2],parts[-1]),discovered=True)
+    plan.recurrence=Recurrence()
+    fetched=[]
+    def fake_fetch(name,url,closed_at,limit,cancel,*,pin=None):
+        assert limit>=8 and not cancel.is_set() and pin is None
+        fetched.append(name)
+        return Receipt(b'verified',closed_at),dict(name=name,bytes=8)
+    plan.fetch=fake_fetch
+    assert plan.resume(Event()) is plan
+    try:
+        source,result=plan.resume(Event())
+    except Hold as exc:
+        raise AssertionError('C11_ARCHIVE_CUMULATIVE_BYTES_STOP_VERIFIED_CONTINUATION') from exc
+    assert result==cutoff and source.cutoff==cutoff and fetched==[row[0] for row in parts[-2:]]
+    print('C11_PUBLIC_ARCHIVE_CAN_CONTINUE_WITHOUT_TOTAL_FILE_OR_BYTE_CAP')
+
+
 if __name__ == "__main__":
     missing_month_finds_daily_without_a_catalogue()
     missing_month_finds_daily_without_a_catalogue(month_has_gap=True)
     expired_completed_source_cannot_block_ready_peer()
     rotating_candidates_keep_current_archive_admission()
     archive_candidates_do_not_wait_for_unrelated_inflight_prefix()
+    public_archive_resumes_after_transport_slice_without_total_ceiling()
     production_archive_mode_discovers_for_current_unseeded_candidates()
     boundary_cases()
     discovered_archives_use_existing_bounds()
