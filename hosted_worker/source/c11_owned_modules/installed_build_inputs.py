@@ -90,14 +90,14 @@ def installed_build_inputs(worker,*,native_entry_deadline_ns,record,
             bars=bot.policy.bars
             now=wall()
             def read():
-                proof=bars.segment(row.symbol)
-                if proof is None or proof.open_ms!=launch or proof.proven_at_ms>now:return None
+                proof=bars.contract_segment(row.symbol,launch,now)
+                if proof is None:return None
                 prior=bars.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(row.symbol,)).fetchone()
                 if prior is None:return None
                 state=RpdState.restore(prior[0])
-                if (state.symbol,state.origin)!=(row.symbol,launch) or state.observed>now:return None
+                if (state.symbol,state.origin)!=(row.symbol,proof.open_ms) or state.observed>now:return None
                 cursor=state.next_open
-                return cursor if type(cursor) is int and launch<=cursor<=end<=now and cursor%300_000==0 else None
+                return cursor if type(cursor) is int and proof.open_ms<=cursor<=end<=now and cursor%300_000==0 else None
             value=optional_observation(read,(bars.db,))
             return value if type(value) is int else None
         except (OperationalError,Refused,KeyError,TypeError,ValueError):

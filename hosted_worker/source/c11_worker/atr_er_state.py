@@ -1,5 +1,8 @@
 """Exact incremental ATR/ER transition previously verified against the archived core."""
 
+# Current and previous 15m samples must both have completed the 400-bar warmup.
+REQUIRED_QUARTERS = 401
+
 def new_atr():
     return dict(closes=[],trs=[],atr=None,multiplier=None,signed=None,n=0,clock=None)
 
