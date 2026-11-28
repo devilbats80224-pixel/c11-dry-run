@@ -5,6 +5,8 @@ import time
 
 ACTIVE = ContextVar("c11_entry_verdict", default=None)
 ADMISSION = ContextVar("c11_native_admission", default=None)
+DIAGNOSTIC_SINK = ContextVar("c11_entry_verdict_diagnostic_sink", default=None)
+SCHEMA = "c11-entry-verdict-v1"
 Q = 900_000
 ROUTES = frozenset(("c11_primary", "c11_nw5", "c11_supplement"))
 PRIMARY_REASONS = frozenset((
@@ -33,11 +35,40 @@ ORDER_REASONS = frozenset((
     "NATIVE_ORDER_SENT", "NATIVE_ORDER_NOT_ACCEPTED",
 ))
 
+REASONS_BY_PHASE = {
+    "primary": PRIMARY_REASONS,
+    "admission": ADMISSION_REASONS,
+    "order": ORDER_REASONS,
+}
+VERDICT_FIELDS = frozenset(("schema", "symbol", "end_ms", "phase", "reason", "route", "observed_ms"))
+
+
+def valid_base(base):
+    return 0 < len(base) <= 19 and base.isalnum()
+
+
+def route_valid(route, end, phase, reason):
+    return (type(route) is str and route in ROUTES
+            and type(end) is int and 0 < end < 2**63
+            and end % (Q if route == "c11_primary" else 300_000) == 0
+            and type(phase) is str and type(reason) is str
+            and reason in REASONS_BY_PHASE.get(phase, ()))
+
+
+def accepted_verdict_event(row):
+    if type(row) is not dict or set(row) != VERDICT_FIELDS or row["schema"] != SCHEMA:
+        return False
+    symbol = row["symbol"]
+    observed = row["observed_ms"]
+    return (type(symbol) is str and symbol.endswith("USDT") and valid_base(symbol[:-4])
+            and type(observed) is int and 0 < observed < 2**63
+            and route_valid(row["route"], row["end_ms"], row["phase"], row["reason"]))
+
 def identity(pair, end, width):
     if type(pair) is not str or not pair.endswith("/USDT:USDT") or type(end) is not int or not 0 < end or end % width:
         return None
     base = pair.removesuffix("/USDT:USDT")
-    return (base+"USDT", end) if base.isalnum() and len(base) <= 19 else None
+    return (base+"USDT", end) if valid_base(base) else None
 
 def mark_primary(reason, force=False):
     state = ACTIVE.get()
@@ -47,17 +78,21 @@ def mark_primary(reason, force=False):
         state[0] = reason
 
 def publish(pair, end, phase, reason, route="c11_primary"):
-    key = identity(pair, end, Q if route == 'c11_primary' else 300_000)
-    if key is None or type(route) is not str or route not in ROUTES or not (
-        (phase == "primary" and reason in PRIMARY_REASONS)
-        or (phase == "admission" and reason in ADMISSION_REASONS)
-        or (phase == "order" and reason in ORDER_REASONS)
-    ):
+    if not route_valid(route, end, phase, reason):
         return
-    row = dict(schema="c11-entry-verdict-v1", symbol=key[0], end_ms=key[1], phase=phase,
+    key = identity(pair, end, Q if route == "c11_primary" else 300_000)
+    if key is None:
+        return
+    row = dict(schema=SCHEMA, symbol=key[0], end_ms=key[1], phase=phase,
                reason=reason, route=route, observed_ms=time.time_ns() // 1_000_000)
-    # Broken stdout/log sinks cannot create a signal or interrupt the strategy.
+    # A bound production sink alone is permitted to emit here. Never fall
+    # back to raw stdout if that sink refuses or is temporarily unavailable.
     try:
-        print(json.dumps(row, ensure_ascii=False, separators=(",", ":")), flush=True)
+        line = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+        sink = DIAGNOSTIC_SINK.get()
+        if sink is None:
+            print(line, flush=True)
+        else:
+            sink((line + "\n").encode("utf-8"))
     except (OSError, RuntimeError, ValueError):
         pass
