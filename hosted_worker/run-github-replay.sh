@@ -327,7 +327,12 @@ loc=[f'{m[1]}:{m[2]}' for l in rows if (m:=where.fullmatch(l))]
 why=[(m[1],known.findall(l)) for l in rows if (m:=error.match(l))]
 marks=[l for l in rows if stage.fullmatch(l)]
 print('### Combined original Worker replay: '+sys.argv[2])
-print('- Expected: one original decision and canonical read after a real missing minute is resolved and the same-close roster changes.')
+if sys.argv[2]=='mixed-advanced-direct-conflict':
+    print('- Expected: retain the exact differing raw historical 15m, consume its proven 1m aggregate and call the original strategy once.')
+    if any(l.startswith('C11_RETAINED_DIRECT_OVERLAP_WRITE_CONFLICT ') for l in rows):
+        print('- First confirmed failure: the immutable raw 15m write refused a conflicting projected row; older checkpoint not replaced.')
+else:
+    print('- Expected: one original decision and canonical read after a real missing minute is resolved and the same-close roster changes.')
 diag={}
 for line in rows:
     if line.startswith('C11_MIXED_DIAGNOSTICS '):

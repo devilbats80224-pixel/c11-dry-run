@@ -1186,6 +1186,11 @@ else:
         if MIXED and in_target_callback and (symbol,end)==(SYMBOL,END):
             primary,state=kwargs.get('primary'),kwargs.get('state')
             assert primary is not None and state is not None, 'C11_MIXED_MISSING_ORIGINAL_INPUT'
+            if DIRECT_CONFLICT:
+                kept = tuple(c for c in primary[0] if c.open_ms == mixed_direct.open_ms)
+                expected = mixed_rows[mixed_direct.open_ms + Q - M].closed().close
+                assert len(kept) == 1 and kept[0].close == expected and kept[0].close != mixed_direct.close, (
+                    'C11_DIRECT_OVERLAP_STRATEGY_DID_NOT_CONSUME_PINNED_1M_ROLLUP')
             status,_=original_join(causal_bars.Scope(symbol,end),as_of,[state])
             mixed_reads.append(dict(end_ms=end,generation=generation,read_at=as_of,
                 status=primary[2].status,rpd=status,real_read=True))
