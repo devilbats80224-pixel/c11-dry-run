@@ -24,7 +24,7 @@ def open_intake(mount_identity, generation_floor, publication_binding, *, wall=N
             bridge.send(dict(op='C11_PAPER_BRIDGE_V1',nonce=nonce))
             need(bridge.receive(2)==dict(nonce=nonce,binding=publication_binding),'C11_DOCKER_BRIDGE_BOOT')
             feed=EntryFeed(bridge,generation_floor)
-            yield feed,ObserverClient(bridge,publication_binding)
+            yield feed,ObserverClient(bridge,publication_binding,docked_current=True)
         finally:
             obs.close()
     finally:

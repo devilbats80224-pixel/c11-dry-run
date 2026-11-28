@@ -11,6 +11,7 @@ import time
 from bridge_protocol import Refused, need
 from docker_publication import LoopbackBridge, QUERY_SHA, SOURCE
 from observer_host import ObserverHost, store_module
+from oi20_rank_slots import bridge_slots
 
 NAME='docker-observer.sqlite'
 FRESH_META=300_000_000_000
@@ -42,6 +43,7 @@ class DockerObserver(ObserverHost):
         self.mod=store_module()
         self.writer=self.store=None
         self.last_gap=None
+        self.current_rank_receipt=None
         try:
             # Existing files must already bear this source binding; never take
             # ownership of a different lineage or an unrelated/empty archive.
@@ -90,6 +92,7 @@ class DockerObserver(ObserverHost):
         need(r is not None and json.loads(r[0])==self._binding(),'C11_DOCKER_OBSERVER_BINDING_CHANGED')
 
     def capture(self,frame,classification,begin):
+        self.current_rank_receipt=None
         now=self.wall();tick=self.mono()
         stamp=getattr(classification,'received_monotonic_ns',None)
         need(type(stamp) is int and 0<=tick-stamp<FRESH_META
@@ -107,9 +110,29 @@ class DockerObserver(ObserverHost):
         self.writer.openmarket(self.binding,frame,now,left,classification)
         self._identity()
         need(self.mono()<tick+left*1000000 and self.wall()<now+left,'C11_DOCKER_OBSERVER_CAPTURE_EXPIRED')
+        # A same-generation capture still proves a *new* present-tense
+        # observation. openmarket() checked exact byte identity, but its
+        # archival first_seen/expiry must never be rewritten or backdated.
+        ranks=bridge_slots(frame)
+        rows=tuple((row['symbol'],rank,row['native_oi_change_24h_raw'])
+                   for rank,row in zip(ranks,frame['rows'])
+                   if row['symbol'] in classification.verified)
+        hard_expiry=min(now+left,self.mod.ms(frame['lease_until']))
+        need(self.wall()<hard_expiry,'C11_DOCKER_OBSERVER_CAPTURE_EXPIRED')
+        self.current_rank_receipt=(now,hard_expiry,tick+left*1000000,frame['generation'],rows)
         self.last_gap=None
 
+    def current_point(self,symbol,decision):
+        receipt=self.current_rank_receipt
+        if receipt is None:
+            return None
+        seen,expiry,deadline,generation,rows=receipt
+        if not seen<=decision<=self.wall()<expiry or self.mono()>=deadline:
+            return None
+        return next(([generation,rank,ratio] for sym,rank,ratio in rows if sym==symbol),None)
+
     def unavailable(self,kind='INPUT_UNAVAILABLE'):
+        self.current_rank_receipt=None
         if self.last_gap==kind:return
         self._identity()
         self.writer.gap(SOURCE,'publication',self.wall(),kind)

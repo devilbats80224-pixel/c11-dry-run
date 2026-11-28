@@ -1,5 +1,6 @@
 {
   "portable": {
+    "observer_classifier_lease_rollover": "ObserverLeaseChecks.test_refreshed_same_generation_proof_is_current_not_backdated",
     "transient_stopped_paper_binding_strict_recheck": "StoppedPaperBindingChecks.test_transient_mismatch_can_only_retry_the_same_exact_proof",
     "persistent_binding_mismatch_or_writer_denied": "StoppedPaperBindingChecks.test_persistent_mismatch_or_active_writer_never_passes",
     "missing_or_wrong_packaged_file": "ImageChecks.test_absence_and_manifest_mismatch_do_not_pass",

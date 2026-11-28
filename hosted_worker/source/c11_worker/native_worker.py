@@ -284,7 +284,7 @@ class PaperBot(C11PaperRecoveryRunner):
 
     def observed_ranked(self,candidate):
         try:
-            proof = self.observer.point(candidate.symbol,time.time_ns()//1_000_000)
+            proof = self.observer.current_point(candidate.symbol,time.time_ns()//1_000_000)
             return proof==(candidate.generation,candidate.rank,candidate.ratio)
         except INPUT_ERRORS:
             return False
