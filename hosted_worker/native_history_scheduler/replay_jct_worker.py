@@ -74,7 +74,7 @@ assert not BACKGROUND_REVIEWED or (CACHED and AUTO_MODE and not PREPARED_CHECKPO
 assert not NO_LISTING_ORIGIN or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT))
 assert not PREPARED_CHECKPOINT or (CACHED and AUTO_MODE)
 MIXED=os.environ.get('C11_JCT_MIXED_PACKAGED','')
-assert MIXED in ('','blank','unusable')
+assert MIXED in ('','blank','unusable','retained-blank')
 assert not MIXED or (AUTO_MODE and not (HAN_MODE or INIT_MODE or REVIEWED_PARTIAL or AUTO_STALE))
 EXACT_CALLBACK_CLOCK = bool(MIXED) or REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT or BACKGROUND_REVIEWED
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
@@ -297,7 +297,7 @@ else:
             Path('/archive-wire'),tail,'57265967efa958cd734e8ed4070ea91f1d703e445deef5fec32385de35df729e',END,SHIFT)
         print('C11_MIXED_STAGE REQUIRED_CANONICAL_TAPE_VERIFIED',flush=True)
         # A real missing closed minute, rather than an artificial response or fabricated candle.
-        mixed_hole=mixed_start+8*M
+        mixed_hole=None if MIXED=='retained-blank' else mixed_start+8*M
         c=Clock()
         feed,observer,mixed_observer,publication=observer_feed(ROOT,SYMBOL,PAIR,
             (DATA/'contract.json').read_bytes(),lambda:now,c.monotonic_ns)
@@ -796,7 +796,7 @@ else:
                     read_count=len(mixed_reads))),flush=True)
                 raise AssertionError('C11_MIXED_NO_ORIGINAL_READ')
             assert now//Q==END//Q
-            next_now=now+250
+            next_now=now+(5_000 if MIXED=='retained-blank' else 250)
             if generation==7:
                 assert not mixed_callbacks and not mixed_reads, 'C11_MIXED_PREMATURE_ORIGINAL_CALLBACK'
                 # Let original authority record a real same-close pending
@@ -813,7 +813,7 @@ else:
                     proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
                     assert proof and proof.open_ms==mixed_start
                     late=[(a,b,n,k) for _g,a,b,n,k in mixed_shared if b<=mixed_cutoff]
-                    expected=[(mixed_hole,mixed_hole+M,1,1)]
+                    expected=[] if mixed_hole is None else [(mixed_hole,mixed_hole+M,1,1)]
                     assert late==expected, ('C11_MIXED_HISTORY_REQUESTS',late,expected)
                     assert not Trade.get_open_trades()
                     check_mixed_ledger()
