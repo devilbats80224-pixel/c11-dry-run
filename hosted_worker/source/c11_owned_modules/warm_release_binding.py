@@ -82,11 +82,17 @@ class WarmReleaseBinding:
 
     def arm_late(self,first,pair,end):
         self.late=None
-        if (first.pair,first.end)!=(pair,end) or self.sc.wall()<min(first.expires,end+60_000):
+        now=self.sc.wall()
+        if (first.pair,first.end)!=(pair,end):
             return False
         fresh=self.sc.plan.provisional_scope(pair,end)
         if fresh is None or (fresh.pair,fresh.symbol,fresh.end)!=(pair,first.symbol,end):
             return False
+        if now<min(first.expires,end+60_000):
+            # A still-current original scope keeps its normal path. Only a
+            # genuinely newer authenticated roster can supersede it early.
+            if fresh.generation<=first.generation or self.sc.plan.current(first,now):
+                return False
         proof=self.readable.get((fresh.pair,fresh.symbol,fresh.end))
         if proof is None:
             return False
