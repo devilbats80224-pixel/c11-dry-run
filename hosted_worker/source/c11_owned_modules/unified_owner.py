@@ -73,9 +73,8 @@ class UnifiedScheduler:
             label='ANALYSIS_RAW_FRAME_OLDER' if frame_end<s.end else 'ANALYSIS_RAW_FRAME_AHEAD'
         self.first_gate.note(s.generation,s.symbol,'analysis_flow',label,self.wall())
 
-    def _retired_diagnostic(self,ticket):
+    def _retired_diagnostic(self,ticket,real):
         if self.diagnostic is None:return
-        real=self.queue.limiter.charged_for_diagnostic(ticket)
         if real is False:
             self._count('zero_wire_retired')
             return
@@ -227,9 +226,20 @@ class UnifiedScheduler:
         # ID, or refund physical debits. Original native fallback is separate.
         for key,ticket in tuple(self.tickets.items()):
             if key not in self.verified and ticket not in self.queue.inflight:
-                self._retired_diagnostic(ticket)
-                self.adapter.forget_unsent(ticket)
+                scope=self.covers[key]
+                meter=getattr(self.queue.limiter,'charged_for_diagnostic',None)
+                debit=meter(ticket) if callable(meter) else None
+                forgotten=self.adapter.forget_unsent(ticket)
+                if debit is False and not forgotten:
+                    # No proof that the owner-side reservation is released
+                    # yet. Preserve it for the next owner cycle instead.
+                    continue
+                self._retired_diagnostic(ticket,debit)
                 self.retired.add(ticket)
+                reissue=getattr(self.plan,'reissue_unwired_minute',None)
+                if debit is False and forgotten and callable(reissue):
+                    if reissue(scope,ticket,debit):
+                        self._transition(scope,'ORIGINAL_UNWIRED_MINUTE_REISSUED')
                 del self.tickets[key]
                 del self.covers[key]
         if self.reconfirm is not None:

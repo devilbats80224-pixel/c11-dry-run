@@ -1,5 +1,5 @@
 """Build-only native composition. The separate production pin must stay None."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from threading import get_ident
 from uuid import uuid4
@@ -199,6 +199,26 @@ class OriginalPlan:
                 any((x.generation,x.symbol,x.pair)==(j.generation,j.symbol,j.pair)
                     and now<self._effective_retry_deadline((j.generation,j.end,j.pair),x,now,j.expires)
                     for x in live))
+
+    def reissue_unwired_minute(self,scope,ticket,physical_debit):
+        if physical_debit is not False or get_ident()!=self.owner or type(scope) is not Scope:
+            return False
+        now=self.wall()
+        if not scope.end<=now<scope.expires<=scope.end+60_000 or not self.current(scope,now):
+            return False
+        key=(scope.generation,scope.end,scope.pair)
+        prior=self.last.get(key,())
+        for i,(task,original,ticket_id) in enumerate(prior):
+            if ticket_id!=ticket or original is not scope or type(task) is not Task or task.tf!='1m':
+                continue
+            # Only a verified unwired completion can retire the physical
+            # attempt while preserving the admitted immutable original offer.
+            self.ticket_counter+=1
+            current=replace(task,request=now,ticket=self.ticket_counter)
+            request=f'{self.namespace}.{scope.end}.{self.ticket_counter}'
+            self.last[key]=(*prior[:i],(current,scope,request),*prior[i+1:])
+            return True
+        return False
 
     def accepted_candidate(self,s):
         if get_ident()!=self.owner or not self.current(s,self.wall()):return None
