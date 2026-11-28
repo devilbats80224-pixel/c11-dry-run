@@ -70,18 +70,22 @@ class NativeEntryOwner:
         self.spent=set()
 
     def remember_missing_analysis(self,strategy,pair):
-        # An empty analyzed cache is not a decision frame. The current original
-        # OHLCV cache can identify the boundary only; the same-scope scheduler
-        # and all existing data / protection checks still own the revisit.
-        if (get_ident()!=self.thread or type(pair) is not str or pair in self.holds
+        # Missing or older analysis cannot stand in for the validated raw
+        # frame of this same close. This only keeps the original revisit
+        # eligible; publisher, current scope and protection still own it.
+        if (get_ident()!=self.thread or type(pair) is not str
                 or not callable(self.provisional) or strategy.timeframe!='15m'
                 or strategy.config.get('dry_run') is not True):
             return
         try:
-            if not strategy.dp.get_analyzed_dataframe(pair,strategy.timeframe)[0].empty:
-                return
             frame=strategy.dp.ohlcv(pair,strategy.timeframe,copy=False,candle_type=strategy.config['candle_type_def'])
             end=exact_frame_end(frame)
+            old_hold=self.holds.get(pair)
+            if (old_hold is not None and old_hold.end>=end) or (pair,end) in self.spent:
+                return
+            cached=strategy.dp.get_analyzed_dataframe(pair,strategy.timeframe)[0]
+            if not cached.empty and exact_frame_end(cached)>=end:
+                return
         except (KeyError,AttributeError,ValueError,TypeError,IndexError):
             return
         self._record_provisional(pair,end,'HOLD_UNPROVEN_ANALYZED_FRAME')
