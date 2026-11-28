@@ -370,13 +370,13 @@ class ArchiveProgress:
         return source,self.recurrence.finish(self.cutoff,self.max_received)
 
 
-def retained_minute_prefix(f,rows,captured,expires,cancel):
+def retained_minute_prefix(f,rows,captured,expires,origin,cancel):
     """Derive from a bounded immutable copy of canonical owner 1m data."""
     from atr_er_state import advance,new_atr
     from causal_bars import FIVE,MINUTE,SegmentStart
     from closed_minute_basis import project_closed_minutes
 
-    origin,cutoff=f.origin,f.boundary-QUARTER
+    cutoff=f.boundary-QUARTER
     class SavedMinutes:
         def range(self,symbol,width,start,end,as_of):
             if ((symbol,width,as_of)==(f.symbol,MINUTE,captured)
@@ -391,6 +391,7 @@ def retained_minute_prefix(f,rows,captured,expires,cancel):
     basis=SavedMinutes()
     rpd=RpdState.start(SegmentStart(f.symbol,origin,captured))
     indicators={width:new_atr() for width in (FIVE,QUARTER)}
+    terminal_samples={}
     last_quarters=deque(maxlen=NW_WARM)
     # The projection read limit is per slice, not a history-age cutoff.
     # Keep one recurrence across all slices; do not re-seed it at the join.
@@ -403,16 +404,19 @@ def retained_minute_prefix(f,rows,captured,expires,cancel):
             for bar in bars:
                 if cancel.is_set():
                     raise Hold('AUTO_ARCHIVE_CANCELLED')
-                advance(indicator,bar,width)
+                terminal_samples[width]=advance(indicator,bar,width)
                 if width==FIVE:
                     rpd.advance(bar,captured)
                 else:
                     last_quarters.append(bar)
-    proof=sha256(json.dumps(['owner-verified-minutes-v1',f.symbol,origin,cutoff,
+    proof=sha256(json.dumps(['owner-verified-minutes-v2',f.symbol,f.origin,origin,cutoff,
                              [astuple(bar) for bar in rows]],separators=(',',':'),
                             allow_nan=False).encode()).hexdigest()
-    return (ClosedPrefixSource(Path('/unused-retained-native-minutes'),proof,origin,cutoff,expires),
-            PreparedPrefix(rpd,tuple(indicators.items()),tuple(last_quarters)))
+    listing=f.origin if origin!=f.origin else None
+    return (ClosedPrefixSource(Path('/unused-retained-native-minutes'),proof,origin,cutoff,expires,
+                               retained_listing_ms=listing),
+            PreparedPrefix(rpd,tuple(indicators.items()),tuple(last_quarters),
+                           tuple(terminal_samples.items()) if listing is not None else ()))
 
 
 @dataclass
@@ -520,7 +524,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
         return slot.status
 
     def offer_retained(self,owner,f):
-        from causal_bars import MAX_SEGMENT_BARS,MINUTE
+        from atr_er_state import REQUIRED_QUARTERS
+        from causal_bars import MINUTE
         now=self.wall()
         if (get_ident()!=self.thread or f.symbol in self.active_jobs or not owner.tap.current(f)
                 or not quote_contract_shape(f.symbol) or f.pair!=f.symbol[:-4]+'/USDT:USDT'
@@ -538,19 +543,18 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 'SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()):
             return None
         cutoff=f.boundary-QUARTER
-        # Existing canonical rows can be used regardless of listing age.
-        # Leave overlarge copies to the existing paged archive lane; do not
-        # truncate the verified interval or infer a new recurrence origin.
-        if (cutoff-f.origin)//MINUTE>MAX_SEGMENT_BARS:
-            return None
-        rows=store.range(f.symbol,MINUTE,f.origin,cutoff,now)
+        # A blank strategy has no lifetime recurrence to resume. Derive a
+        # new, explicitly labeled segment from the needed contiguous local
+        # minutes. A recent listing still uses its original verified start.
+        origin=max(f.origin,cutoff-REQUIRED_QUARTERS*QUARTER)
+        rows=store.range(f.symbol,MINUTE,origin,cutoff,now)
         if not rows or not owner.tap.current(f):
             return None
         self.offer(f)
         slot=self.pending.get(f.symbol)
         if slot is None:
             return None
-        slot.retained=(f,rows,now,f.boundary+QUARTER)
+        slot.retained=(f,rows,now,f.boundary+QUARTER,origin)
         slot.due_ms=now
         slot.status='AUTO_RETAINED_MINUTES_QUEUED'
         return slot.status

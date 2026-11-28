@@ -35,6 +35,7 @@ class ClosedPrefixSource:
     prepared_sha256: str | None = None
     reviewed_at_ms: int | None = None
     daily_fallback: bool = False
+    retained_listing_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,7 @@ class PreparedPrefix:
     rpd: RpdState
     atr: tuple
     quarters: tuple
+    terminal_atr_samples: tuple = ()
 
 
 def derive(symbol, source, wall, cancelled, *, grid_shift=0):
@@ -373,7 +375,19 @@ class ColdPrefixAdmission:
         expires=source.review_expires_ms
         if expires is not None and now>=expires:
             return False
-        if ((state.symbol,state.origin)!=(f.symbol,f.origin)
+        origin=f.origin
+        bootstrap=source.retained_listing_ms is not None
+        if bootstrap:
+            from atr_er_state import REQUIRED_QUARTERS
+            if (source.retained_listing_ms!=f.origin or not f.origin<source.origin
+                    or source.origin%QUARTER or source.cutoff!=state.next_open
+                    or source.cutoff-source.origin!=REQUIRED_QUARTERS*QUARTER
+                    or tuple(w for w,_ in prefix.terminal_atr_samples)!=(FIVE,QUARTER)
+                    or f.symbol in self.repair_prior):
+                self.failed.add(f.symbol)
+                return True
+            origin=source.origin
+        if ((state.symbol,state.origin)!=(f.symbol,origin)
                 or not state.next_open<=state.observed<=now
                 or state.next_open>f.boundary-QUARTER):
             self.failed.add(f.symbol)
@@ -392,18 +406,30 @@ class ColdPrefixAdmission:
             if any(db.execute(f'SELECT 1 FROM {table} WHERE symbol=?',(f.symbol,)).fetchone()
                    for table in ('segment','rpd_checkpoint','atr_er_checkpoint')):
                 return True
-            db.execute('INSERT INTO segment VALUES (?,?,?)',(f.symbol,f.origin,now))
+            db.execute('INSERT INTO segment VALUES (?,?,?)',(f.symbol,origin,now))
             db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(f.symbol,replace(state,observed=now).pack()))
             for width,atr in prefix.atr:
                 db.execute('INSERT INTO atr_er_checkpoint VALUES (?,?,?,?,?,?,?,?)',
-                           (f.symbol,width,VERSION,f.origin,now,now,state.next_open,json.dumps(atr,allow_nan=False)))
+                           (f.symbol,width,VERSION,origin,now,now,state.next_open,json.dumps(atr,allow_nan=False)))
             owner.store._record_checked_rows(f.symbol,QUARTER,tuple(
                 ClosedBar(b.open_ms,now,b.op,b.high,b.low,b.close,b.volume,b.quote) for b in prefix.quarters))
             db.execute('CREATE TABLE IF NOT EXISTS cold_prefix_lineage (symbol TEXT PRIMARY KEY, '
                        'origin INTEGER NOT NULL, cutoff INTEGER NOT NULL, manifest_sha TEXT NOT NULL, '
                        'source_ready INTEGER NOT NULL, owner_ready INTEGER NOT NULL)')
             db.execute('INSERT INTO cold_prefix_lineage VALUES (?,?,?,?,?,?)',
-                       (f.symbol,f.origin,state.next_open,self.sources[f.symbol].manifest_sha,state.observed,now))
+                       (f.symbol,origin,state.next_open,source.manifest_sha,state.observed,now))
+            if bootstrap:
+                db.execute('INSERT INTO retained_bootstrap_contract VALUES (?,?,?,?,?)',
+                           (f.symbol,f.origin,origin,now,source.manifest_sha))
+                # The original feature reader needs both the new quarter
+                # and the previous one; do not silently skip its first close.
+                for width, sample in prefix.terminal_atr_samples:
+                    count=(source.cutoff-origin)//width
+                    if sample['known'] is not True or sample['consecutive_bars']!=count:
+                        raise ValueError('C11_RETAINED_BOOTSTRAP_ATR_SAMPLE')
+                    db.execute('INSERT INTO atr_er_sample VALUES (?,?,?,?,?,?,?,?,?)',
+                               (f.symbol,width,source.cutoff,now,1,count,sample['atr'],
+                                sample['multiplier'],sample['signed']))
             if (not allowed() or not owner.tap.current(f)
                     or (expires is not None and self.wall()>=expires)):
                 db.rollback()
