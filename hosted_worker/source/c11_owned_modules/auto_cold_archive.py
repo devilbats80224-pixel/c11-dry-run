@@ -28,7 +28,6 @@ from cold_archive_release import read_bounded, checked_parts
 DAY=86_400_000
 ANALYSIS=NW_WARM*QUARTER
 MAX_BYTES=26*1024*1024
-MAX_FILES=60
 FILES_PER_SLICE=12
 MAX_FILE_BYTES=2*1024*1024
 RECENT_PROOF_REQUIRED='AUTO_RECENT_MINUTES_ONLY_ORIGINAL_STATE_UNVERIFIED'
@@ -163,8 +162,6 @@ def windows(symbol,origin,boundary):
             due,date=day+timedelta(days=1),day.strftime('%Y-%m-%d')
         name,url=archive_location(symbol,date)
         result.append((name,url,int(due.timestamp()*1000)))
-        if len(result)>MAX_FILES:
-            raise Hold('AUTO_ARCHIVE_BUDGET')
         day=due
     return cutoff,result
 
@@ -235,7 +232,6 @@ class ArchiveProgress:
         self.parts,self.reviewed,self.discovered=parts,reviewed,discovered
         self.recurrence=ArchiveRecurrence(symbol,origin,grid_shift)
         self.ledger=[]
-        self.rejected_file_bytes=0
         self.daily_substitution=False
         self.max_received=0
 
@@ -289,8 +285,6 @@ class ArchiveProgress:
             n,u=archive_location(self.recurrence.symbol,stamp.strftime('%Y-%m-%d'))
             day+=DAY
             replacements.append((n,u,day))
-        if len(self.parts)-1+len(replacements)>MAX_FILES:
-            raise Hold(DISCOVERY_LIMIT if self.discovered else 'AUTO_ARCHIVE_BUDGET')
         i=len(self.ledger)
         self.parts=tuple(self.parts[:i])+tuple(replacements)+tuple(self.parts[i+1:])
         self.daily_substitution=True
@@ -299,7 +293,11 @@ class ArchiveProgress:
     def resume(self,event):
         cancel=JobLimit(event)
         self.require_current_review()
-        budget=self.archive.max_bytes-self.rejected_file_bytes-sum(item['bytes'] for item in self.ledger)
+        # Bound one pass, not the amount of required candidate history.
+        # Reviewed manifests retain their explicitly approved byte bundle.
+        budget=self.archive.max_bytes
+        if self.reviewed is not None:
+            budget-=sum(item['bytes'] for item in self.ledger)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
             if len(self.ledger)==len(self.parts):
@@ -318,7 +316,7 @@ class ArchiveProgress:
                     if available>self.archive.wall():
                         raise Hold('AUTO_ARCHIVE_NOT_AVAILABLE')
                 except Hold as exc:
-                    if (exc.status=='AUTO_ARCHIVE_FILE_MISSING' and not pin and
+                    if (exc.status in ('AUTO_ARCHIVE_FILE_MISSING','AUTO_ARCHIVE_BUDGET') and not pin and
                             self.substitute_closed_days(name,closed_at)):
                         # Keep the verified cursor and allow a peer to run
                         # before trying freshly planned daily assets.
@@ -350,7 +348,6 @@ class ArchiveProgress:
                     # Retry the same interval with independently verified
                     # daily evidence; never publish a partial monthly parse.
                     if self.substitute_closed_days(name,closed_at):
-                        self.rejected_file_bytes+=item['bytes']
                         return self
                     if exc.args==('COLD_ARCHIVE_ORIGIN_GAP',):
                         raise Hold('AUTO_ARCHIVE_ORIGIN_GAP') from exc

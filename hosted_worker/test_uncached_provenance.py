@@ -137,24 +137,8 @@ def discovered_archives_use_existing_bounds():
             raise AssertionError("DISCOVERY_MUST_NOT_BE_DEFAULT")
         enabled = AutomaticArchive(transport, lambda: end, discover_unseeded=True)
         assert enabled.start(short, Event()).discovered
-        try:
-            enabled.start(too_long, Event())
-        except Hold as exc:
-            assert exc.status == "AUTO_ARCHIVE_DISCOVERY_LIMIT"
-        else:
-            raise AssertionError("C11_DISCOVERY_BYPASSED_ARCHIVE_BUDGET")
-    assert not requests
-
-    archive = AutomaticArchive(transport, lambda: end, max_bytes=10, discover_unseeded=True)
-    progress = ArchiveProgress(archive, short.symbol, short.origin, end, 0,
-                               (("one","unused",end),("two","unused",end)), discovered=True)
-    progress.ledger.append({"bytes": 10})
-    try:
-        progress.resume(Event())
-    except Hold as exc:
-        assert exc.status == "AUTO_ARCHIVE_DISCOVERY_LIMIT"
-    else:
-        raise AssertionError("C11_DISCOVERY_BYTE_BUDGET_RESET_AFTER_YIELD")
+        long=enabled.start(too_long, Event())
+        assert long.discovered and len(long.parts)>60
     assert not requests
 
 
@@ -238,20 +222,9 @@ def missing_month_finds_daily_without_a_catalogue(month_has_gap=False):
     if month_has_gap:
         calls.clear()
         limited=AutomaticArchive(Ns(get=fetch),lambda:now,max_bytes=max(len(body),len(bad_month))+1)
-        try:
-            limited.prepare(fact,Event())
-        except Hold as exc:
-            assert exc.status=='AUTO_ARCHIVE_BUDGET'
-        else:
-            raise AssertionError('C11_MONTH_GAP_FALLBACK_RESET_DOWNLOAD_BUDGET')
-    with patch('auto_cold_archive.MAX_FILES',0):
-        limited=ArchiveProgress(archive,symbol,origin,cutoff,0,((name,monthly,cutoff),))
-        try:
-            limited.substitute_closed_days(symbol+'-1m-2026-10.zip',cutoff)
-        except Hold as exc:
-            assert exc.status=='AUTO_ARCHIVE_BUDGET'
-        else:
-            raise AssertionError('C11_DAILY_SUBSTITUTE_BYPASSED_FILE_LIMIT')
+        source,prefix=limited.prepare(fact,Event())
+        assert source.daily_fallback and prefix.rpd.next_open==cutoff
+        assert calls==expected
     pinned=ArchiveProgress(archive,symbol,origin,cutoff,0,(),reviewed=Ns())
     assert not pinned.substitute_closed_days(symbol+'-1m-2026-10.zip',cutoff)
 
