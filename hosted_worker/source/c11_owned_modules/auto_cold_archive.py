@@ -430,7 +430,6 @@ class Slot:
 
 class AutoColdAdmission(ColdPrefixAdmission):
     """Discovery slot plus cancellable off-owner job. No order or source authority."""
-    CAPACITY=64
     RETAIN_MS=180_000
     RETRY_MAX_MS=900_000
     # This is only a dormant memory cache, not a cap on OI20 eligibility.
@@ -472,8 +471,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 or type(f.origin) is not int or not 0<f.origin<f.boundary or f.origin%QUARTER):
             return 'AUTO_ARCHIVE_NO_VERIFIED_ORIGIN'
         if f.symbol not in self.pending:
-            if len(self.pending)>=self.CAPACITY:
-                return 'AUTO_ARCHIVE_QUEUE_BUDGET'
+            # A current candidate cannot be refused due to an older roster.
+            # Existing retirement and exact-fact checks still govern dispatch.
             saved=self._take_dormant(f,now)
             self.pending[f.symbol]=Slot(f,now,now,
                 status='AUTO_ARCHIVE_SEGMENT_RESUMED' if saved is not None else 'AUTO_ARCHIVE_QUEUED',

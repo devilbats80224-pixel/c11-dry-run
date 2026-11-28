@@ -318,11 +318,52 @@ def rotating_candidates_keep_current_archive_admission():
         lane.close()
 
 
+def archive_candidates_do_not_wait_for_unrelated_inflight_prefix():
+    now=1795773605000
+    end=now//QUARTER*QUARTER
+    entered={key:Event() for key in ('LONGUSDT','SHORTUSDT')}
+    hold=Event()
+    facts=tuple(Ns(symbol=symbol,pair=symbol[:-4]+'/USDT:USDT',
+                   origin=end-gap*QUARTER,boundary=end)
+                for symbol,gap in (('LONGUSDT',250),('SHORTUSDT',8)))
+    def prepare(fact,cancel):
+        entered[fact.symbol].set()
+        if fact is facts[0]:
+            assert hold.wait(10)
+        return (Ns(cutoff=end-QUARTER,review_expires_ms=None),fact)
+    owner=Ns(tap=Ns(current=lambda f:f in facts),cold_delivery_window=lambda:True,
+             cold_delivery_allows=lambda f:f in facts)
+    lane=AutoColdAdmission(lambda:now,prepare)
+    try:
+        for fact in facts:
+            lane.offer(fact)
+        lane.tick(owner,prepare_only=True)
+        assert entered['LONGUSDT'].wait(2)
+        assert entered['SHORTUSDT'].wait(2),'C11_ARCHIVE_SLOW_COIN_BLOCKS_PEER_DISPATCH'
+        delivered=[]
+        def install(_owner,fact,prefix,*,early):
+            assert fact is prefix and early
+            delivered.append(fact.symbol)
+            return True
+        with patch.object(lane,'install',side_effect=install):
+            from time import monotonic,sleep
+            deadline=monotonic()+2
+            while not delivered and monotonic()<deadline:
+                lane.tick(owner,ready_only=True)
+                sleep(.01)
+            assert delivered==['SHORTUSDT'],'C11_ARCHIVE_READY_PEER_WAITED_FOR_LONG_PREFIX'
+        print('C11_ARCHIVE_MULTI_SYMBOL_DISPATCH_AND_INDEPENDENT_DELIVERY')
+    finally:
+        hold.set()
+        lane.close()
+
+
 if __name__ == "__main__":
     missing_month_finds_daily_without_a_catalogue()
     missing_month_finds_daily_without_a_catalogue(month_has_gap=True)
     expired_completed_source_cannot_block_ready_peer()
     rotating_candidates_keep_current_archive_admission()
+    archive_candidates_do_not_wait_for_unrelated_inflight_prefix()
     production_archive_mode_discovers_for_current_unseeded_candidates()
     boundary_cases()
     discovered_archives_use_existing_bounds()
