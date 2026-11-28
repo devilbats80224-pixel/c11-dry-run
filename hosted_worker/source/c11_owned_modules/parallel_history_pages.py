@@ -2,11 +2,13 @@
 from threading import get_ident
 
 class PendingHistoryPages:
-    def __init__(self, make, authority, *, parallel_ranges=False, audit=None):
+    def __init__(self, make, authority, *, parallel_ranges=False, audit=None, receipt_authority=None, on_unreadable=None):
         self.make, self.authority = make, authority
         self.owner = get_ident()
         self.parallel_ranges = parallel_ranges
         self.audit = audit
+        self.receipt_authority = receipt_authority
+        self.on_unreadable = on_unreadable
         self.pending = {}
         self.closed = False
 
@@ -38,6 +40,8 @@ class PendingHistoryPages:
                 self.audit(job,'SCHEDULE_REJECTED','PENDING_AUTHORITY')
             return False
         lane = self.make(lambda page: page is job and self.authority(job, fact))
+        if self.receipt_authority is not None and hasattr(lane,'receipt_authority'):
+            lane.receipt_authority=lambda page,sent: page is job and self.receipt_authority(job,fact,sent)
         kept = False
         try:
             if not lane.offer(job):
@@ -59,10 +63,15 @@ class PendingHistoryPages:
             del self.pending[key]
             lane.close()
             if reply_job is job and payload is not None:
-                if self.authority(job, fact):
+                persistent=(self.receipt_authority is not None and type(payload) is tuple
+                            and len(payload)==3 and self.receipt_authority(job,fact,payload[0]))
+                if persistent or self.authority(job, fact):
                     complete(job, fact, payload)
                 elif self.audit is not None:
                     self.audit(job,'PERSIST_REJECTED','DELIVERY_SCOPE_LOST')
+            elif (reply_job is job and callable(self.on_unreadable)
+                  and getattr(lane,'archive_retry_eligible',False) is True):
+                self.on_unreadable(job,fact)
 
     def close(self):
         self._check_owner()

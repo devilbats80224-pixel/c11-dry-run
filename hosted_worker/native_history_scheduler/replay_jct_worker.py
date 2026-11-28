@@ -73,7 +73,10 @@ BACKGROUND_REVIEWED=os.environ.get('C11_JCT_BACKGROUND_REVIEWED')=='yes'
 assert not BACKGROUND_REVIEWED or (CACHED and AUTO_MODE and not PREPARED_CHECKPOINT)
 assert not NO_LISTING_ORIGIN or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT))
 assert not PREPARED_CHECKPOINT or (CACHED and AUTO_MODE)
-EXACT_CALLBACK_CLOCK = REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT or BACKGROUND_REVIEWED
+MIXED=os.environ.get('C11_JCT_MIXED_PACKAGED','')
+assert MIXED in ('','blank','unusable')
+assert not MIXED or (AUTO_MODE and not (HAN_MODE or INIT_MODE or REVIEWED_PARTIAL or AUTO_STALE))
+EXACT_CALLBACK_CLOCK = bool(MIXED) or REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT or BACKGROUND_REVIEWED
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
 assert not AUTO_STALE or (AUTO_MODE and not (ROSTER_RETURN or REVIEWED_PARTIAL or HAN_MODE or INIT_MODE))
 EARLY_EXPECT=os.environ.get('C11_JCT_EARLY_EXPECT')
@@ -113,7 +116,7 @@ if AUTO_MODE:
 else:
     base=data('jct-base.local.json','d4ebd00dda2fa2f8a0d59fea224869e93e7e3e6d60f57c95376e0e8caad3ce07')
 END=witness['end']+SHIFT
-ORIGIN=base['origin_ms']+SHIFT
+ORIGIN=base['origin_ms']+(0 if MIXED else SHIFT)
 assert witness['symbol']==base['symbol']==SYMBOL
 assert base['known_ms']<END-Q and all(t['actual_received_ms']<END-Q for t in tail)
 counts=[330] if HAN_MODE else [105,435] if INIT_MODE else [495,105]
@@ -177,10 +180,12 @@ def main():
         helpers['restore_scratch']()
         # Only the temp fixture's copied causal database is discarded.
         (ROOT/'causal-candles.sqlite').unlink()
-    phase='carry' if RESTART=='resume' else 'cold'
+    phase='mixed' if MIXED else 'carry' if RESTART=='resume' else 'cold'
     now=END-Q+65_000 if RESTART=='resume' else END-2*Q+65_000
     if EARLY_ROSTER or EARLY_EXPECT in ('start','no-start'):
         now=END-2*Q+5_000
+    if MIXED:
+        now=END+4_000
     generation=8 if RESTART=='resume' else 7
     loaded=None
     qualified=True
@@ -209,6 +214,9 @@ def main():
     uncovered_tape=[]
     loop_trace=[]
     in_target_callback=False
+    mixed_reads=[]
+    mixed_callbacks=[]
+    mixed_shared=[]
     original_enter=PaperState.__enter__
     lock_identity=None
     def state_enter(state):
@@ -282,6 +290,19 @@ else:
         feed._reviewed_metaclass_fetch=lambda:N(verified={SYMBOL:PAIR},
                                                 received_monotonic_ns=time.monotonic_ns())
     observer=N(point=lambda sym,_: (generation,1,Decimal('.25')) if sym==SYMBOL and qualified else None)
+    if MIXED:
+        from mixed_replay_evidence import assert_known_once, load_causal_tape, observer_feed
+        print('C11_MIXED_STAGE LOCKED_DRIVER_INPUTS_VERIFIED',flush=True)
+        mixed_start,mixed_cutoff,mixed_rows=load_causal_tape(
+            Path('/archive-wire'),tail,'57265967efa958cd734e8ed4070ea91f1d703e445deef5fec32385de35df729e',END,SHIFT)
+        print('C11_MIXED_STAGE REQUIRED_CANONICAL_TAPE_VERIFIED',flush=True)
+        # A real missing closed minute, rather than an artificial response or fabricated candle.
+        mixed_hole=mixed_start+8*M
+        c=Clock()
+        feed,observer,mixed_observer,publication=observer_feed(ROOT,SYMBOL,PAIR,
+            (DATA/'contract.json').read_bytes(),lambda:now,c.monotonic_ns)
+        publication.publish(generation,qualified=True)
+        print('C11_MIXED_STAGE INITIAL_PUBLICATION_STAGED',flush=True)
     @contextmanager
     def intake(*_):
         yield feed,observer
@@ -290,7 +311,9 @@ else:
         raise AssertionError('NO_ORDER_ALLOWED_IN_JCT_REPLAY')
 
     earlier_minutes={}
-    if EXACT_CALLBACK_CLOCK:
+    if MIXED:
+        earlier_minutes={t:list(r.row) for t,r in mixed_rows.items()}
+    elif EXACT_CALLBACK_CLOCK:
         # Fill only the missing replay cassette, not the worker database.
         # Restore genuine closed rows from the same hashed official archive.
         import csv,io,zipfile
@@ -332,6 +355,15 @@ else:
             assert 0 < limit <= 1500
             rowmap=earlier_minutes if EXACT_CALLBACK_CLOCK and shared and width==M else rows_by_width[width]
             rows=[rowmap[t] for t in sorted(rowmap) if start<=t<stop and t+width<=min(now,stop)][-limit:]
+            if MIXED and shared:
+                assert start>=mixed_start, 'C11_MIXED_REOPENED_LISTING_START'
+                # Generation 7 genuinely lacks terminal raw input. The fixture
+                # supplies a short response, not a fake hold or readiness.
+                if generation==7 and stop==END:
+                    return []
+                for row in rows:
+                    assert mixed_rows[row[0]].available_at<=now, 'C11_MIXED_USED_FUTURE_SOURCE'
+                mixed_shared.append((generation,start,stop,limit,len(rows)))
             if shared:
                 if HAN_MODE:
                     assert 'symbol=%E7%89%9B%E6%9D%A5USDT' in u.query
@@ -443,6 +475,20 @@ else:
             assert all(h.store.db.execute(f'SELECT count(*) FROM {tab}').fetchone()==(0,)
                        for tab in ('segment','candle','rpd_checkpoint','atr_er_checkpoint'))
         h.atr=AtrErCheckpoint(h.store)
+        if MIXED:
+            print('C11_MIXED_STAGE ORIGINAL_OWNER_LEDGER_BOUND',flush=True)
+            if MIXED=='unusable':
+                from causal_bars import SegmentStart
+                old=SegmentStart(SYMBOL,ORIGIN,ORIGIN)
+                h.store.set_segment(old)
+                with h.store.db:
+                    h.store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',
+                        (SYMBOL,RpdState.start(old).pack()))
+            # Seed only proven raw rows. No derived state, votes or readiness.
+            # Both variants have the same real one-minute history hole.
+            # Each must acquire it before its respective initial-state path.
+            h.store.record(SYMBOL,M,tuple(mixed_rows[t].closed() for t in range(mixed_start,mixed_cutoff,M)
+                if t!=mixed_hole))
         if REVIEWED_PARTIAL or AUTO_STALE:
             # Simulate the real half-initialized shape in this private
             # temporary store using the separately pinned JCT origin.
@@ -548,6 +594,8 @@ else:
                         raise Hold('AUTO_ARCHIVE_CANCELLED')
                     sidecar=url.endswith('.CHECKSUM')
                     base_url=url.removesuffix('.CHECKSUM')
+                    if MIXED:
+                        raise AssertionError('C11_MIXED_OPENED_LISTING_ARCHIVE')
                     if NO_LISTING_ORIGIN:
                         print('C11_NO_LISTING_CASE_OPENED_ARCHIVE',flush=True)
                         raise AssertionError('archive lookup prohibited by fixture')
@@ -562,6 +610,17 @@ else:
                     return Receipt(raw,row.get('checksum_ms',row['actual_received_ms'])
                                    if sidecar else row['actual_received_ms'])
             runtime=json.loads(Path('/opt/c11_owned_modules/release_stage_runtime.json').read_bytes())
+            raw_mode='unseeded_recent_minute_bootstrap'
+            if MIXED:
+                # Modern proof uses the exact policy sealed into the shipped
+                # artifact. The fixture cannot promote a disabled release mode.
+                assert runtime.get(raw_mode)=='BINANCE_SHARED_RECENT_1M_V1', 'C11_MIXED_POLICY_NOT_SEALED'
+            elif EARLY_ROSTER or AUTO_STALE or ON_DEMAND or ARCHIVE_OUTAGE or NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
+                # Keep the established explicit archive and outage controls
+                # on their original source mode while separate mixed cases
+                # exercise the sealed modern source route. Do not weaken
+                # their original pinned acquisition or strategy assertions.
+                runtime.pop(raw_mode,None)
             if NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
                 # Remove only the hosted comparator's archive-origin option.
                 # The identical market cassette and original Worker stay in place.
@@ -671,13 +730,23 @@ else:
         run.isolated_history=h
         return h
 
+    def check_mixed_ledger():
+        import sqlite3
+        p=ROOT/'trades.c11.paper.sqlite'
+        with sqlite3.connect(p.as_uri()+'?mode=ro',uri=True) as db:
+            assert all(db.execute(f'SELECT count(*) FROM {t}').fetchone()==(0,) for t in ('trades','orders'))
+
     class Done(Exception):
         pass
     original_cycle=native.PaperWorker._worker
     history=None
     def cycle(self,*a,**kw):
         nonlocal history,now,phase,generation,cycle_count,next_now,next_generation,qualified,previous_roster_state,saw_absent,cycle_wall_start
+        previous_generation=generation
         now,generation=next_now,next_generation
+        if MIXED and generation!=previous_generation:
+            publication.publish(generation,qualified=True)
+            print('C11_MIXED_STAGE NEXT_SAME_CLOSE_ROSTER_PUBLISHED',flush=True)
         cycle_wall_start=real_mono()
         scheduler=self._c11_owned_scheduler.scheduler
         if history is None:
@@ -706,6 +775,56 @@ else:
                     clock_patches.enter_context(patch.object(mod,'dt_now',lambda:datetime.fromtimestamp(now/1000,timezone.utc)))
             result=original_cycle(self,*a,**kw)
         cycle_count+=1
+        if MIXED:
+            observed_proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
+            if (observed_proof is not None and observed_proof.open_ms==mixed_start
+                    and not getattr(history,'_mixed_stage_verified',False)):
+                history._mixed_stage_verified=True
+                print('C11_MIXED_STAGE NATIVE_CANONICAL_STATE_PERSISTED',flush=True)
+            if now>=END+120_000 or cycle_count>=300:
+                slot=history.cold_prefix.public.pending.get(SYMBOL)
+                proof_status=('absent' if observed_proof is None else
+                              'recent' if observed_proof.open_ms==mixed_start else 'other')
+                print('C11_MIXED_DIAGNOSTICS',json.dumps(dict(
+                    generation=generation,age_ms=now-END,proof=proof_status,
+                    slot=slot.status if slot else None,
+                    minute=history.minute_admission.reason.get(SYMBOL),
+                    minute_pending=history.minute_admission.pending.busy(SYMBOL),
+                    covers=len(scheduler.covers),warm_scopes=len(scheduler.warm.selected),
+                    statuses=sorted({x['status'] for x in advice_sources}),
+                    history_requests=len(mixed_shared),callback_count=len(mixed_callbacks),
+                    read_count=len(mixed_reads))),flush=True)
+                raise AssertionError('C11_MIXED_NO_ORIGINAL_READ')
+            assert now//Q==END//Q
+            next_now=now+250
+            if generation==7:
+                assert not mixed_callbacks and not mixed_reads, 'C11_MIXED_PREMATURE_ORIGINAL_CALLBACK'
+                # Let original authority record a real same-close pending
+                # state before the next immutable publication supersedes it.
+                if any(a['status']!='ORIGINAL_NATIVE_CALLBACK' for a in advice_sources):
+                    next_generation=8
+            elif mixed_callbacks:
+                # Do not end on first result: require two subsequent actual
+                # original Worker cycles without another callback.
+                verify_on=mixed_callbacks[0].setdefault('verify_on',cycle_count+2)
+                if cycle_count>=verify_on:
+                    assert_known_once(mixed_callbacks,mixed_reads,target=END,generation=8)
+                    assert not archive_wire
+                    proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
+                    assert proof and proof.open_ms==mixed_start
+                    late=[(a,b,n,k) for _g,a,b,n,k in mixed_shared if b<=mixed_cutoff]
+                    expected=[(mixed_hole,mixed_hole+M,1,1)]
+                    assert late==expected, ('C11_MIXED_HISTORY_REQUESTS',late,expected)
+                    assert not Trade.get_open_trades()
+                    check_mixed_ledger()
+                    print(json.dumps(dict(status='C11_FINAL_MIXED_PACKAGED_PASS',variant=MIXED,
+                        callback_count=len(mixed_callbacks),read_count=len(mixed_reads),
+                        original_status=mixed_reads[0]['status'],rpd=mixed_reads[0]['rpd'],generation=8)),flush=True)
+                    raise Done
+            # Yield in real time to let the documented public transport and
+            # background planner process their asynchronous replies.
+            time.sleep(0.02)
+            return result
         if REVIEWED_PARTIAL and history.shared_minute.waiting:
             # Synthetic time advances several seconds per owner poll. Give
             # the real thread on the other socket a chance to publish READY
@@ -960,6 +1079,8 @@ else:
         def witness_original():
             nonlocal in_target_callback
             in_target_callback=True
+            if MIXED:
+                mixed_callbacks.append(dict(end_ms=end,generation=generation,read_at=now,called=True))
             try:return callback()
             finally:in_target_callback=False
         result=actual_consume(self,pair,end,frame,witness_original if EXACT_CALLBACK_CLOCK else callback)
@@ -1005,6 +1126,16 @@ else:
 
     import causal_bars
     original_join=causal_bars.join
+    original_inputs=causal_bars.CausalBars.inputs
+    def observe_inputs(self,symbol,end,as_of,**kwargs):
+        value=original_inputs(self,symbol,end,as_of,**kwargs)
+        if MIXED and in_target_callback and (symbol,end)==(SYMBOL,END):
+            primary,state=kwargs.get('primary'),kwargs.get('state')
+            assert primary is not None and state is not None, 'C11_MIXED_MISSING_ORIGINAL_INPUT'
+            status,_=original_join(causal_bars.Scope(symbol,end),as_of,[state])
+            mixed_reads.append(dict(end_ms=end,generation=generation,read_at=as_of,
+                status=primary[2].status,rpd=status,real_read=True))
+        return value
     def observed_join(*a,**kw):
         result=original_join(*a,**kw)
         if a[0].symbol==SYMBOL:
@@ -1028,6 +1159,15 @@ else:
     factory=installed.installed_site_factory(RUNTIME_SHA,lambda *_:None)
     try:
         with ExitStack() as patches:
+            if MIXED:
+                import observer_host
+                # Keep the real observer freshness predicate, but reference
+                # the same explicit causal tape clock as the paper Worker.
+                patches.enter_context(patch.object(observer_host,'now_ms',lambda:now))
+                # Historical replay never waits for real minute closes. Skip
+                # only the outer throttle's real wait while advancing the
+                # fixture clock and gifting real IPC threads a short turn.
+                patches.enter_context(patch.object(native.PaperWorker,'_sleep',lambda *_,**__:None))
             if LEASE_CLOCK:
                 import refresh
                 # Align the fixture's monotonic lease with its market time,
@@ -1046,6 +1186,7 @@ else:
                 *(([(native_candles,'time',clock),(feature_warmup,'time',clock),
                     (native_refresh_cycle,'time',clock)]) if EXACT_CALLBACK_CLOCK else []),
                 (UnifiedScheduler,'consume_ready_only',observe_consume),
+                (causal_bars.CausalBars,'inputs',observe_inputs),
                 (NativePrimaryLane,'record_verified_veto',observed_veto),
                 (shared_history_child,'millis',lambda:now),(async_native_ccxt,'time_ns',clock.time_ns),
                 (causal_bars,'join',observed_join),(native_primary_lane,'join',observed_join),
@@ -1061,6 +1202,8 @@ else:
     except Done:
         return 2 if REPLAY_MODE else 0
     finally:
+        if MIXED:
+            mixed_observer.close()
         for worker in workers:
             worker.join(3)
     raise AssertionError('UNEXPECTED_UNBOUNDED_WORKER_RETURN')

@@ -50,6 +50,10 @@ class CausalBars:
             CREATE TABLE IF NOT EXISTS segment (
                 symbol TEXT PRIMARY KEY, open_ms INTEGER NOT NULL, proven_ms INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS retained_bootstrap_contract (
+                symbol TEXT PRIMARY KEY, listing_ms INTEGER NOT NULL, start_ms INTEGER NOT NULL,
+                proven_ms INTEGER NOT NULL, manifest_sha TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS rpd_checkpoint (
                 symbol TEXT PRIMARY KEY, payload TEXT NOT NULL
             );
@@ -81,6 +85,31 @@ class CausalBars:
     def segment(self, symbol):
         row = self.db.execute('SELECT open_ms,proven_ms FROM segment WHERE symbol=?', (symbol,)).fetchone()
         return SegmentStart(symbol, *row) if row else None
+
+    def contract_segment(self, symbol, listing, as_of):
+        """Accept market genesis or explicitly proven local causal bootstrap."""
+        proof=self.segment(symbol)
+        if proof is None or proof.proven_at_ms>as_of:
+            return None
+        if proof.open_ms==listing:
+            return proof
+        if not 0<listing<proof.open_ms or proof.open_ms%QUARTER:
+            return None
+        tables={r[0] for r in self.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('retained_bootstrap_contract','cold_prefix_lineage')")}
+        if len(tables)!=2:
+            return None
+        from atr_er_state import REQUIRED_QUARTERS
+        accepted=self.db.execute(
+            'SELECT 1 FROM retained_bootstrap_contract b '
+            'JOIN cold_prefix_lineage l ON l.symbol=b.symbol '
+            'AND l.origin=b.start_ms AND l.manifest_sha=b.manifest_sha AND l.owner_ready=b.proven_ms '
+            'WHERE b.symbol=? AND b.listing_ms=? AND b.start_ms=? AND b.proven_ms=? '
+            'AND l.cutoff=? AND l.cutoff<=l.source_ready AND l.source_ready<=l.owner_ready',
+            (symbol,listing,proof.open_ms,proof.proven_at_ms,proof.open_ms+REQUIRED_QUARTERS*QUARTER),
+        ).fetchone()
+        return proof if accepted else None
 
     def record(self, symbol, width, rows):
         need(width in (MINUTE, FIVE, QUARTER, HOUR), 'C11_CANDLE_WIDTH')
@@ -275,7 +304,11 @@ class CausalBars:
         signal=classify(end,as_of,candles,last[0].close if last else None) if quarters else None
         return candles,minutes,signal
 
-    def inputs(self,symbol,end,as_of,*,primary=None,state=None):
+    def inputs(self,symbol,end,as_of,*,primary=None,state=None,valid_until_ms=None):
+        deadline=end+MINUTE if valid_until_ms is None else valid_until_ms
+        if valid_until_ms is not None and (type(deadline) is not int or
+                not end<=as_of<deadline<=end+QUARTER or primary is None or state is None):
+            return None
         candles,minutes,signal=primary if primary is not None else self.recent_primary(symbol,end,as_of)
         if signal is None or signal.status!='NW15_PRIMARY_SIGNAL' or not minutes or state is None:
             return None
@@ -283,7 +316,7 @@ class CausalBars:
         status,_=join(scope,as_of,[state])
         if status!='PASS':
             return None
-        return dict(scope=scope,candle_symbol=symbol,valid_until_ms=end+MINUTE,candles15=candles,
+        return dict(scope=scope,candle_symbol=symbol,valid_until_ms=deadline,candles15=candles,
                     minutes=tuple(MinuteInput(symbol,row.received_ms,ClosedMinute(
                         row.open_ms+MINUTE,row.high,row.low,row.close)) for row in minutes),
                     rpd_segment=None,completed_bars5=(),rpd_checkpoint=state)

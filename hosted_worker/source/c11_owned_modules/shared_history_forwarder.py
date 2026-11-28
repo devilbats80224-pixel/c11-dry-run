@@ -39,12 +39,26 @@ class Peer:
     def close(self):
         self.pool.shutdown(wait=False)
 
+def owner_may_receive(lane,job,granted):
+    # An ungranted request always needs current rank/phase. An exact data
+    # job already granted before expiry may carry separately verified,
+    # data-only receipt authority. No effect on original strategy scopes.
+    if granted is not None:
+        from admission_minute_job import MinuteHistoryJob
+        allowed=getattr(lane,'receipt_authority',None)
+        if type(job) is MinuteHistoryJob and callable(allowed) and allowed(job,granted) is True:
+            return True
+    return lane.authority(job)
+
+
 class Lane:
     def __init__(self,wire,authority):
         self.wire,self.authority=wire,authority
         self.tag=None
         self.result=None
         self.last_offer_reason=None
+        self.archive_retry_eligible=False
+        self.receipt_authority=None
     def offer(self,job):
         return self.wire.offer(self,job)
     def tick(self):
@@ -111,6 +125,7 @@ class SharedHistoryForwarder:
         return Lane(self,authority)
     def offer(self,lane,job):
         lane.last_offer_reason='HISTORY_PAGE_HELD'
+        lane.archive_retry_eligible=False
         if self.closed or lane.tag is not None or not lane.authority(job):return False
         token=self.budget.try_reserve_history(job,cold_current=lane.authority)
         if token is None:
@@ -147,7 +162,7 @@ class SharedHistoryForwarder:
                       response_ms=received if type(received) is int else None)
         if valid_keys and x['status'] in (418,429):
             self.budget.optional_wire_fault(x['status'],60000)
-        authority = lane.authority(job)
+        authority = owner_may_receive(lane,job,sent)
         parent_now = monotonic()
         if not authority or parent_now >= delivery_until:
             reason = ('SCOPE_AND_PARENT_DELIVERY_EXPIRED' if not authority and parent_now >= delivery_until
@@ -176,10 +191,20 @@ class SharedHistoryForwarder:
         elif status!=200: reason='HTTP_STATUS' if status else 'NO_HTTP_RECEIPT' if type(wire_ms) is int else 'NOT_DISPATCHED_BY_CHILD'
         elif type(used) is not int or not 0<=used<=50000: reason='WEIGHT_HEADER'
         elif type(received) is not int or not sent<=received<=min(self.wall(),sent+MAX_RESPONSE_MS): reason='RECEIPT_TIME'
+        elif getattr(job,'bootstrap',False) is True and (type(wire_ms) is not int or not sent<=wire_ms<=received):
+            reason='BOOTSTRAP_WIRE_TIME'
         elif count!=job.n: reason='ROW_COUNT'
         else:
             self.audit(job,'REPLY_ACCEPTED',**evidence)
             self.finish(tag,(sent,received,x['rows']));return
+        # A rejected result with a witnessed request may use independently
+        # verified archived data. Budget refusal, stale scope, malformed IPC
+        # and rate enforcement are not evidence that the endpoint is short.
+        lane.archive_retry_eligible=(
+            getattr(job,'bootstrap',False) is True and valid_keys
+            and type(wire_ms) is int and sent<=wire_ms<=self.wall()
+            and (reason in ('ROW_COUNT','NO_HTTP_RECEIPT')
+                 or (reason=='HTTP_STATUS' and status in (404,500,502,503,504))))
         self.audit(job,'REPLY_REJECTED',reason,**evidence)
         self.finish(tag,None,cancel=True)
     def abort(self):
@@ -191,7 +216,7 @@ class SharedHistoryForwarder:
             self.finish(tag,None)
     def _expire(self):
         for tag,(lane,job,_,until,sent) in tuple(self.waiting.items()):
-            active=lane.authority(job)
+            active=owner_may_receive(lane,job,sent)
             if not active or monotonic()>=until:
                 self.audit(job,'EXPIRED','STALE_SCOPE' if not active else 'NO_REPLY' if sent is not None else 'NO_READY',grant_ms=sent)
                 self.finish(tag,None,cancel=True)

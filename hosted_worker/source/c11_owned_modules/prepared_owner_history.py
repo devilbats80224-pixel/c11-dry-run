@@ -189,6 +189,12 @@ class BoundOwnerHistory:
                 and not self.minute_admission.pending.busy(f.symbol)
                 and self.tap.current(f))
 
+    def advanced_bootstrap_allowed(self,f):
+        bot=self.worker.freqtrade
+        return (self.cold_delivery_window() and self.tap.current(f)
+                and getattr(bot,'_owned_revisit_no_positions',False) is True
+                and getattr(bot,'_owned_revisit_reconciled',False) is True)
+
     def due_to_send(self,j):
         return (self.pending is not None and self.pending[0] is j and j.valid(self.run.wall())
                 and self.tap.current(self.pending[2]) and self.phase_allows())
@@ -340,6 +346,10 @@ class BoundOwnerHistory:
             # fact is per-candidate. Do not starve the rest of the roster.
             if not self.phase_allows():return
             if not self.tap.current(f) or self.minute_admission.pending.busy(f.symbol):continue
+            if self.minute_admission.blank_bootstrap(f):
+                # An authenticated blank old listing uses only its exact
+                # missing recent raw minutes, even if shared budget is held.
+                continue
             if sr is not None and f.symbol=='OPGUSDT':
                 try:
                     choice=sr.offer(f,width,self.tap.current)

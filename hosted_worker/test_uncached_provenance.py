@@ -137,24 +137,8 @@ def discovered_archives_use_existing_bounds():
             raise AssertionError("DISCOVERY_MUST_NOT_BE_DEFAULT")
         enabled = AutomaticArchive(transport, lambda: end, discover_unseeded=True)
         assert enabled.start(short, Event()).discovered
-        try:
-            enabled.start(too_long, Event())
-        except Hold as exc:
-            assert exc.status == "AUTO_ARCHIVE_DISCOVERY_LIMIT"
-        else:
-            raise AssertionError("C11_DISCOVERY_BYPASSED_ARCHIVE_BUDGET")
-    assert not requests
-
-    archive = AutomaticArchive(transport, lambda: end, max_bytes=10, discover_unseeded=True)
-    progress = ArchiveProgress(archive, short.symbol, short.origin, end, 0,
-                               (("one","unused",end),("two","unused",end)), discovered=True)
-    progress.ledger.append({"bytes": 10})
-    try:
-        progress.resume(Event())
-    except Hold as exc:
-        assert exc.status == "AUTO_ARCHIVE_DISCOVERY_LIMIT"
-    else:
-        raise AssertionError("C11_DISCOVERY_BYTE_BUDGET_RESET_AFTER_YIELD")
+        long=enabled.start(too_long, Event())
+        assert long.discovered and len(long.parts)>60
     assert not requests
 
 
@@ -238,20 +222,9 @@ def missing_month_finds_daily_without_a_catalogue(month_has_gap=False):
     if month_has_gap:
         calls.clear()
         limited=AutomaticArchive(Ns(get=fetch),lambda:now,max_bytes=max(len(body),len(bad_month))+1)
-        try:
-            limited.prepare(fact,Event())
-        except Hold as exc:
-            assert exc.status=='AUTO_ARCHIVE_BUDGET'
-        else:
-            raise AssertionError('C11_MONTH_GAP_FALLBACK_RESET_DOWNLOAD_BUDGET')
-    with patch('auto_cold_archive.MAX_FILES',0):
-        limited=ArchiveProgress(archive,symbol,origin,cutoff,0,((name,monthly,cutoff),))
-        try:
-            limited.substitute_closed_days(symbol+'-1m-2026-10.zip',cutoff)
-        except Hold as exc:
-            assert exc.status=='AUTO_ARCHIVE_BUDGET'
-        else:
-            raise AssertionError('C11_DAILY_SUBSTITUTE_BYPASSED_FILE_LIMIT')
+        source,prefix=limited.prepare(fact,Event())
+        assert source.daily_fallback and prefix.rpd.next_open==cutoff
+        assert calls==expected
     pinned=ArchiveProgress(archive,symbol,origin,cutoff,0,(),reviewed=Ns())
     assert not pinned.substitute_closed_days(symbol+'-1m-2026-10.zip',cutoff)
 
@@ -293,10 +266,118 @@ def production_archive_mode_discovers_for_current_unseeded_candidates():
     lane=plan(runtime,{},lambda:1795773600000,True)
     assert lane.discover_unseeded is True,'C11_PUBLIC_MODE_DID_NOT_ALLOW_ON_DEMAND_DISCOVERY'
 
+def rotating_candidates_keep_current_archive_admission():
+    now=[1795773605000]
+    end=now[0]//QUARTER*QUARTER
+    origin=end-8*QUARTER
+    lane=AutoColdAdmission(lambda:now[0],lambda *_:None)
+    def fact(i):
+        return Ns(symbol=f'ASSET{i}USDT',pair=f'ASSET{i}/USDT:USDT',
+                  origin=origin,boundary=end)
+    try:
+        for i in range(60):
+            assert lane.offer(fact(i))=='AUTO_ARCHIVE_QUEUED'
+        # Two otherwise legitimate batches rotate within the retention period.
+        # Admission of a current candidate must not depend on stale peers.
+        now[0]+=60_000
+        for i in range(60,120):
+            assert lane.offer(fact(i))=='AUTO_ARCHIVE_QUEUED',(
+                'C11_DEPARTED_ROSTER_BLOCKS_NEW_ARCHIVE_CANDIDATES',i)
+        now[0]+=lane.RETAIN_MS-60_000
+        lane.retire_stale()
+        assert set(lane.pending)=={fact(i).symbol for i in range(60,120)}
+        print('C11_ARCHIVE_ROTATION_NO_FIXED_CANDIDATE_REJECTION')
+    finally:
+        lane.close()
+
+
+def archive_candidates_do_not_wait_for_unrelated_inflight_prefix():
+    now=1795773605000
+    end=now//QUARTER*QUARTER
+    entered={key:Event() for key in ('LONGUSDT','SHORTUSDT')}
+    hold=Event()
+    facts=tuple(Ns(symbol=symbol,pair=symbol[:-4]+'/USDT:USDT',
+                   origin=end-gap*QUARTER,boundary=end)
+                for symbol,gap in (('LONGUSDT',250),('SHORTUSDT',8)))
+    def prepare(fact,cancel):
+        entered[fact.symbol].set()
+        if fact is facts[0]:
+            assert hold.wait(10)
+        return (Ns(cutoff=end-QUARTER,review_expires_ms=None),fact)
+    owner=Ns(tap=Ns(current=lambda f:f in facts),cold_delivery_window=lambda:True,
+             cold_delivery_allows=lambda f:f in facts)
+    lane=AutoColdAdmission(lambda:now,prepare)
+    try:
+        for fact in facts:
+            lane.offer(fact)
+        lane.tick(owner,prepare_only=True)
+        assert entered['LONGUSDT'].wait(2)
+        assert entered['SHORTUSDT'].wait(2),'C11_ARCHIVE_SLOW_COIN_BLOCKS_PEER_DISPATCH'
+        delivered=[]
+        def install(_owner,fact,prefix,*,early):
+            assert fact is prefix and early
+            delivered.append(fact.symbol)
+            return True
+        with patch.object(lane,'install',side_effect=install):
+            from time import monotonic,sleep
+            deadline=monotonic()+2
+            while not delivered and monotonic()<deadline:
+                lane.tick(owner,ready_only=True)
+                sleep(.01)
+            assert delivered==['SHORTUSDT'],'C11_ARCHIVE_READY_PEER_WAITED_FOR_LONG_PREFIX'
+        print('C11_ARCHIVE_MULTI_SYMBOL_DISPATCH_AND_INDEPENDENT_DELIVERY')
+    finally:
+        hold.set()
+        lane.close()
+
+
+def public_archive_resumes_after_transport_slice_without_total_ceiling():
+    from auto_cold_archive import windows
+    from datetime import datetime,timezone
+    def utc(year,month,day):
+        return int(datetime(year,month,day,tzinfo=timezone.utc).timestamp()*1000)
+    end=utc(2026,11,27)+2*QUARTER
+    origin=utc(2020,2,3)
+    try:
+        cutoff,parts=windows('EXAMPLEUSDT',origin,end)
+    except Hold as exc:
+        raise AssertionError('C11_ARCHIVE_FILE_COUNT_STOPS_REQUIRED_HISTORY') from exc
+    assert cutoff==utc(2026,11,27) and len(parts)>60
+    # Two accepted files, each below the per-turn limit but together above
+    # it. The verified cursor carries over; never fetch a verified file twice.
+    class Recurrence:
+        pack=()
+        def consume(self,_name,_body,closed_at,_available,_cancel):
+            self.minute=closed_at
+        def finish(self,cutoff,_available):
+            assert self.minute==cutoff
+            return cutoff
+    archive=AutomaticArchive(Ns(),lambda:end,max_bytes=10,discover_unseeded=True)
+    plan=ArchiveProgress(archive,'EXAMPLEUSDT',origin,cutoff,0,
+                         (parts[-2],parts[-1]),discovered=True)
+    plan.recurrence=Recurrence()
+    fetched=[]
+    def fake_fetch(name,url,closed_at,limit,cancel,*,pin=None):
+        assert limit>=8 and not cancel.is_set() and pin is None
+        fetched.append(name)
+        return Receipt(b'verified',closed_at),dict(name=name,bytes=8)
+    plan.fetch=fake_fetch
+    assert plan.resume(Event()) is plan
+    try:
+        source,result=plan.resume(Event())
+    except Hold as exc:
+        raise AssertionError('C11_ARCHIVE_CUMULATIVE_BYTES_STOP_VERIFIED_CONTINUATION') from exc
+    assert result==cutoff and source.cutoff==cutoff and fetched==[row[0] for row in parts[-2:]]
+    print('C11_PUBLIC_ARCHIVE_CAN_CONTINUE_WITHOUT_TOTAL_FILE_OR_BYTE_CAP')
+
+
 if __name__ == "__main__":
     missing_month_finds_daily_without_a_catalogue()
     missing_month_finds_daily_without_a_catalogue(month_has_gap=True)
     expired_completed_source_cannot_block_ready_peer()
+    rotating_candidates_keep_current_archive_admission()
+    archive_candidates_do_not_wait_for_unrelated_inflight_prefix()
+    public_archive_resumes_after_transport_slice_without_total_ceiling()
     production_archive_mode_discovers_for_current_unseeded_candidates()
     boundary_cases()
     discovered_archives_use_existing_bounds()

@@ -60,6 +60,7 @@ owner = tree / "c11_owned_modules"
 runtime = dump(owner / "release_stage_runtime.json", {
     "release_enabled": False,
     "cold_archive_preparation": "BINANCE_PUBLIC_CLOSED_1M_V1",
+    "unseeded_recent_minute_bootstrap": "BINANCE_SHARED_RECENT_1M_V1",
     "files": files,
 })
 (owner / "stage_pin.py").write_text(

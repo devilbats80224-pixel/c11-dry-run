@@ -14,12 +14,15 @@ def millis():
     return time.time_ns()//1000000
 
 def decode_page(p):
-    if type(p) is not dict or set(p)!={'symbol','start','stop','count','width'}:
+    fields={'symbol','start','stop','count','width'}
+    if type(p) is not dict or (set(p)!=fields and not (set(p)==fields|{'bootstrap'} and p['bootstrap'] is True)):
         raise PeerHold('C11_SHARED_PAGE_SHAPE')
     s,a,b,n,w=(p[k] for k in ('symbol','start','stop','count','width'))
+    bootstrap=p.get('bootstrap') is True
+    grid,min_count=(60000,1) if bootstrap else (900000,15)
     if (not quote_contract_shape(s) or len(s)>32 or any(type(v) is not int for v in (a,b,n,w))
-            or w!=60000 or not (0<a<b<=millis()) or a%900000 or b%900000
-            or not 15<=n<=495 or b-a!=n*60000):
+            or w!=60000 or not (0<a<b<=millis()) or a%grid or b%grid
+            or not min_count<=n<=495 or b-a!=n*60000):
         raise PeerHold('C11_SHARED_CLOSED_1M_ONLY')
     return dict(symbol=s,interval='1m',startTime=a,endTime=b-1,limit=n)
 
@@ -31,7 +34,7 @@ async def serve(sock,abi,session):
         data=frame(value) if cap is None else frame(value,cap)
         async with write:
             await loop.sock_sendall(sock,data)
-    async def run(tag,params,until):
+    async def run(tag,params,until,bootstrap):
         try:
             status=0;used=None;rows=();at=millis(); wire_ms=None
             def authorize_wire():
@@ -41,7 +44,7 @@ async def serve(sock,abi,session):
                 wire_ms=now;return True
             try:
                 async with asyncio.timeout(max(0,(until-at)/1000)):
-                    t,rows=await e.page(params,authorize_wire)
+                    t,rows=await e.page(params,authorize_wire,bootstrap=bootstrap)
                     status,used,at=t.status or 0,t.weight,millis()
             except TimeoutError:
                 at=millis()
@@ -67,12 +70,12 @@ async def serve(sock,abi,session):
                     raise PeerHold('C11_SHARED_COMMAND_TAG')
                 if set(x)=={'tag','page'}:
                     if tag in parked or tag in running:raise PeerHold('C11_SHARED_DUPLICATE_TAG')
-                    parked[tag]=decode_page(x['page'])
+                    parked[tag]=decode_page(x['page']),x['page'].get('bootstrap') is True
                     await send({'ready':tag,'abi':abi},256)
                 elif set(x)=={'go','until'}:
                     until=x['until'];p=parked.pop(tag,None);now=millis()
                     if p is not None and type(until) is int and now<until<=now+950:
-                        running[tag]=asyncio.create_task(run(tag,p,until))
+                        running[tag]=asyncio.create_task(run(tag,p[0],until,p[1]))
                     elif p is not None:
                         await send(dict(tag=tag,status=0,used=None,rows=[],received=now,wire_ms=None),256)
                 elif set(x)=={'cancel'}:

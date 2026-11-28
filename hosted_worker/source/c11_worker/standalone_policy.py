@@ -15,7 +15,7 @@ from causal_bars import CausalBars, FIVE, HOUR, MINUTE, QUARTER
 from c11_native_rules import EntryFacts, PositionFacts
 from native_candles import NativeCandles
 from feature_warmup import readiness
-from primary_coverage_gate import native_primary_read
+from primary_coverage_gate import NativePrimaryHandoff,native_primary_read
 from structure40 import use as structure40
 from runtime_facts import EntryClock, ExitClock, NativeEvidence
 
@@ -75,20 +75,28 @@ class StandalonePolicy:
     def primary_inputs(self, bot, pair, candidate):
         now = time.time_ns() // 1_000_000
         end = now // QUARTER * QUARTER
-        if now >= end + MINUTE:
+        handoff=getattr(bot,'_c11_native_primary_handoff',None)
+        late=now>=end+MINUTE
+        if late and (type(handoff) is not NativePrimaryHandoff or bot.config.get('dry_run') is not True
+                or not bot.native_paper_exchange()):
             return None
         try:
-            primary,state=native_primary_read(getattr(bot,'_c11_native_primary_handoff',None),
-                                            bot,self,pair,candidate,end,INPUT_ERRORS,readiness)
+            expiry=handoff.validated_expiry(pair,candidate,end) if late else end+MINUTE
+            if expiry is None:
+                return None
+            primary,state=native_primary_read(handoff,bot,self,pair,candidate,end,INPUT_ERRORS,readiness)
             if primary is None or state is None:
                 return None
             now=time.time_ns()//1_000_000
-            if now>=end+MINUTE or not self.slots.ready:
+            if now>=expiry or not self.slots.ready:
                 return None
-            features=self.bars.inputs(candidate.symbol,end,now,primary=primary,state=state)
-            if features:
+            clock=dict(valid_until_ms=expiry) if late else {}
+            features=self.bars.inputs(candidate.symbol,end,now,primary=primary,state=state,**clock)
+            if features and not late:
                 self.candles.update_entry_hour(bot,candidate.symbol,end)
-            return features if time.time_ns()//1_000_000<end+MINUTE else None
+            if late and handoff.validated_expiry(pair,candidate,end)!=expiry:
+                return None
+            return features if time.time_ns()//1_000_000<expiry else None
         except INPUT_ERRORS+(sqlite3.Error,):
             return None
 

@@ -33,3 +33,56 @@ def resolve_range(end,verified_cursor,analysis_gaps):
     if not 0<start<cutoff:
         return None
     return MinuteRange(start,min(cutoff,start+PAGE))
+
+
+def missing_intervals(end,verified_cursor,analysis_gaps,blocked):
+    # Logical coverage is time-based. Split the actual uncovered stretches
+    # only at the transport page size, without a fixed request count.
+    initial=resolve_range(end,verified_cursor,analysis_gaps)
+    if initial is None:
+        return
+    left,cutoff=initial.start,end-Q
+    intervals=sorted((max(left,a),min(cutoff,b)) for a,b in blocked
+                     if type(a) is type(b) is int and a%Q==b%Q==0
+                     and left<b and a<cutoff and a<b)
+    for a,b in (*intervals,(cutoff,cutoff)):
+        while left<a:
+            stop=min(a,left+PAGE)
+            yield MinuteRange(left,stop)
+            left=stop
+        left=max(left,b)
+
+
+def bootstrap_bounds(listing,end):
+    """The exact retained strategy input, separate from contract genesis."""
+    from atr_er_state import REQUIRED_QUARTERS
+    if (type(listing) is not int or type(end) is not int
+            or listing%Q or end%Q or not 0<listing<end-Q):
+        return None
+    cutoff=end-Q
+    start=cutoff-REQUIRED_QUARTERS*Q
+    return (start,cutoff) if listing<start else None
+
+
+def bootstrap_missing(listing,end,available_opens,blocked):
+    """Subtract real closed minutes and all previously occupied intervals."""
+    bounds=bootstrap_bounds(listing,end)
+    if bounds is None:
+        return
+    start,cutoff=bounds
+    covered=set(available_opens)
+    for a,b in blocked:
+        if type(a) is type(b) is int and a%M==b%M==0 and a<b:
+            covered.update(range(max(a,start),min(b,cutoff),M))
+    left=None
+    for at in range(start,cutoff+M,M):
+        if at==cutoff or at in covered:
+            if left is not None:
+                yield MinuteRange(left,at)
+                left=None
+            continue
+        if left is None:
+            left=at
+        if at+M-left==PAGE:
+            yield MinuteRange(left,at+M)
+            left=None

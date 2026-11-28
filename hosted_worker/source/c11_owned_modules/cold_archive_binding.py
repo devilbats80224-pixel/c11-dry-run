@@ -8,26 +8,44 @@ PUBLIC_MODE='BINANCE_PUBLIC_CLOSED_1M_V1'
 DISCOVERY_KEY='unseeded_archive_discovery'
 DISCOVERY_MODE='BOUNDED_OFFICIAL_ARCHIVE_V1'
 REVIEWED_ONLY='REVIEWED_OFFICIAL_ARCHIVE_ONLY_V1'
+BOOTSTRAP_KEY='unseeded_recent_minute_bootstrap'
+BOOTSTRAP_MODE='BINANCE_SHARED_RECENT_1M_V1'
 
 
 class ColdSourceAdmission:
-    """Prefer reviewed local sources; only one prefix preparation at a time."""
-    def __init__(self,reviewed,wall,*,discover_unseeded=False):
+    """Prefer each candidate’s reviewed source without blocking other candidates."""
+    def __init__(self,reviewed,wall,*,discover_unseeded=False,recent_minute_bootstrap=False):
+        if type(recent_minute_bootstrap) is not bool or recent_minute_bootstrap and discover_unseeded is not True:
+            raise ValueError('C11_RECENT_BOOTSTRAP_REQUIRES_UNSEEDED_DISCOVERY')
+        self.recent_minute_bootstrap=recent_minute_bootstrap
         self.reviewed=ColdPrefixAdmission(
             {s:v for s,v in reviewed.items() if not v.download_only},wall,prewarm_idle=True)
+        self.exact_sources=frozenset(reviewed)
         remote={s:v for s,v in reviewed.items() if v.download_only}
+        self.reviewed_remote=frozenset(remote)
         archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall,reviewed_remote=remote,
                                  discover_unseeded=discover_unseeded)
         self.public=AutoColdAdmission(wall,archive.start)
+
+    def allows_unseeded_minutes(self,fact):
+        from native_cold_minute_page import bootstrap_bounds
+        return (self.recent_minute_bootstrap is True and fact.symbol not in self.reviewed.sources
+                and fact.symbol not in self.reviewed_remote
+                and bootstrap_bounds(fact.origin,fact.boundary) is not None)
 
     def offer(self,fact):
         if fact.symbol in self.reviewed.sources:
             return self.reviewed.offer(fact)
         return self.public.offer(fact)
 
-    def offer_retained(self,owner,fact):
+    def offer_retained(self,owner,fact,*,prior=None):
         if fact.symbol not in self.reviewed.sources:
-            return self.public.offer_retained(owner,fact)
+            return self.public.offer_retained(owner,fact,prior=prior)
+        return None
+
+    def offer_advanced_retained(self,owner,fact):
+        if fact.symbol not in self.exact_sources:
+            return self.public.offer_advanced_retained(owner,fact)
         return None
 
     def offer_existing(self,owner,fact):
@@ -54,13 +72,10 @@ class ColdSourceAdmission:
     def tick(self,owner,*,ready_only=False,prepare_only=False):
         if ready_only:
             # Both lanes can drain completed work, but neither may start work.
-            if self.reviewed.tick(owner,ready_only=True):
-                return
-            return self.public.tick(owner,ready_only=True)
+            reviewed=self.reviewed.tick(owner,ready_only=True)
+            public=self.public.tick(owner,ready_only=True)
+            return bool(reviewed or public)
         flags={'prepare_only':True} if prepare_only else {}
-        if self.public.active is not None:
-            self.public.tick(owner,**flags)
-            return
         self.public.retire_stale()
         now=self.public.wall()
         # Unresolvable, backing-off or vanished peers cannot reserve this
@@ -68,11 +83,10 @@ class ColdSourceAdmission:
         public_due=any(owner.tap.current(slot.fact) and
                        (now>=slot.due_ms or slot.result is not None and not prepare_only)
                        for slot in self.public.pending.values())
-        if public_due:
+        if public_due or self.public.active is not None:
             self.reviewed.cancel_idle()
-        self.reviewed.tick(owner,allow_idle=not public_due,**flags)
-        if self.reviewed.active is None:
-            self.public.tick(owner,**flags)
+        self.reviewed.tick(owner,allow_idle=not public_due and self.public.active is None,**flags)
+        self.public.tick(owner,**flags)
 
     def close(self):
         self.reviewed.close()
@@ -87,7 +101,11 @@ def plan(runtime,sources,wall,history_enabled):
         raise ValueError('C11_REVIEWED_DOWNLOAD_REQUIRES_PUBLIC_HISTORY')
     if DISCOVERY_KEY in runtime and (runtime[DISCOVERY_KEY] not in (DISCOVERY_MODE,REVIEWED_ONLY) or mode!=PUBLIC_MODE):
         raise ValueError('C11_UNSEEDED_DISCOVERY_EXACT_MODE')
+    discovery=(mode==PUBLIC_MODE and runtime.get(DISCOVERY_KEY)!=REVIEWED_ONLY)
+    bootstrap=BOOTSTRAP_KEY in runtime
+    if bootstrap and (runtime[BOOTSTRAP_KEY]!=BOOTSTRAP_MODE or not discovery):
+        raise ValueError('C11_RECENT_BOOTSTRAP_EXACT_MODE')
     if not sources and mode is None:
         return None
     return ArchivePrepLane({},wall,cold_prefix_sources=sources,public_cold_archive=mode==PUBLIC_MODE,
-                           discover_unseeded=(mode==PUBLIC_MODE and runtime.get(DISCOVERY_KEY)!=REVIEWED_ONLY))
+                           discover_unseeded=discovery,recent_minute_bootstrap=bootstrap)

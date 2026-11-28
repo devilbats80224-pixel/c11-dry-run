@@ -20,6 +20,7 @@ class UnifiedScheduler:
         from warm_release_binding import WarmReleaseBinding
         self.warm=WarmReleaseBinding(self)
         self.plan.warm_prepare=self.warm.eligible
+        self.plan.verified_readiness_at=self.warm.readiness_at
         self.plan.warm_minute_span=self.warm.minute_span
         # Preserve only the earlier explicitly reviewed correction. Original
         # independent position-protection cadence remains untouched.
@@ -287,10 +288,13 @@ class UnifiedScheduler:
         # The warm route installs exact reconstructed input. Ordinary and
         # verified non-warm routes may already have the canonical frame.
         self._owner()
-        return self.warm.prepared is not None and self.warm.prepared[0] is proof
+        return (self.warm.late is not None and self.warm.late[0] is proof
+                or self.warm.prepared is not None and self.warm.prepared[0] is proof)
 
     def original_revisit_frame(self,proof,provider_frame):
         self._owner()
+        if self.warm.late is not None and self.warm.late[0] is proof:
+            return self.warm.late[2].quarters if self.warm.late_current(proof) else None
         if self.warm.prepared is not None and self.warm.prepared[0] is proof:
             return self.warm.frame(proof) or None
         if not self.revisit_frame_current(proof):return None
@@ -310,6 +314,7 @@ class UnifiedScheduler:
         return None
 
     def discard_revisit_frame(self):
+        self.warm.clear_late()
         self.warm.prepared=None
         self._owned_prepared_analysis=None
         self._owned_revisit_scope=None
@@ -317,6 +322,8 @@ class UnifiedScheduler:
 
     def revisit_frame_current(self,proof):
         self._owner()
+        if self.warm.late is not None and self.warm.late[0] is proof:
+            return self.warm.late_current(proof)
         if self.warm.prepared is not None and self.warm.prepared[0] is proof:
             return self.warm.frame_current(proof)
         scope=getattr(self,'_owned_revisit_scope',None)
@@ -331,6 +338,15 @@ class UnifiedScheduler:
         self._owner()
         now=self.wall()
         if type(first) is not Scope or (first.pair,first.end)!=(pair,end):return False
+        current=self.plan.current(first,now)
+        if (now>=min(first.expires,end+60_000) or not current) and self.warm.arm_late(first,pair,end):
+            return True
+        if not current:
+            fresh=self.plan.provisional_scope(pair,end)
+            if (type(fresh) is Scope and (fresh.pair,fresh.symbol,fresh.end)==(pair,first.symbol,end)
+                    and fresh.generation>first.generation and self.plan.current(fresh,now)):
+                warm=self.warm.revisit(first,pair,end,fresh_source=fresh)
+                if warm is not None:return warm
         if not end<=now<first.expires:
             self._transition(first,'REVISIT_ORIGINAL_LEASE_EXPIRED')
             return False
@@ -420,6 +436,15 @@ class UnifiedScheduler:
 
     def consume_ready_only(self,pair,end,frame,callback):
         self._owner()
+        late_scope=self.warm.late[1] if self.warm.late is not None else None
+        late=self.warm.publish_late(pair,end,frame,callback)
+        if late is not None:
+            status,_=late
+            self._transition(late_scope,status)
+            if status=='ORIGINAL_NATIVE_CALLBACK' and self.first_gate is not None:
+                self.first_gate.note(late_scope.generation,late_scope.symbol,'callback',status)
+                self._count('original_callback')
+            return late
         scope=next((s for s in self.covers.values() if s.pair==pair and s.end==end),None)
         if scope is None or self.marker!=(scope.generation,end) or self.wall()>=scope.expires:
             self._count('entry_no_scope')

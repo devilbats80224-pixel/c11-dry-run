@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank) ;; *) exit 64;; esac
+case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank|mixed-blank|mixed-unusable) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -109,7 +109,7 @@ if [ "$2" = build ]; then
         --mount "type=bind,src=$d/test_baked_predecessor.py,dst=/predecessor-test.py,readonly" \
         --mount "type=bind,src=$d/../release_regressions,dst=/c11-ci-tools,readonly" \
         --entrypoint python "$image" -B /predecessor-test.py
-    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_mixed_close_history_budget.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_staged_revisit_not_spent.py test_warm_commit_refusal.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_terminal_warmup_priority.py test_idle_cold_preparation.py test_stale_cursor_minute_bridge.py test_retained_minute_cold_prefix.py; do
+    for test_name in test_uncached_provenance.py test_cold_minute_retention.py test_resident_terminal_veto.py test_exact_end_rpd_veto.py test_original_1m_wire.py test_reviewed_opg_catalog.py test_recent_gap_refill.py test_mixed_close_history_budget.py test_reconfirm_queue_binding.py test_original_revisit_offer.py test_staged_revisit_not_spent.py test_warm_commit_refusal.py test_prepared_cold_checkpoint.py test_terminal_1m_first.py test_terminal_warmup_priority.py test_idle_cold_preparation.py test_stale_cursor_minute_bridge.py test_retained_minute_cold_prefix.py test_bootstrap_minute_ranges.py test_unusable_old_state_bootstrap.py test_rebuilt_state_continuation.py test_bounded_official_archive.py test_archive_fallback_wire_evidence.py test_advanced_checkpoint_long_gap.py; do
         docker run --rm --pull never --network none --read-only --cap-drop ALL \
             --security-opt=no-new-privileges \
             --mount "type=bind,src=$d/$test_name,dst=/provenance-test.py,readonly" \
@@ -202,6 +202,13 @@ sites=[m[1] for row in rows if (m:=frame.fullmatch(row))]
 errors=[(m[1],sorted(set(code.findall(row)))) for row in rows if (m:=fault.match(row))]
 if errors:
     name, reasons=errors[-1]
+    counts=[row.split()[1:] for row in rows if re.fullmatch(r'C11_LATE_DELIVERY_COUNTS [0-9]+ [0-9]+ [0-9]+',row)]
+    if counts:
+        cb,inputs,wire=counts[-1]
+        print('late delivery (expected callbacks=1, native input reads=1, new requests=0): actual callbacks='+cb+', native input reads='+inputs+', new requests='+wire)
+    flows=[row for row in rows if re.fullmatch(r'C11_LATE_DELIVERY_FLOW(?: (?:STRATEGY|RANK|POLICY|EXPIRY|RESOLVE)_(?:ENTER|VALUE|NONE|EXCEPTION)){1,42}',row)]
+    if flows:
+        print(flows[-1])
     print('first failing fixture site: '+(sites[-1] if sites else 'unknown')+'; '+name+'; '+(', '.join(reasons) if reasons else 'no allowlisted code'))
 else:
     print('no exception signature; last confirmed stage: immutable image and fixture loaded')
@@ -226,6 +233,15 @@ PYFAIL
       grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" &&
       grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
+    if [ "$missing" = yes ]; then
+      count="$(grep -E -c '^C11_LATE_ORIGINAL_RESULT (NW15_PRIMARY_SIGNAL|NO_SIGNAL) (PASS|VETO)$' "$out/warm-runtime.log" || :)"
+      if [ "$count" != 2 ] || ! grep -Fxq 'C11_FRESH_READY_OFFSET_MS 62000' "$out/warm-runtime.log" ||
+          ! awk '/^C11_FRESH_READY_OFFSET_MS / && $2>0 && $2<60000 { ok=1 } END { exit !ok }' "$out/warm-runtime.log"; then
+          { echo 'C11_FRESH_DELIVERY_RECEIPT_MISSING'; echo 'Expected: two known original results, one before the previous nominal expiry and one at +62000ms.'; echo "Actual: $count recognized known-result receipts. Last successful stage: original Worker fixture process."; } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          return 1
+      fi
+      grep -E '^C11_(LATE_ORIGINAL_RESULT (NW15_PRIMARY_SIGNAL|NO_SIGNAL) (PASS|VETO)|FRESH_READY_OFFSET_MS [0-9]+)$' "$out/warm-runtime.log"
+    fi
     if [ "$mixed_history_pressure" = yes ]; then
       grep -Fx C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY "$out/warm-runtime.log"
       grep -Fx C11_MIXED_WARM_REAL_SQLITE_WRITE_HELD "$out/warm-runtime.log"
@@ -269,6 +285,72 @@ reviewed_opg() {
     }
     echo 'C11_REVIEWED_OLD_CORRECTIONS_AND_ORIGINAL_STRATEGY_PASS'
 }
+mixed() {
+    case "$1" in mixed-blank|mixed-unusable) ;; *) exit 64;; esac
+    if sh "$d/native_history_scheduler/run_jct_worker_review.sh" "$image" "$out/fixture/jct"         "$out/fixture/stopped-paper-only.tgz" "$out/mixed" no "$1" >"$out/mixed.log" 2>&1; then
+        if python3 -I -B - "$out/mixed.log" "${1#mixed-}" <<'PY_MIXED'
+import json
+from pathlib import Path
+import sys
+events=[]
+for line in Path(sys.argv[1]).read_text(errors='replace').splitlines():
+    if not line.startswith('{"status": "C11_FINAL_MIXED_PACKAGED_PASS"'):
+        continue
+    events.append(json.loads(line))
+assert len(events)==1, 'C11_MIXED_RESULT_COUNT'
+e,=events
+assert e['variant']==sys.argv[2] and e['generation']==8
+assert e['callback_count']==e['read_count']==1
+assert e['original_status'] in ('NO_SIGNAL','NW15_PRIMARY_SIGNAL') and e['rpd'] in ('PASS','VETO')
+print('C11_FINAL_MIXED_PACKAGED_PASS',e['variant'],e['original_status'],e['rpd'])
+PY_MIXED
+        then return 0; fi
+    fi
+    printf '%s\n' "C11_FINAL_MIXED_PACKAGED_FAIL $1"
+    # Never expose fixture rows, user data, URLs, or database values. Print
+    # only allowlisted code locations and assertion/exception classifications.
+    python3 -I -B - "$out/mixed.log" "$1" <<'PY_MIXED_FAILURE' | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+from pathlib import Path
+import json
+import re
+import sys
+rows=Path(sys.argv[1]).read_text(errors='replace').splitlines()
+where=re.compile(r'^  File "(?:/fixture-driver/|/opt/c11_owned_modules/)([a-z0-9_]+\.py)", line ([0-9]{1,5}), in [A-Za-z_<>]+$')
+error=re.compile(r'^([a-zA-Z_.]*(?:Error|Exception|Refused|Hold))(?::|$)')
+known=re.compile(r'\bC11_[A-Z0-9_]{5,80}\b')
+stage=re.compile(r'^C11_MIXED_STAGE [A-Z_0-9]{4,50}$')
+loc=[f'{m[1]}:{m[2]}' for l in rows if (m:=where.fullmatch(l))]
+why=[(m[1],known.findall(l)) for l in rows if (m:=error.match(l))]
+marks=[l for l in rows if stage.fullmatch(l)]
+print('### Combined original Worker replay: '+sys.argv[2])
+print('- Expected: one original decision and canonical read after a real missing minute is resolved and the same-close roster changes.')
+diag={}
+for line in rows:
+    if line.startswith('C11_MIXED_DIAGNOSTICS '):
+        try: diag=json.loads(line.split(' ',1)[1])
+        except ValueError: pass
+safe={}
+for key in ('generation','age_ms','covers','warm_scopes','history_requests','callback_count','read_count'):
+    val=diag.get(key)
+    if type(val) is int and 0<=val<=1000000:safe[key]=val
+for key in ('proof','slot','minute'):
+    val=diag.get(key)
+    if type(val) is str and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,80}',val):safe[key]=val
+if type(diag.get('minute_pending')) is bool:safe['minute_pending']=diag['minute_pending']
+if type(diag.get('statuses')) is list:
+    safe['statuses']=[x for x in diag['statuses'] if type(x) is str and
+                      re.fullmatch(r'[A-Z][A-Z0-9_]{1,80}',x)][:16]
+print('- Actual: '+(json.dumps(safe,sort_keys=True) if safe else 'no complete combined receipt.'))
+print('- Last successful stage: '+(marks[-1].split(' ',1)[1] if marks else 'fixture driver or image setup'))
+if why:
+    kind, codes=why[-1]
+    print('- First available diagnosed error: '+kind+' at '+(loc[-1] if loc else 'driver/setup')
+          + (' ('+', '.join(codes)+')' if codes else ''))
+else:
+    print('- First available diagnosed error: no Python error signature; check mounted inputs or driver startup.')
+PY_MIXED_FAILURE
+    return 1
+}
 cold() {
     remote=no
     prepared=no
@@ -310,4 +392,4 @@ cold() {
     fi
     return 1
 }
-case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; *) cold "$2";; esac
+case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; mixed-blank|mixed-unusable) mixed "$2";; *) cold "$2";; esac
