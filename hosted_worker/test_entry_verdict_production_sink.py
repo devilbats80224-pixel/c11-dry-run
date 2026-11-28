@@ -5,8 +5,9 @@ import sys
 
 child = r'''
 import json
+import os
 import sys
-sys.path.insert(0, "/opt/c11_owned_modules")
+sys.path[:0] = ["/opt/c11_owned_modules", "/opt/c11_worker", "/opt/c11_worker/ports"]
 from pandas import DataFrame, to_datetime
 from entry_verdict_receipt import mark_primary, publish
 from native_entry_owner import NativeEntryOwner
@@ -14,6 +15,7 @@ from retained_diagnostic import redacted_fd2_only
 
 # This is the same FD routing used by release_stage.activate, not the
 # warm CI replay's unfiltered stdout and Python list diagnostic sink.
+test_error_pipe = os.dup(2)
 sink, close = redacted_fd2_only()
 try:
     end = 1_795_866_300_000
@@ -44,12 +46,20 @@ try:
                 dict(invalid, phase="order")):
         assert not sink((json.dumps(bad)+"\n").encode())
     assert sink(b'{"schema":"c11-reviewed-startup-info-v1","state":"VERIFIED_SYNTHETIC_CALLBACK"}\n')
+except Exception:
+    # The disposable, data-free fixture reports setup failures to CI,
+    # without changing the production redactor or its positive log path.
+    os.dup2(test_error_pipe, 2)
+    raise
 finally:
+    os.close(test_error_pipe)
     close()
 '''
 proc = subprocess.run([sys.executable, "-I", "-B", "-c", child],
                       check=False, capture_output=True, timeout=30)
-assert proc.returncode == 0, f"C11_PRODUCTION_DIAGNOSTIC_PROBE_EXIT actual={proc.returncode}"
+if proc.returncode != 0:
+    print(proc.stderr.decode("utf-8", errors="replace")[-3000:], file=sys.stderr)
+    raise AssertionError(f"C11_PRODUCTION_DIAGNOSTIC_PROBE_EXIT actual={proc.returncode}")
 assert not proc.stdout, "C11_PRODUCTION_STDOUT_REDACTION_LOST"
 events = [json.loads(line) for line in proc.stderr.splitlines()]
 assert any(x.get("state") == "VERIFIED_SYNTHETIC_CALLBACK" for x in events), "C11_TEST_MISSING_CALLBACK_PROOF"
