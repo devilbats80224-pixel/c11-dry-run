@@ -108,3 +108,27 @@ def native_crossing_rechecks_the_verified_ready_clock():
 
 
 native_crossing_rechecks_the_verified_ready_clock()
+
+
+def durable_projection_rechecks_verified_ready_clock():
+    from committed_projection import AuthoritativePrimaryCommit,CommittedProjection
+    row=SimpleNamespace(pair=PAIR,symbol="SYNTHUSDT",generation=8)
+    k=(row.pair,row.symbol,row.generation,E)
+    t=E+68_200
+    receipt=AuthoritativePrimaryCommit(*k,E+68_100,E+110_000,E+68_000,
+                                      *("a"*64,)*5)
+    trusted=[True]
+    projection=CommittedProjection(wall=lambda:t,native_owner_lookup=lambda *x:receipt if x==k else None,
+        current_authority=lambda c,r,now:c is row and r is receipt and trusted[0],
+        trusted_rpd_pin=lambda *_:"a"*64)
+    assert not projection._valid(receipt,k,row,t)
+    projection.verified_ready_at=lambda c,r,now:E+68_000 if c is row and r is receipt else None
+    assert projection._valid(receipt,k,row,t), "C11_DURABLE_PROJECTION_STILL_USES_WIRE_CLOCK"
+    trusted[0]=False
+    assert not projection._valid(receipt,k,row,t)
+    trusted[0]=True
+    assert not projection._valid(receipt,k,row,receipt.expires_ms)
+    print("C11_DURABLE_PROJECTION_USES_VERIFIED_READY_OWNER_WINDOW")
+
+
+durable_projection_rechecks_verified_ready_clock()

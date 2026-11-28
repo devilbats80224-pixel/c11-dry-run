@@ -18,7 +18,8 @@ class NativePrimaryEvidence:
     rpd_state:object
 
 class NativePrimaryHandoff:
-    def __init__(self, *, wall, original_scope, frame_sha, scoped_atr=None, scoped_candidate=None):
+    def __init__(self, *, wall, original_scope, frame_sha, scoped_atr=None, scoped_candidate=None,
+                 verified_ready_at=None):
         self.owner=get_ident()
         self.wall=wall
         self.original_scope=original_scope
@@ -26,6 +27,7 @@ class NativePrimaryHandoff:
         self.active=None
         self.scoped_atr=scoped_atr
         self.scoped_candidate=scoped_candidate
+        self.verified_ready_at=verified_ready_at
 
     @contextmanager
     def committed(self,event):
@@ -47,8 +49,16 @@ class NativePrimaryHandoff:
         now=self.wall()
         if not (event.pair,event.symbol,event.generation,event.end_ms)==(
                 pair,candidate.symbol,candidate.generation,end_ms):return None
-        if not end_ms<=event.owner_committed_ms<=now<event.expires_ms<=end_ms+MINUTE:return None
+        if not end_ms<=event.owner_committed_ms<=now<event.expires_ms:return None
         if not self.original_scope(candidate,event,now):return None
+        if event.expires_ms>end_ms+MINUTE:
+            # Only an original owner can authenticate the complete durable
+            # frame's readiness; a bare event or HTTP receipt is insufficient.
+            if not callable(self.verified_ready_at):return None
+            ready_at=self.verified_ready_at(candidate,event,now)
+            if (type(ready_at) is not int or not end_ms<=ready_at<=event.owner_committed_ms
+                    or event.expires_ms>min(ready_at+MINUTE,end_ms+15*MINUTE)):
+                return None
         if self.frame_sha(pair,end_ms)!=event.canonical_frame_sha256:return None
         if type(event.primary) is not tuple or len(event.primary)!=3 or event.rpd_state is None:return None
         return event.primary,event.rpd_state
