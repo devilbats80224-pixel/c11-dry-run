@@ -209,6 +209,23 @@ def missing_month_finds_daily_without_a_catalogue(month_has_gap=False):
                              else 'C11_NO_CATALOGUE_MISSING_MONTH_DID_NOT_TRY_DAILY') from exc
     assert (source.origin,source.cutoff,prefix.rpd.next_open)==(origin,cutoff,cutoff)
     assert len(prefix.quarters)==96 and set(width for width,_ in prefix.atr)=={FIVE,QUARTER}
+    assert getattr(source,'daily_fallback',False) is True, 'C11_VERIFIED_DAILY_SUBSTITUTION_NOT_TRACKED'
+    seen=[]
+    lane=AutoColdAdmission(lambda:now,lambda *_:None)
+    try:
+        lane.offer(fact)
+        lane.pending[symbol].result=(source,prefix)
+        owner=Ns(cold_delivery_window=lambda:True,cold_delivery_allows=lambda row:row is fact,
+                 primary_admission=Ns(gate=lambda status,_:seen.append(status)))
+        with patch.object(lane,'install',return_value=False):
+            lane.tick(owner,ready_only=True)
+        assert not seen,'C11_DAILY_FALLBACK_REPORTED_ON_REFUSED_INSTALL'
+        with patch.object(lane,'install',return_value=True):
+            lane.tick(owner,ready_only=True)
+            lane.tick(owner,ready_only=True)
+        assert seen==['AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED'], 'C11_DAILY_FALLBACK_INSTALLED_NOT_RECORDED'
+    finally:
+        lane.close()
     expected=[monthly+'.CHECKSUM']+([monthly] if month_has_gap else [])+[daily+'.CHECKSUM',daily]
     assert calls==expected
     if month_has_gap:
