@@ -538,8 +538,15 @@ class ColdPrefixAdmission:
             for width,atr in prefix.atr:
                 db.execute('INSERT INTO atr_er_checkpoint VALUES (?,?,?,?,?,?,?,?)',
                            (f.symbol,width,VERSION,origin,now,now,state.next_open,json.dumps(atr,allow_nan=False)))
-            owner.store._record_checked_rows(f.symbol,QUARTER,tuple(
-                ClosedBar(b.open_ms,now,b.op,b.high,b.low,b.close,b.volume,b.quote) for b in prefix.quarters))
+            quarters=tuple(ClosedBar(b.open_ms,now,b.op,b.high,b.low,b.close,b.volume,b.quote)
+                           for b in prefix.quarters)
+            selected=(owner.store.stage_retained_quarter_selection(
+                f.symbol,f.origin,origin,source.cutoff,now,state.observed,source.manifest_sha,quarters)
+                if bootstrap else ())
+            if selected:
+                owner.store._record_checked_rows(f.symbol,QUARTER,quarters,reviewed_keys=selected)
+            else:
+                owner.store._record_checked_rows(f.symbol,QUARTER,quarters)
             db.execute('CREATE TABLE IF NOT EXISTS cold_prefix_lineage (symbol TEXT PRIMARY KEY, '
                        'origin INTEGER NOT NULL, cutoff INTEGER NOT NULL, manifest_sha TEXT NOT NULL, '
                        'source_ready INTEGER NOT NULL, owner_ready INTEGER NOT NULL)')

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank|mixed-blank|mixed-unusable) ;; *) exit 64;; esac
+case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank|mixed-blank|mixed-unusable|mixed-advanced|mixed-advanced-direct-conflict) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -286,7 +286,7 @@ reviewed_opg() {
     echo 'C11_REVIEWED_OLD_CORRECTIONS_AND_ORIGINAL_STRATEGY_PASS'
 }
 mixed() {
-    case "$1" in mixed-blank|mixed-unusable) ;; *) exit 64;; esac
+    case "$1" in mixed-blank|mixed-unusable|mixed-advanced|mixed-advanced-direct-conflict) ;; *) exit 64;; esac
     if sh "$d/native_history_scheduler/run_jct_worker_review.sh" "$image" "$out/fixture/jct"         "$out/fixture/stopped-paper-only.tgz" "$out/mixed" no "$1" >"$out/mixed.log" 2>&1; then
         if python3 -I -B - "$out/mixed.log" "${1#mixed-}" <<'PY_MIXED'
 import json
@@ -299,7 +299,11 @@ for line in Path(sys.argv[1]).read_text(errors='replace').splitlines():
     events.append(json.loads(line))
 assert len(events)==1, 'C11_MIXED_RESULT_COUNT'
 e,=events
-assert e['variant']==sys.argv[2] and e['generation']==8
+assert e['variant']==sys.argv[2]
+if e['variant'] in ('advanced','advanced-direct-conflict'):
+    assert e['generation'] in (7,8) and e['historical_requests']==0 and e['old_advanced_archived'] is True
+else:
+    assert e['generation']==8
 assert e['callback_count']==e['read_count']==1
 assert e['original_status'] in ('NO_SIGNAL','NW15_PRIMARY_SIGNAL') and e['rpd'] in ('PASS','VETO')
 print('C11_FINAL_MIXED_PACKAGED_PASS',e['variant'],e['original_status'],e['rpd'])
@@ -323,14 +327,19 @@ loc=[f'{m[1]}:{m[2]}' for l in rows if (m:=where.fullmatch(l))]
 why=[(m[1],known.findall(l)) for l in rows if (m:=error.match(l))]
 marks=[l for l in rows if stage.fullmatch(l)]
 print('### Combined original Worker replay: '+sys.argv[2])
-print('- Expected: one original decision and canonical read after a real missing minute is resolved and the same-close roster changes.')
+if sys.argv[2]=='mixed-advanced-direct-conflict':
+    print('- Expected: retain the exact differing raw historical 15m, consume its proven 1m aggregate and call the original strategy once.')
+    if any(l.startswith('C11_RETAINED_DIRECT_OVERLAP_WRITE_CONFLICT ') for l in rows):
+        print('- First confirmed failure: the immutable raw 15m write refused a conflicting projected row; older checkpoint not replaced.')
+else:
+    print('- Expected: one original decision and canonical read after a real missing minute is resolved and the same-close roster changes.')
 diag={}
 for line in rows:
     if line.startswith('C11_MIXED_DIAGNOSTICS '):
         try: diag=json.loads(line.split(' ',1)[1])
         except ValueError: pass
 safe={}
-for key in ('generation','age_ms','covers','warm_scopes','history_requests','callback_count','read_count'):
+for key in ('generation','age_ms','covers','warm_scopes','terminal_rows','history_requests','callback_count','read_count'):
     val=diag.get(key)
     if type(val) is int and 0<=val<=1000000:safe[key]=val
 for key in ('proof','slot','minute'):
@@ -392,4 +401,10 @@ cold() {
     fi
     return 1
 }
-case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; mixed-blank|mixed-unusable) mixed "$2";; *) cold "$2";; esac
+# Proof branch uses a spare existing workflow matrix entry; no permissions
+# to change workflow definitions are needed to run the independent CI.
+if [ "${GITHUB_HEAD_REF:-}" = c11/retained-direct-conflict ] && [ "$2" = mixed-unusable ]; then
+    mixed mixed-advanced-direct-conflict
+    exit
+fi
+case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; mixed-blank|mixed-unusable|mixed-advanced|mixed-advanced-direct-conflict) mixed "$2";; *) cold "$2";; esac

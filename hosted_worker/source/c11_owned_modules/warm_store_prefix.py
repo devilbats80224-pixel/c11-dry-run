@@ -18,7 +18,9 @@ def warm_prefix(store,symbol,start,end,as_of):
     if first_q<0:return None
     def read(width,first):
         if first==anchor:return ()
-        rows=store.range(symbol,width,first,anchor,as_of)
+        selected=getattr(store,'strategy_quarters',None)
+        rows=(selected(symbol,first,anchor,as_of,terminal_end=end)
+              if width==QUARTER and callable(selected) else store.range(symbol,width,first,anchor,as_of))
         if (type(rows) is not tuple or
                 tuple(r.open_ms for r in rows)!=tuple(range(first,anchor,width)) or
                 not all(type(r) is ClosedBar and r.valid(width) and r.received_ms<=as_of for r in rows)):
