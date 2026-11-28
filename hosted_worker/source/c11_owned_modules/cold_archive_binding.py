@@ -20,6 +20,7 @@ class ColdSourceAdmission:
         self.recent_minute_bootstrap=recent_minute_bootstrap
         self.reviewed=ColdPrefixAdmission(
             {s:v for s,v in reviewed.items() if not v.download_only},wall,prewarm_idle=True)
+        self.exact_sources=frozenset(reviewed)
         remote={s:v for s,v in reviewed.items() if v.download_only}
         self.reviewed_remote=frozenset(remote)
         archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall,reviewed_remote=remote,
@@ -40,6 +41,11 @@ class ColdSourceAdmission:
     def offer_retained(self,owner,fact,*,prior=None):
         if fact.symbol not in self.reviewed.sources:
             return self.public.offer_retained(owner,fact,prior=prior)
+        return None
+
+    def offer_advanced_retained(self,owner,fact):
+        if fact.symbol not in self.exact_sources:
+            return self.public.offer_advanced_retained(owner,fact)
         return None
 
     def offer_existing(self,owner,fact):

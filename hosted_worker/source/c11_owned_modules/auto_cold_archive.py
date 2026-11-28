@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 from zipfile import BadZipFile
 
 from cold_prefix import (ArchiveRecurrence, ColdPrefixAdmission, ClosedPrefixSource, PreparedPrefix,
-                         QUARTER, archive_item, unusable_retained_prior, verify_archive_blob)
+                         QUARTER, advanced_retained_gap, archive_item, unusable_retained_prior, verify_archive_blob)
 from primary_only_route import NW_WARM
 from stale_state_install import snapshot
 from rpd_checkpoint import RpdState
@@ -523,7 +523,7 @@ class AutoColdAdmission(ColdPrefixAdmission):
         slot.fact,slot.seen_ms=f,now
         return slot.status
 
-    def offer_retained(self,owner,f,*,prior=None):
+    def offer_retained(self,owner,f,*,prior=None,advanced=False):
         from atr_er_state import REQUIRED_QUARTERS
         from causal_bars import MINUTE
         now=self.wall()
@@ -539,17 +539,22 @@ class AutoColdAdmission(ColdPrefixAdmission):
             return None
         owner.check_store()
         store=owner.store
+        cutoff=f.boundary-QUARTER
+        origin=max(f.origin,cutoff-REQUIRED_QUARTERS*QUARTER)
         if prior is not None:
-            if snapshot(store.db,f.symbol)!=prior or not unusable_retained_prior(store.db,prior,f,now):
+            if snapshot(store.db,f.symbol)!=prior:
+                return None
+            if advanced:
+                if advanced_retained_gap(store.db,prior,f,now,origin) is None:
+                    return None
+            elif not unusable_retained_prior(store.db,prior,f,now):
                 return None
         elif (store.segment(f.symbol) is not None or store.db.execute(
                 'SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()):
             return None
-        cutoff=f.boundary-QUARTER
         # A blank strategy has no lifetime recurrence to resume. Derive a
         # new, explicitly labeled segment from the needed contiguous local
         # minutes. A recent listing still uses its original verified start.
-        origin=max(f.origin,cutoff-REQUIRED_QUARTERS*QUARTER)
         if prior is not None and origin==f.origin:
             return None
         rows=store.range(f.symbol,MINUTE,origin,cutoff,now)
@@ -566,6 +571,12 @@ class AutoColdAdmission(ColdPrefixAdmission):
         slot.status='AUTO_RETAINED_MINUTES_QUEUED'
         return slot.status
 
+    def offer_advanced_retained(self,owner,f):
+        if get_ident()!=self.thread or f.symbol=='OPGUSDT' or not owner.tap.current(f):
+            return None
+        owner.check_store()
+        return self.offer_retained(owner,f,prior=snapshot(owner.store.db,f.symbol),advanced=True)
+
     def offer_existing(self,owner,f):
         # Automatic archive derivation is a candidate data job; replacing
         # existing state still uses the original exact prior snapshot.
@@ -577,7 +588,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
             old=snapshot(owner.store.db,f.symbol)
             if old.segment is None or old.segment[0]!=f.origin:
                 return 'AUTO_REPAIR_ORIGIN_MISMATCH'
-            retained=self.offer_retained(owner,f,prior=old)
+            retained=(self.offer_retained(owner,f,prior=old)
+                      or self.offer_retained(owner,f,prior=old,advanced=True))
             if retained is not None:
                 return retained
             if old.checkpoint is not None:
