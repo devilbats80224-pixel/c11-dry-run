@@ -12,11 +12,13 @@ for line in Path(sys.argv[1]).read_text().splitlines():
         event = json.loads(line)
     except ValueError:
         continue
-    if event.get("schema") == "c11-entry-verdict-v1" and event.get("symbol") == "STBLUSDT":
+    if (event.get("schema") == "c11-entry-verdict-v1" and event.get("symbol") == "STBLUSDT"
+            and event.get("phase") == "primary"):
         rows.append(event)
-keys = {(row["symbol"], row["end_ms"], row["phase"]) for row in rows}
+keys = {(row["symbol"], row["end_ms"], row["observed_ms"]) for row in rows}
 if (not rows or len(keys) != len(rows)
-        or not any(r["phase"] == "primary" and r["reason"] in {
+        or not all(r["observed_ms"] >= r["end_ms"] and r["route"] == "c11_primary" for r in rows)
+        or not any(r["reason"] in {
             "NO_PRIMARY_SIGNAL", "RPD5_NOT_LONG_NONNEGATIVE", "CLOSED5_REJECTED_BREAK",
             "PRIMARY_SIGNAL_ONLY", "NATIVE_INPUT_UNAVAILABLE", "NATIVE_FRAME_END_MISMATCH",
         } for r in rows)):

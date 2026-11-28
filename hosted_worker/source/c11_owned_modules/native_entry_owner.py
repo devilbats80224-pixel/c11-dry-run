@@ -1,6 +1,7 @@
 """Build-only entry boundary. Requires genuine original scheduler owner contract."""
 from threading import get_ident
 from analyzed_frame import exact_analyzed_ohlcv
+from entry_verdict_receipt import ACTIVE, publish
 
 PROVISIONAL=frozenset(('HOLD_NO_OWNED_SCOPE','HOLD_NOT_READY','HOLD_NO_UNUSED_RECONFIRM_CHAIN',
     'HOLD_NATIVE_MINUTE_NOT_COMMITTED','HOLD_UNPROVEN_ANALYZED_FRAME',
@@ -173,18 +174,23 @@ class NativeEntryOwner:
         # It must route to stable original owner receipts, not send/fetch here.
         invoked=False
         original_output=None
+        verdict=[None]
         def native_callback():
             nonlocal invoked,original_output
             if invoked:raise RuntimeError('NATIVE_PRIMARY_CALLBACK_ALREADY_INVOKED')
             invoked=True
-            original_output=original(dataframe,metadata)
-            return original_output
+            token=ACTIVE.set(verdict)
+            try:
+                original_output=original(dataframe,metadata)
+                return original_output
+            finally:ACTIVE.reset(token)
         status,result=self.trusted_owner_input(pair,end,lambda:exact_analyzed_ohlcv(dataframe),native_callback)
         self.record(pair,status)
         if type(pair) is str and callable(self.provisional):self._record_provisional(pair,end,status)
         if invoked:
             if status!='ORIGINAL_NATIVE_CALLBACK' or result is not original_output:
                 raise RuntimeError('NATIVE_PRIMARY_RESULT_OWNERSHIP')
+            publish(pair,end,'primary',verdict[0] or 'NATIVE_UNRECORDED_PRIMARY')
             return original_output
         if status=='ORIGINAL_NATIVE_CALLBACK':raise RuntimeError('NATIVE_PRIMARY_CALLBACK_SKIPPED')
         if self.fallback_frame is not None:

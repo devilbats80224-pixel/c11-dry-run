@@ -445,11 +445,23 @@ class CausalBars:
                 not end<=as_of<deadline<=end+QUARTER or primary is None or state is None):
             return None
         candles,minutes,signal=primary if primary is not None else self.recent_primary(symbol,end,as_of)
+        from entry_verdict_receipt import mark_primary
         if signal is None or signal.status!='NW15_PRIMARY_SIGNAL' or not minutes or state is None:
+            if signal is not None and signal.status=='NO_SIGNAL':
+                mark_primary('NO_PRIMARY_SIGNAL')
+            elif signal is None:
+                mark_primary('NATIVE_PRIMARY_CALC_UNAVAILABLE')
+            elif signal.status=='UNKNOWN':
+                mark_primary(signal.reason)
+            elif not minutes:
+                mark_primary('MINUTE_SERIES_INCOMPLETE')
+            else:
+                mark_primary('RPD5_SAME_E_UNKNOWN')
             return None
         scope=Scope(symbol,end)
         status,_=join(scope,as_of,[state])
         if status!='PASS':
+            mark_primary('RPD5_NOT_LONG_NONNEGATIVE' if status=='VETO' else 'NATIVE_RPD_COMMIT_NOT_PROVEN')
             return None
         return dict(scope=scope,candle_symbol=symbol,valid_until_ms=deadline,candles15=candles,
                     minutes=tuple(MinuteInput(symbol,row.received_ms,ClosedMinute(
