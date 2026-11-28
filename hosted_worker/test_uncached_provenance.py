@@ -197,7 +197,9 @@ def missing_month_finds_daily_without_a_catalogue(month_has_gap=False):
             return Receipt(bad_month,now)
         if url==daily+'.CHECKSUM':
             return Receipt(f'{sha256(body).hexdigest()}  {name}'.encode(),now)
-        assert url==daily and len(body)<=maximum
+        assert url==daily
+        if len(body)>maximum:
+            raise Hold('AUTO_ARCHIVE_BUDGET')
         return Receipt(body,now)
     archive=AutomaticArchive(Ns(get=fetch),lambda:now)
     try:
@@ -209,6 +211,15 @@ def missing_month_finds_daily_without_a_catalogue(month_has_gap=False):
     assert len(prefix.quarters)==96 and set(width for width,_ in prefix.atr)=={FIVE,QUARTER}
     expected=[monthly+'.CHECKSUM']+([monthly] if month_has_gap else [])+[daily+'.CHECKSUM',daily]
     assert calls==expected
+    if month_has_gap:
+        calls.clear()
+        limited=AutomaticArchive(Ns(get=fetch),lambda:now,max_bytes=max(len(body),len(bad_month))+1)
+        try:
+            limited.prepare(fact,Event())
+        except Hold as exc:
+            assert exc.status=='AUTO_ARCHIVE_BUDGET'
+        else:
+            raise AssertionError('C11_MONTH_GAP_FALLBACK_RESET_DOWNLOAD_BUDGET')
     with patch('auto_cold_archive.MAX_FILES',0):
         limited=ArchiveProgress(archive,symbol,origin,cutoff,0,((name,monthly,cutoff),))
         try:

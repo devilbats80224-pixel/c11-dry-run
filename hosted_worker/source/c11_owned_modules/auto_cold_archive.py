@@ -232,6 +232,7 @@ class ArchiveProgress:
         self.parts,self.reviewed,self.discovered=parts,reviewed,discovered
         self.recurrence=ArchiveRecurrence(symbol,origin,grid_shift)
         self.ledger=[]
+        self.rejected_file_bytes=0
         self.max_received=0
 
     def require_current_review(self):
@@ -293,7 +294,7 @@ class ArchiveProgress:
     def resume(self,event):
         cancel=JobLimit(event)
         self.require_current_review()
-        budget=self.archive.max_bytes-sum(item['bytes'] for item in self.ledger)
+        budget=self.archive.max_bytes-self.rejected_file_bytes-sum(item['bytes'] for item in self.ledger)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
             if len(self.ledger)==len(self.parts):
@@ -344,6 +345,7 @@ class ArchiveProgress:
                     # Retry the same interval with independently verified
                     # daily evidence; never publish a partial monthly parse.
                     if self.substitute_closed_days(name,closed_at):
+                        self.rejected_file_bytes+=item['bytes']
                         return self
                     if exc.args==('COLD_ARCHIVE_ORIGIN_GAP',):
                         raise Hold('AUTO_ARCHIVE_ORIGIN_GAP') from exc
