@@ -69,7 +69,7 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
             owner.primary_admission=N(tick=lambda *_,**__:None,pending=N(
                 busy=lambda key:key==symbol,
                 inflight_ranges=lambda key:(slot,) if key==symbol else ()))
-            owner.minute_headroom=lambda:True
+            owner.minute_headroom=lambda:not loop.pending.busy(symbol)
             owner.minute_admission=loop
             owner.cold_delivery_window=owner.phase_allows=lambda:False
             owner._after_protection=lambda _:None
@@ -87,7 +87,7 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
             cutoff=T-Q  # the live original Worker owns the terminal close
             expected_pages=((gap_quarters-1)*Q+PAGE-1)//PAGE
             for _ in range(2*expected_pages+2):
-                loop.tick([fact])
+                loop.tick([fact],has_headroom=lambda:not loop.pending.busy(symbol))
                 payload,=store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
                 if RpdState.restore(payload).next_open==cutoff:
                     break
@@ -99,14 +99,14 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
             assert not store.range(symbol,M,cutoff,T,wall)
             print('C11_RESTART_EXACT_RETAINED_CURSOR_TO_TERMINAL_HANDOFF',gap_quarters,expected_pages)
         else:
-            loop.tick([fact])
-            loop.tick([fact])
+            loop.tick([fact],has_headroom=lambda:not loop.pending.busy(symbol))
+            loop.tick([fact],has_headroom=lambda:not loop.pending.busy(symbol))
             assert calls == [(first,first+PAGE),(first+PAGE,first+2*PAGE)]
             assert len(store.range(symbol,M,first,first+PAGE,wall)) == 495
             payload, = store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
             assert RpdState.restore(payload).next_open == first + PAGE
             roster.clear()
-            loop.tick([fact])
+            loop.tick([fact],has_headroom=lambda:not loop.pending.busy(symbol))
             assert not store.range(symbol,M,first+PAGE,first+2*PAGE,wall)
     finally:
         loop.close()

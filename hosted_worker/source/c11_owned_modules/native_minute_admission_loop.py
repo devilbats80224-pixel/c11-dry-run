@@ -1,9 +1,10 @@
 """Data-only work for current candidates, driven by original worker cycles."""
+from collections import deque
 from secrets import token_hex
 from threading import get_ident
-from admission_minute_job import make_job,MAX_ANALYZER_QUARTERS,repairable_checkpoint
+from admission_minute_job import iter_jobs,MAX_ANALYZER_QUARTERS,repairable_checkpoint
 from cold_minute_commit import commit
-from native_cold_minute_page import Q
+from native_cold_minute_page import F,M,Q
 from parallel_history_pages import PendingHistoryPages
 from rpd_checkpoint import RpdState
 from bridge_protocol import Refused
@@ -12,7 +13,7 @@ class MinuteAdmissionLoop:
     def __init__(self,owner,make_forwarder):
         self.owner=owner
         self.thread=get_ident()
-        self.pending=PendingHistoryPages(make_forwarder,self.authority)
+        self.pending=PendingHistoryPages(make_forwarder,self.authority,parallel_ranges=True)
         self.reason={}
         self._cursor=None
 
@@ -72,9 +73,10 @@ class MinuteAdmissionLoop:
         o=self.owner; o.check_store()
         ordered=sorted(facts,key=lambda f:(self._cursor is not None and f.symbol<=self._cursor,f.symbol))
         self.reason={}
+        ready=deque()
         for f in ordered:
             if not self.phase():return
-            if self.pending.busy(f.symbol) or skip(f.symbol) or not o.tap.current(f):continue
+            if skip(f.symbol) or not o.tap.current(f):continue
             if not has_headroom():return
             try:
                 cursor=o.store.segment(f.symbol)
@@ -108,19 +110,37 @@ class MinuteAdmissionLoop:
                 rows=o.store.db.execute('SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? AND open_ms<? AND received_ms<=?',(f.symbol,Q,floor,cutoff,now))
                 have={r[0] for r in rows}
                 missing=[t for t in range(floor,cutoff,Q) if t>=cursor.open_ms and t not in have]
-                j=make_job(f,rpd.next_open,missing,now,token_hex(16))
-                if j is None:
-                    self.reason[f.symbol]='ALREADY_CURRENT_OR_NO_RECENT_VERIFIED_START'
-                    continue
-                if any(j.start<stop and start<j.stop for start,stop in occupied_ranges(f.symbol)):
-                    self.reason[f.symbol]='OVERLAPPING_SHARED_MINUTE_PAGE'
-                    continue
-                if self.pending.offer(j,f):
-                    self.reason[f.symbol]='SCHEDULED_NATIVE_MINUTES'
-                    self._cursor=f.symbol
-                else:self.reason[f.symbol]='NATIVE_BUDGET_OR_AUTHORITY_HELD'
+                blocked=(*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol))
+                planned=iter_jobs(f,rpd.next_open,missing,now,blocked,lambda:token_hex(16))
+                ready.append((f,planned))
             except (Refused,ValueError):
                 self.reason[f.symbol]='NATIVE_PREPARATION_REFUSED'
+        # One round per candidate, then cycle again while the same shared
+        # authority, live budget and host headroom actually permit new work.
+        while ready and self.phase() and has_headroom():
+            f,planned=ready.popleft()
+            if skip(f.symbol) or not o.tap.current(f):continue
+            j=next(planned,None)
+            if j is None:continue
+            at=o.run.wall()
+            if self._already_stored(j,at):
+                self.reason[f.symbol]='VERIFIED_LOCAL_INTERVAL_REUSED'
+                if self.authority(j,f):
+                    o.store.rpd_progress(j.symbol,j.end-Q,at,authority=lambda:self.authority(j,f))
+                ready.append((f,planned))
+                continue
+            if self.pending.offer(j,f):
+                self.reason[f.symbol]='SCHEDULED_NATIVE_MINUTES'
+                self._cursor=f.symbol
+                ready.append((f,planned))
+            else:self.reason[f.symbol]='NATIVE_BUDGET_OR_AUTHORITY_HELD'
+
+    def _already_stored(self,j,as_of):
+        db=self.owner.store.db
+        return all(db.execute('SELECT COUNT(*) FROM candle WHERE symbol=? AND width=? '
+                              'AND open_ms>=? AND open_ms<? AND received_ms<=?',
+                              (j.symbol,w,j.start,j.stop,as_of)).fetchone()[0]==(j.stop-j.start)//w
+                   for w in (M,F,Q))
 
     def complete(self,j,f,data):
         o=self.owner; due=lambda:self.authority(j,f)
@@ -129,7 +149,7 @@ class MinuteAdmissionLoop:
         try:
             o.check_store()
             commit(o.store,j.symbol,j.origin,j.start,j.stop,rows,sent,received,due)
-            if due():o.store.rpd_progress(j.symbol,j.stop,o.run.wall(),authority=due)
+            if due():o.store.rpd_progress(j.symbol,j.end-Q,o.run.wall(),authority=due)
             # The original worker consumes the updated read model through its
             # normal admission on the next local cycle, never a fabricated signal.
         except (Refused,ValueError):
