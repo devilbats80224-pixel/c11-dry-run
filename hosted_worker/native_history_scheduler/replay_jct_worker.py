@@ -481,8 +481,8 @@ else:
                     h.store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',
                         (SYMBOL,RpdState.start(old).pack()))
             # Seed only proven raw rows. No derived state, votes or readiness.
-            # The stale-state replay tests a complete raw interval; #29's mixed
-            # blank variant must actually request its one-minute history hole.
+            # Both variants have the same real one-minute history hole.
+            # Each must acquire it before its respective initial-state path.
             h.store.record(SYMBOL,M,tuple(mixed_rows[t].closed() for t in range(mixed_start,mixed_cutoff,M)
                 if t!=mixed_hole))
         if REVIEWED_PARTIAL or AUTO_STALE:
@@ -606,6 +606,17 @@ else:
                     return Receipt(raw,row.get('checksum_ms',row['actual_received_ms'])
                                    if sidecar else row['actual_received_ms'])
             runtime=json.loads(Path('/opt/c11_owned_modules/release_stage_runtime.json').read_bytes())
+            raw_mode='unseeded_recent_minute_bootstrap'
+            if MIXED:
+                # Modern proof uses the exact policy sealed into the shipped
+                # artifact. The fixture cannot promote a disabled release mode.
+                assert runtime.get(raw_mode)=='BINANCE_SHARED_RECENT_1M_V1', 'C11_MIXED_POLICY_NOT_SEALED'
+            elif EARLY_ROSTER or ON_DEMAND or ARCHIVE_OUTAGE or NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
+                # Keep the established explicit archive and outage controls
+                # on their original source mode while separate mixed cases
+                # exercise the sealed modern source route. Do not weaken
+                # their original pinned acquisition or strategy assertions.
+                runtime.pop(raw_mode,None)
             if NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
                 # Remove only the hosted comparator's archive-origin option.
                 # The identical market cassette and original Worker stay in place.
