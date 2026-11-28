@@ -93,9 +93,13 @@ def ready_decision_does_not_inherit_the_same_generation_wire_cap():
     bot=SimpleNamespace(feed=SimpleNamespace(latest_owner_observation=(row,)),
                         observed_ranked=lambda r:r is row)
     plan=OriginalPlan(SimpleNamespace(freqtrade=bot),lambda:now[0],lambda:now[0]*1_000_000,
-                      lambda *args:END)
+                      lambda *args:END-6*FIVE)
     first=plan.provisional_scope(PAIR,END)
     assert first is not None and first.expires==END+60_000
+    offered=plan(bot)
+    assert offered and offered[:2]==(7,END) and len(offered[2])==3
+    native_task=offered[2][0][0]
+    assert plan.transport_still_due(native_task,now[0])
     now[0]=END+68_000
     plan.verified_readiness_at=lambda candidate,e,at: END+68_000 if (
         candidate is row and e==END and at>=END+68_000) else None
@@ -103,6 +107,7 @@ def ready_decision_does_not_inherit_the_same_generation_wire_cap():
     assert current is not None, "C11_FRESH_SAME_GENERATION_REUSES_EXPIRED_WIRE_CAP"
     assert current.generation==first.generation and current.expires==END+110_000
     assert plan.current(current,now[0]) and not plan.current(first,now[0])
+    assert not plan.transport_still_due(native_task,now[0])
     assert plan(bot)==(7,END,()), "C11_FRESH_READY_REOPENED_WIRE"
     assert plan.provisional_scope(PAIR,END)==current
     print("C11_READY_SCOPE_SEPARATES_SAME_GENERATION_WIRE_CAP")
