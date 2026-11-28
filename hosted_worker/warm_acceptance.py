@@ -610,9 +610,18 @@ def main(outer):
             if first.pair==PAIR and clock[0]==E+7000:
                 assert binding.prepared is not None and binding.prepared[0] is first
                 delayed_frames.append(first)
-                # Simulate a durable frame not yet ready; leave all actual
-                # same-scope checks and normal analysis unchanged next cycle.
-                return ()
+                # Use the actual disposable native ledger and the exact
+                # warm persist path. A second connection denies the write;
+                # release it before the original owner's next cycle.
+                with sqlite3.connect('/c11-paper/causal-candles.sqlite',timeout=0) as blocker:
+                    blocker.execute('BEGIN IMMEDIATE')
+                    try:
+                        result=exact_frame(binding,first)
+                        assert result==(), 'C11_LOCK_TEST_UNEXPECTEDLY_PERSISTED'
+                    finally:
+                        blocker.rollback()
+                print('C11_MIXED_WARM_REAL_SQLITE_WRITE_HELD',flush=True)
+                return result
             return exact_frame(binding,first)
         for i in range(3):
           clock[0]=E+2000+5000*i

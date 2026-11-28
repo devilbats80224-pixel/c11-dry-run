@@ -206,6 +206,7 @@ warm() {
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
     if [ "$mixed_history_pressure" = yes ]; then
       grep -Fx C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY "$out/warm-runtime.log"
+      grep -Fx C11_MIXED_WARM_REAL_SQLITE_WRITE_HELD "$out/warm-runtime.log"
       grep -Fx C11_COMBINED_HISTORY_PRESSURE_AND_SAME_CLOSE_REVISIT_PASS "$out/warm-runtime.log"
     fi
     if [ "$divergent_fallback" = yes ]; then
