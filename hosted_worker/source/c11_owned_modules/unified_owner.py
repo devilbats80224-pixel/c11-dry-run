@@ -61,6 +61,18 @@ class UnifiedScheduler:
     def explain_public_revisit(self,proof,label):
         if type(proof) is Scope:self._transition(proof,label)
 
+    def observe_original_analysis(self,pair,frame_end,label):
+        # Diagnostic-only: inspect the already-owned candidate, no source
+        # recheck, creation of a new scope, shortened clock or I/O.
+        self._owner()
+        if self.first_gate is None or self.marker is None:return
+        s=next((s for s in self.covers.values() if s.pair==pair and
+                self.marker==(s.generation,s.end)),None)
+        if s is None:return
+        if type(frame_end) is int and frame_end!=s.end:
+            label='ANALYSIS_RAW_FRAME_OLDER' if frame_end<s.end else 'ANALYSIS_RAW_FRAME_AHEAD'
+        self.first_gate.note(s.generation,s.symbol,'analysis_flow',label,self.wall())
+
     def _retired_diagnostic(self,ticket):
         if self.diagnostic is None:return
         real=self.queue.limiter.charged_for_diagnostic(ticket)

@@ -9,7 +9,7 @@ class FirstGate:
     if type(g)is not int or not PATTERN.fullmatch(s):return
     end=w//Q*Q
     if self.end!=end or not end<=w<end+TTL or self.owner!=get_ident():return
-    row=self.rows.setdefault((g,s),dict(first=None,wire=set(),valid=set(),decision=0,expires=expiry,transitions={},atomic_refusals={},atomic_phases={},normalization_refusals={},owner_receipt_clocks={},reconfirm_progress={}))
+    row=self.rows.setdefault((g,s),dict(first=None,wire=set(),valid=set(),decision=0,expires=expiry,transitions={},atomic_refusals={},atomic_phases={},normalization_refusals={},owner_receipt_clocks={},reconfirm_progress={},analysis_flow={}))
     row['expires']=min(row['expires'],expiry)
     if seed in SEED_HOLD:self.note(g,s,'gate',SEED_HOLD[seed])
  def start(self,w):

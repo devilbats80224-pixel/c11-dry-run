@@ -44,6 +44,7 @@ class OwnedWrapper:
             provisional=getattr(self.scheduler,'provisional_scope',None),
             revisit_ready=getattr(self.scheduler,'revisit_ready',None),
             revisit_diagnostic=getattr(self.scheduler,'explain_public_revisit',None),
+            analysis_diagnostic=getattr(self.scheduler,'observe_original_analysis',None),
             revisit_frame=self.scheduler.original_revisit_frame if enabled else None,
             revisit_frame_current=self.scheduler.revisit_frame_current if enabled else None,
             discard_revisit_frame=self.scheduler.discard_revisit_frame if enabled else None,

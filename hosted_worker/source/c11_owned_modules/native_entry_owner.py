@@ -53,13 +53,14 @@ class NativeEntryAdviceMixin:
         return lane.advise(self,original,dataframe,metadata)
 
 class NativeEntryOwner:
-    def __init__(self, *, trusted_owner_input, record, provisional=None, revisit_ready=None,revisit_diagnostic=None,revisit_frame=None,revisit_frame_current=None,discard_revisit_frame=None,requires_staged_revisit_frame=None):
+    def __init__(self, *, trusted_owner_input, record, provisional=None, revisit_ready=None,revisit_diagnostic=None,revisit_frame=None,revisit_frame_current=None,discard_revisit_frame=None,requires_staged_revisit_frame=None,analysis_diagnostic=None):
         self.thread=get_ident()
         self.trusted_owner_input=trusted_owner_input
         self.record=record
         self.provisional=provisional
         self.revisit_ready=revisit_ready
         self.revisit_diagnostic=revisit_diagnostic
+        self.analysis_diagnostic=analysis_diagnostic
         self.revisit_frame=revisit_frame
         self.revisit_frame_current=revisit_frame_current
         self.staged_frame=None
@@ -69,6 +70,11 @@ class NativeEntryOwner:
         self.holds={}
         self.spent=set()
 
+    def _analysis_trace(self,pair,end,label):
+        if self.analysis_diagnostic is None:return
+        try:self.analysis_diagnostic(pair,end,label)
+        except Exception:pass # Diagnostic failure cannot change strategy execution.
+
     def remember_missing_analysis(self,strategy,pair):
         # Missing or older analysis cannot stand in for the validated raw
         # frame of this same close. This only keeps the original revisit
@@ -77,18 +83,26 @@ class NativeEntryOwner:
                 or not callable(self.provisional) or strategy.timeframe!='15m'
                 or strategy.config.get('dry_run') is not True):
             return
+        end=None
         try:
             frame=strategy.dp.ohlcv(pair,strategy.timeframe,copy=False,candle_type=strategy.config['candle_type_def'])
             end=exact_frame_end(frame)
             old_hold=self.holds.get(pair)
-            if (old_hold is not None and old_hold.end>=end) or (pair,end) in self.spent:
+            if old_hold is not None and old_hold.end>=end:
+                self._analysis_trace(pair,end,'ANALYSIS_PROOF_HELD')
+                return
+            if (pair,end) in self.spent:
+                self._analysis_trace(pair,end,'ANALYSIS_ALREADY_CONSUMED')
                 return
             cached=strategy.dp.get_analyzed_dataframe(pair,strategy.timeframe)[0]
             if not cached.empty and exact_frame_end(cached)>=end:
+                self._analysis_trace(pair,end,'ANALYSIS_ALREADY_CACHED')
                 return
         except (KeyError,AttributeError,ValueError,TypeError,IndexError):
+            self._analysis_trace(pair,end,'ANALYSIS_FRAME_UNAVAILABLE')
             return
         self._record_provisional(pair,end,'HOLD_UNPROVEN_ANALYZED_FRAME')
+        self._analysis_trace(pair,end,'ANALYSIS_PROVISIONAL_RECORDED' if pair in self.holds else 'ANALYSIS_PROVISIONAL_UNAVAILABLE')
 
     def one_public_revisit(self,strategy,pair):
         if (get_ident()!=self.thread or type(pair) is not str or not callable(self.revisit_ready)
@@ -188,8 +202,10 @@ class NativeEntryOwner:
                 original_output=original(dataframe,metadata)
                 return original_output
             finally:ACTIVE.reset(token)
+        self._analysis_trace(pair,end,'ANALYSIS_ADVICE_ENTERED')
         status,result=self.trusted_owner_input(pair,end,lambda:exact_analyzed_ohlcv(dataframe),native_callback)
         self.record(pair,status)
+        self._analysis_trace(pair,end,status)
         if type(pair) is str and callable(self.provisional):self._record_provisional(pair,end,status)
         if invoked:
             if status!='ORIGINAL_NATIVE_CALLBACK' or result is not original_output:
