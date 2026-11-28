@@ -1,6 +1,6 @@
 """Data-only 1m jobs for a current candidate, not entry authorization."""
 from dataclasses import dataclass
-from native_cold_minute_page import PAGE,Q,M,resolve_range
+from native_cold_minute_page import PAGE,Q,M,resolve_range,missing_intervals
 import re
 
 MAX_ANALYZER_QUARTERS=260
@@ -41,3 +41,12 @@ def make_job(fact,verified_cursor,analysis_gaps,now,ticket):
     if page is None:return None
     j=MinuteHistoryJob(fact.symbol,fact.generation,fact.boundary,fact.origin,ticket,page.start,page.stop)
     return j if j.valid(now) else None
+
+def iter_jobs(fact,verified_cursor,analysis_gaps,now,blocked,next_ticket):
+    if not repairable_checkpoint(fact,verified_cursor):
+        return
+    for page in missing_intervals(fact.boundary,verified_cursor,analysis_gaps,blocked):
+        j=MinuteHistoryJob(fact.symbol,fact.generation,fact.boundary,fact.origin,
+                           next_ticket(),page.start,page.stop)
+        if j.valid(now):
+            yield j

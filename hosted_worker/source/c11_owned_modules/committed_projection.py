@@ -66,12 +66,13 @@ class AuthoritativePrimaryCommit:
 
 class CommittedProjection:
  """Owner callback keeps seals keyed by exact same-window transaction and its native store; no imported receipt."""
- def __init__(self,*,wall,native_owner_lookup,current_authority,trusted_rpd_pin):
+ def __init__(self,*,wall,native_owner_lookup,current_authority,trusted_rpd_pin,verified_ready_at=None):
   self._owner=get_ident()
   self.wall=wall
   self.lookup=native_owner_lookup
   self.current=current_authority
   self.rpd_pin=trusted_rpd_pin
+  self.verified_ready_at=verified_ready_at
   self._projected=None
 
  def project(self,receipt,candidate,frame,primary,rpd_state):
@@ -113,6 +114,21 @@ class CommittedProjection:
   return (event is minted and (candidate.pair,candidate.symbol,candidate.generation)==k[:3] and
           self._valid(r,k,candidate,now) and r.rpd_source_sha256==self.rpd_pin(candidate,r.end_ms,now))
 
+ def readiness_for(self,candidate,event,now):
+  if not self.still_native(candidate,event,now):
+   return None
+  _,receipt,_=self._projected
+  return self._ready_clock(candidate,receipt,now)
+
+ def _ready_clock(self,candidate,receipt,now):
+  ready_at=self.verified_ready_at(candidate,receipt,now) if callable(self.verified_ready_at) else None
+  return ready_at if type(ready_at) is int and receipt.last_receipt_ms<=ready_at<=receipt.owner_committed_ms else None
+
  def _valid(self,r,key,candidate,now):
-  return (r.end_ms<=r.last_receipt_ms<=r.owner_committed_ms<=now<r.expires_ms<=r.end_ms+MINUTE and
-          self.lookup(*key) is r and self.current(candidate,r,now) is True)
+  if not (r.end_ms<=r.last_receipt_ms<=r.owner_committed_ms<=now<r.expires_ms and
+          self.lookup(*key) is r and self.current(candidate,r,now) is True):
+   return False
+  if r.expires_ms<=r.end_ms+MINUTE:
+   return True
+  ready_at=self._ready_clock(candidate,r,now)
+  return ready_at is not None and r.expires_ms<=min(ready_at+MINUTE,r.end_ms+QUARTER)

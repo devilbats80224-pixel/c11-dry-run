@@ -38,3 +38,43 @@ def commit(store,symbol,origin,start,stop,rows,sent,received,authority):
             if width!=MINUTE:written.append(db.total_changes-before)
         if authority() is not True:raise ValueError('C11_CLOSED_MINUTE_PAGE_EXPIRED')
     return tuple(written)
+
+
+def restore_retained_derivatives(store,symbol,origin,start,stop,as_of,authority):
+    """Derive absent wider bars without retransmitting available base bars."""
+    from closed_minute_basis import project_closed_minutes
+    minutes=store.range(symbol,MINUTE,start,stop,as_of)
+    if not minutes:
+        return False
+    if authority() is not True or store.db.in_transaction:
+        raise ValueError('C11_RETAINED_MINUTE_PAGE_SCOPE')
+    proof=store.segment(symbol)
+    if proof is None or proof.open_ms!=origin or proof.proven_at_ms>as_of:
+        raise ValueError('C11_RETAINED_MINUTE_PAGE_SCOPE')
+    class SavedMinutes:
+        def range(self,key,width,left,right,observed):
+            if (key,width,left,right,observed)==(symbol,MINUTE,start,stop,as_of):
+                return minutes
+            return ()
+    db=store.db
+    missing={}
+    for width in (FIVE,QUARTER):
+        have={row[0] for row in db.execute(
+            'SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? AND open_ms<? AND received_ms<=?',
+            (symbol,width,start,stop,as_of))}
+        if len(have)==(stop-start)//width:
+            continue
+        bars=project_closed_minutes(SavedMinutes(),symbol,width,start,stop,as_of)
+        if not bars:
+            raise ValueError('C11_RETAINED_MINUTE_PAGE_INVALID')
+        missing[width]=tuple(b for b in bars if b.open_ms not in have)
+    if missing:
+        with db:
+            db.execute('BEGIN IMMEDIATE')
+            if authority() is not True:
+                raise ValueError('C11_RETAINED_MINUTE_PAGE_EXPIRED')
+            for width,bars in missing.items():
+                store._record_checked_rows(symbol,width,bars)
+            if authority() is not True:
+                raise ValueError('C11_RETAINED_MINUTE_PAGE_EXPIRED')
+    return True

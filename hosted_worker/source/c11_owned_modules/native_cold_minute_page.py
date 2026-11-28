@@ -33,3 +33,21 @@ def resolve_range(end,verified_cursor,analysis_gaps):
     if not 0<start<cutoff:
         return None
     return MinuteRange(start,min(cutoff,start+PAGE))
+
+
+def missing_intervals(end,verified_cursor,analysis_gaps,blocked):
+    # Logical coverage is time-based. Split the actual uncovered stretches
+    # only at the transport page size, without a fixed request count.
+    initial=resolve_range(end,verified_cursor,analysis_gaps)
+    if initial is None:
+        return
+    left,cutoff=initial.start,end-Q
+    intervals=sorted((max(left,a),min(cutoff,b)) for a,b in blocked
+                     if type(a) is type(b) is int and a%Q==b%Q==0
+                     and left<b and a<cutoff and a<b)
+    for a,b in (*intervals,(cutoff,cutoff)):
+        while left<a:
+            stop=min(a,left+PAGE)
+            yield MinuteRange(left,stop)
+            left=stop
+        left=max(left,b)

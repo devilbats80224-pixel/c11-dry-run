@@ -202,6 +202,13 @@ sites=[m[1] for row in rows if (m:=frame.fullmatch(row))]
 errors=[(m[1],sorted(set(code.findall(row)))) for row in rows if (m:=fault.match(row))]
 if errors:
     name, reasons=errors[-1]
+    counts=[row.split()[1:] for row in rows if re.fullmatch(r'C11_LATE_DELIVERY_COUNTS [0-9]+ [0-9]+ [0-9]+',row)]
+    if counts:
+        cb,inputs,wire=counts[-1]
+        print('late delivery (expected callbacks=1, native input reads=1, new requests=0): actual callbacks='+cb+', native input reads='+inputs+', new requests='+wire)
+    flows=[row for row in rows if re.fullmatch(r'C11_LATE_DELIVERY_FLOW(?: (?:STRATEGY|RANK|POLICY|EXPIRY|RESOLVE)_(?:ENTER|VALUE|NONE|EXCEPTION)){1,42}',row)]
+    if flows:
+        print(flows[-1])
     print('first failing fixture site: '+(sites[-1] if sites else 'unknown')+'; '+name+'; '+(', '.join(reasons) if reasons else 'no allowlisted code'))
 else:
     print('no exception signature; last confirmed stage: immutable image and fixture loaded')
@@ -226,6 +233,15 @@ PYFAIL
       grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" &&
       grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
+    if [ "$missing" = yes ]; then
+      count="$(grep -E -c '^C11_LATE_ORIGINAL_RESULT (NW15_PRIMARY_SIGNAL|NO_SIGNAL) (PASS|VETO)$' "$out/warm-runtime.log" || :)"
+      if [ "$count" != 2 ] || ! grep -Fxq 'C11_FRESH_READY_OFFSET_MS 62000' "$out/warm-runtime.log" ||
+          ! awk '/^C11_FRESH_READY_OFFSET_MS / && $2>0 && $2<60000 { ok=1 } END { exit !ok }' "$out/warm-runtime.log"; then
+          { echo 'C11_FRESH_DELIVERY_RECEIPT_MISSING'; echo 'Expected: two known original results, one before the previous nominal expiry and one at +62000ms.'; echo "Actual: $count recognized known-result receipts. Last successful stage: original Worker fixture process."; } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          return 1
+      fi
+      grep -E '^C11_(LATE_ORIGINAL_RESULT (NW15_PRIMARY_SIGNAL|NO_SIGNAL) (PASS|VETO)|FRESH_READY_OFFSET_MS [0-9]+)$' "$out/warm-runtime.log"
+    fi
     if [ "$mixed_history_pressure" = yes ]; then
       grep -Fx C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY "$out/warm-runtime.log"
       grep -Fx C11_MIXED_WARM_REAL_SQLITE_WRITE_HELD "$out/warm-runtime.log"

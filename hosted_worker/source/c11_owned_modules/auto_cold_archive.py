@@ -1,4 +1,6 @@
 """Bounded public archive preparation after reviewed owner startup."""
+from collections import deque
+from concurrent.futures import Future
 from copy import deepcopy
 from dataclasses import astuple, dataclass
 from datetime import datetime, timedelta, timezone
@@ -8,7 +10,7 @@ from pathlib import Path
 from requests.adapters import DEFAULT_CA_BUNDLE_PATH
 import re
 import ssl
-from threading import Event, get_ident
+from threading import Event, Lock, Thread, get_ident
 from time import monotonic, sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
@@ -26,7 +28,6 @@ from cold_archive_release import read_bounded, checked_parts
 DAY=86_400_000
 ANALYSIS=NW_WARM*QUARTER
 MAX_BYTES=26*1024*1024
-MAX_FILES=60
 FILES_PER_SLICE=12
 MAX_FILE_BYTES=2*1024*1024
 RECENT_PROOF_REQUIRED='AUTO_RECENT_MINUTES_ONLY_ORIGINAL_STATE_UNVERIFIED'
@@ -89,8 +90,9 @@ class NoRedirect(HTTPRedirectHandler):
 
 class OfficialArchiveHTTP:
     """Dedicated public static download only. No proxy, redirects or credentials."""
-    def __init__(self,wall,spacing=.5):
-        self.wall,self.spacing=wall,spacing
+    def __init__(self,wall):
+        self.wall=wall
+        self.retry_lock=Lock()
         context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.load_verify_locations(DEFAULT_CA_BUNDLE_PATH)
         self.opener=build_opener(ProxyHandler({}),NoRedirect(),HTTPSHandler(context=context))
@@ -99,10 +101,11 @@ class OfficialArchiveHTTP:
     def get(self,url,maximum,cancel):
         if not official_archive_url(url):
             raise Hold('AUTO_ARCHIVE_UNVERIFIED')
-        delay=max(0,(self.next_allowed_ms-self.wall())/1000)
-        if delay>self.spacing:
-            raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=int(delay*1000))
-        if cancel.wait(delay):
+        with self.retry_lock:
+            delay=max(0,self.next_allowed_ms-self.wall())
+        if delay:
+            raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=delay)
+        if cancel.is_set():
             raise Hold('AUTO_ARCHIVE_CANCELLED')
         try:
             with self.opener.open(Request(url,method='GET'),timeout=7) as response:
@@ -126,15 +129,14 @@ class OfficialArchiveHTTP:
             if exc.code in (408,425,429,500,502,503,504):
                 retry=exc.headers.get('Retry-After','')
                 wait=int(retry)*1000 if retry.isdecimal() and len(retry)<=5 else 30_000
-                self.next_allowed_ms=self.wall()+max(wait,int(self.spacing*1000))
+                with self.retry_lock:
+                    self.next_allowed_ms=max(self.next_allowed_ms,self.wall()+wait)
                 raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=wait) from exc
             raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
         except (URLError,TimeoutError,ConnectionError,OSError) as exc:
             if isinstance(getattr(exc,'reason',None),ssl.SSLCertVerificationError):
                 raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
             raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=30_000) from exc
-        finally:
-            self.next_allowed_ms=max(self.next_allowed_ms,self.wall()+int(self.spacing*1000))
 
 
 def windows(symbol,origin,boundary):
@@ -160,8 +162,6 @@ def windows(symbol,origin,boundary):
             due,date=day+timedelta(days=1),day.strftime('%Y-%m-%d')
         name,url=archive_location(symbol,date)
         result.append((name,url,int(due.timestamp()*1000)))
-        if len(result)>MAX_FILES:
-            raise Hold('AUTO_ARCHIVE_BUDGET')
         day=due
     return cutoff,result
 
@@ -232,7 +232,6 @@ class ArchiveProgress:
         self.parts,self.reviewed,self.discovered=parts,reviewed,discovered
         self.recurrence=ArchiveRecurrence(symbol,origin,grid_shift)
         self.ledger=[]
-        self.rejected_file_bytes=0
         self.daily_substitution=False
         self.max_received=0
 
@@ -286,8 +285,6 @@ class ArchiveProgress:
             n,u=archive_location(self.recurrence.symbol,stamp.strftime('%Y-%m-%d'))
             day+=DAY
             replacements.append((n,u,day))
-        if len(self.parts)-1+len(replacements)>MAX_FILES:
-            raise Hold(DISCOVERY_LIMIT if self.discovered else 'AUTO_ARCHIVE_BUDGET')
         i=len(self.ledger)
         self.parts=tuple(self.parts[:i])+tuple(replacements)+tuple(self.parts[i+1:])
         self.daily_substitution=True
@@ -296,7 +293,11 @@ class ArchiveProgress:
     def resume(self,event):
         cancel=JobLimit(event)
         self.require_current_review()
-        budget=self.archive.max_bytes-self.rejected_file_bytes-sum(item['bytes'] for item in self.ledger)
+        # Bound one pass, not the amount of required candidate history.
+        # Reviewed manifests retain their explicitly approved byte bundle.
+        budget=self.archive.max_bytes
+        if self.reviewed is not None:
+            budget-=sum(item['bytes'] for item in self.ledger)
         initial_count=len(self.ledger)
         for count in range(FILES_PER_SLICE):
             if len(self.ledger)==len(self.parts):
@@ -315,7 +316,7 @@ class ArchiveProgress:
                     if available>self.archive.wall():
                         raise Hold('AUTO_ARCHIVE_NOT_AVAILABLE')
                 except Hold as exc:
-                    if (exc.status=='AUTO_ARCHIVE_FILE_MISSING' and not pin and
+                    if (exc.status in ('AUTO_ARCHIVE_FILE_MISSING','AUTO_ARCHIVE_BUDGET') and not pin and
                             self.substitute_closed_days(name,closed_at)):
                         # Keep the verified cursor and allow a peer to run
                         # before trying freshly planned daily assets.
@@ -347,7 +348,6 @@ class ArchiveProgress:
                     # Retry the same interval with independently verified
                     # daily evidence; never publish a partial monthly parse.
                     if self.substitute_closed_days(name,closed_at):
-                        self.rejected_file_bytes+=item['bytes']
                         return self
                     if exc.args==('COLD_ARCHIVE_ORIGIN_GAP',):
                         raise Hold('AUTO_ARCHIVE_ORIGIN_GAP') from exc
@@ -379,31 +379,40 @@ def retained_minute_prefix(f,rows,captured,expires,cancel):
     origin,cutoff=f.origin,f.boundary-QUARTER
     class SavedMinutes:
         def range(self,symbol,width,start,end,as_of):
-            if (symbol,width,start,end,as_of)==(f.symbol,MINUTE,origin,cutoff,captured):
-                return rows
+            if ((symbol,width,as_of)==(f.symbol,MINUTE,captured)
+                    and origin<=start<end<=cutoff
+                    and (start-origin)%MINUTE==(end-origin)%MINUTE==0):
+                return rows[(start-origin)//MINUTE:(end-origin)//MINUTE]
             return ()
     if cancel.is_set():
         raise Hold('AUTO_ARCHIVE_CANCELLED')
+    if len(rows)!=(cutoff-origin)//MINUTE:
+        raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP')
     basis=SavedMinutes()
     rpd=RpdState.start(SegmentStart(f.symbol,origin,captured))
-    states=[]
-    for width in (FIVE,QUARTER):
-        bars=project_closed_minutes(basis,f.symbol,width,origin,cutoff,captured)
-        if not bars:
-            raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP')
-        indicator=new_atr()
-        for bar in bars:
-            if cancel.is_set():
-                raise Hold('AUTO_ARCHIVE_CANCELLED')
-            advance(indicator,bar,width)
-            if width==FIVE:
-                rpd.advance(bar,captured)
-        states.append((width,indicator))
+    indicators={width:new_atr() for width in (FIVE,QUARTER)}
+    last_quarters=deque(maxlen=NW_WARM)
+    # The projection read limit is per slice, not a history-age cutoff.
+    # Keep one recurrence across all slices; do not re-seed it at the join.
+    for start in range(origin,cutoff,NW_WARM*QUARTER):
+        stop=min(cutoff,start+NW_WARM*QUARTER)
+        for width,indicator in indicators.items():
+            bars=project_closed_minutes(basis,f.symbol,width,start,stop,captured)
+            if not bars:
+                raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP')
+            for bar in bars:
+                if cancel.is_set():
+                    raise Hold('AUTO_ARCHIVE_CANCELLED')
+                advance(indicator,bar,width)
+                if width==FIVE:
+                    rpd.advance(bar,captured)
+                else:
+                    last_quarters.append(bar)
     proof=sha256(json.dumps(['owner-verified-minutes-v1',f.symbol,origin,cutoff,
                              [astuple(bar) for bar in rows]],separators=(',',':'),
                             allow_nan=False).encode()).hexdigest()
     return (ClosedPrefixSource(Path('/unused-retained-native-minutes'),proof,origin,cutoff,expires),
-            PreparedPrefix(rpd,tuple(states),bars))
+            PreparedPrefix(rpd,tuple(indicators.items()),tuple(last_quarters)))
 
 
 @dataclass
@@ -420,7 +429,6 @@ class Slot:
 
 class AutoColdAdmission(ColdPrefixAdmission):
     """Discovery slot plus cancellable off-owner job. No order or source authority."""
-    CAPACITY=64
     RETAIN_MS=180_000
     RETRY_MAX_MS=900_000
     # This is only a dormant memory cache, not a cap on OI20 eligibility.
@@ -432,6 +440,39 @@ class AutoColdAdmission(ColdPrefixAdmission):
         super().__init__({},wall)
         self.prepare=prepare
         self.dormant={}
+        self.active_jobs={}
+
+    def _set_active_view(self):
+        # Compatibility for the reviewed-source coordinator and old tests.
+        self.active=next(iter(self.active_jobs.values()),None)
+
+    def _start_candidate(self,symbol,action,args,cancel):
+        result=Future()
+        self.active_jobs[symbol]=(symbol,cancel,result)
+        self._set_active_view()
+        def run():
+            if not result.set_running_or_notify_cancel():
+                return
+            try:
+                result.set_result(action(*args,cancel))
+            except BaseException as exc:
+                result.set_exception(exc)
+        try:
+            # One task per eligible current candidate, never one process
+            # per candidate. Any request backoff is shared by the transport.
+            Thread(target=run,name='c11-archive-prefix',daemon=True).start()
+        except (RuntimeError,OSError):
+            self.active_jobs.pop(symbol)
+            self._set_active_view()
+            return False
+        return True
+
+    def close(self):
+        for _,cancel,_ in self.active_jobs.values():
+            cancel.set()
+        self.active_jobs.clear()
+        self._set_active_view()
+        super().close()
 
     def _take_dormant(self,f,now):
         key=f.symbol,f.origin
@@ -448,7 +489,7 @@ class AutoColdAdmission(ColdPrefixAdmission):
         prefix=slot.continuation
         if (type(prefix) is not ArchiveProgress or not prefix.ledger
                 or prefix.origin+prefix.shift!=slot.fact.origin
-                or self.active is not None and self.active[0]==symbol):
+                or symbol in self.active_jobs):
             return
         key=symbol,slot.fact.origin
         self.dormant.pop(key,None)
@@ -462,16 +503,16 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 or type(f.origin) is not int or not 0<f.origin<f.boundary or f.origin%QUARTER):
             return 'AUTO_ARCHIVE_NO_VERIFIED_ORIGIN'
         if f.symbol not in self.pending:
-            if len(self.pending)>=self.CAPACITY:
-                return 'AUTO_ARCHIVE_QUEUE_BUDGET'
+            # A current candidate cannot be refused due to an older roster.
+            # Existing retirement and exact-fact checks still govern dispatch.
             saved=self._take_dormant(f,now)
             self.pending[f.symbol]=Slot(f,now,now,
                 status='AUTO_ARCHIVE_SEGMENT_RESUMED' if saved is not None else 'AUTO_ARCHIVE_QUEUED',
                 continuation=saved)
         slot=self.pending[f.symbol]
         if slot.fact.origin!=f.origin:
-            if self.active is not None and self.active[0]==f.symbol:
-                self.active[1].set()
+            if f.symbol in self.active_jobs:
+                self.active_jobs[f.symbol][1].set()
             del self.pending[f.symbol]
             self.repair_prior.pop(f.symbol,None)
             return 'AUTO_ARCHIVE_NO_VERIFIED_ORIGIN'
@@ -479,15 +520,17 @@ class AutoColdAdmission(ColdPrefixAdmission):
         return slot.status
 
     def offer_retained(self,owner,f):
-        from causal_bars import MINUTE
+        from causal_bars import MAX_SEGMENT_BARS,MINUTE
         now=self.wall()
-        if (get_ident()!=self.thread or self.active is not None or not owner.tap.current(f)
+        if (get_ident()!=self.thread or f.symbol in self.active_jobs or not owner.tap.current(f)
                 or not quote_contract_shape(f.symbol) or f.pair!=f.symbol[:-4]+'/USDT:USDT'
-                or not inside_recent_window(f) or f.origin%QUARTER or f.origin>=f.boundary-QUARTER):
+                or type(f.origin) is not int or type(f.boundary) is not int
+                or not 0<f.origin<f.boundary-QUARTER or f.origin%QUARTER
+                or f.boundary%QUARTER):
             return None
         existing=self.pending.get(f.symbol)
-        if (existing is not None and (existing.result is not None or existing.continuation is not None)
-                or any(s.retained is not None for s in self.pending.values())):
+        if existing is not None and any(item is not None for item in
+                (existing.result,existing.continuation,existing.retained)):
             return None
         owner.check_store()
         store=owner.store
@@ -495,8 +538,11 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 'SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()):
             return None
         cutoff=f.boundary-QUARTER
-        # Full native continuity from the observed contract origin is needed.
-        # An arbitrary tail of an older contract never reaches this query.
+        # Existing canonical rows can be used regardless of listing age.
+        # Leave overlarge copies to the existing paged archive lane; do not
+        # truncate the verified interval or infer a new recurrence origin.
+        if (cutoff-f.origin)//MINUTE>MAX_SEGMENT_BARS:
+            return None
         rows=store.range(f.symbol,MINUTE,f.origin,cutoff,now)
         if not rows or not owner.tap.current(f):
             return None
@@ -542,8 +588,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 self._keep_dormant(symbol,slot,now)
                 self.pending.pop(symbol)
                 self.repair_prior.pop(symbol,None)
-                if self.active is not None and self.active[0]==symbol:
-                    self.active[1].set()
+                if symbol in self.active_jobs:
+                    self.active_jobs[symbol][1].set()
 
     def settled(self,symbol,cancel,future):
         slot=self.pending.get(symbol)
@@ -587,9 +633,11 @@ class AutoColdAdmission(ColdPrefixAdmission):
         allowed=owner.cold_delivery_window if ready_only or prepare_only else owner.phase_allows
         if not allowed():
             return
-        if self.active is not None and self.active[2].done():
-            self.settled(*self.active)
-            self.active=None
+        for symbol,job in tuple(self.active_jobs.items()):
+            if job[2].done():
+                self.settled(*job)
+                del self.active_jobs[symbol]
+        self._set_active_view()
         # Drain completed, in-scope work before launching another fetch.
         # In insertion order a due retry could otherwise bypass the ready
         # candidate at every completion, even when no new data is needed.
@@ -632,21 +680,25 @@ class AutoColdAdmission(ColdPrefixAdmission):
                         if callable(emit):
                             emit('AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED',slot.fact)
                 return True
-        if ready_only or self.active is not None or not allowed():
+        if ready_only or not allowed():
             return
         for symbol,slot in tuple(self.pending.items()):
-            if (slot.result is not None or not owner.tap.current(slot.fact)
-                    or self.wall()<slot.due_ms):
+            if not allowed():
+                return
+            if (symbol in self.active_jobs or slot.result is not None
+                    or not owner.tap.current(slot.fact) or self.wall()<slot.due_ms):
                 continue
             cancel=Event()
-            slot.status='AUTO_ARCHIVE_FETCHING'
             if slot.retained is not None:
-                retained=slot.retained
-                slot.retained=None
-                future=self.pool.submit(retained_minute_prefix,*retained,cancel)
+                action,args=retained_minute_prefix,slot.retained
             elif slot.continuation is None:
-                future=self.pool.submit(self.prepare,slot.fact,cancel)
+                action,args=self.prepare,(slot.fact,)
             else:
-                future=self.pool.submit(slot.continuation.resume,cancel)
-            self.active=symbol,cancel,future
-            return
+                action,args=slot.continuation.resume,()
+            if self._start_candidate(symbol,action,args,cancel):
+                slot.retained=None
+                slot.status='AUTO_ARCHIVE_FETCHING'
+            else:
+                # OS refused to start an actual worker. Keep the request
+                # pending for the next cycle, never mark its history complete.
+                return

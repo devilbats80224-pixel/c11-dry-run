@@ -36,18 +36,34 @@ class OriginalPlan:
         self.strict_retry={}
         self.retry_fenced=set()
         self.provisional_caps={}
+        self.ready_provisional_caps={}
         self.original_warm_offers={}
         self.closed=False
         self.unplanned_checkpoint_count=0
         self.warm_prepare=None
         self.warm_minute_span=None
         self.warm_keep_legacy=None
+        # Only an original owner can bind a proof of complete, readable data.
+        # If unbound, the previously verified first-minute route is unchanged.
+        self.verified_readiness_at=None
+
+    def evaluation_ceiling(self,row,end,now):
+        if now<end+60_000:
+            return end+60_000
+        if not callable(self.verified_readiness_at):
+            return 0
+        observed=self.verified_readiness_at(row,end,now)
+        if type(observed) is not int or not end<=observed<=now:
+            return 0
+        return min(end+QUARTER,observed+60_000)
 
     def entries(self):
         now=self.wall();current_end=now//QUARTER*QUARTER
         observed=getattr(self.bot.feed,'latest_owner_observation',())
-        if not observed or now>=current_end+60_000:return current_end,()
-        live=tuple(x for x in observed if x.expires_ns>self.mono())
+        if not observed:return current_end,()
+        tick=self.mono()
+        live=tuple(x for x in observed if x.expires_ns>tick and
+                   now<self.evaluation_ceiling(x,current_end,now))
         if not live or len({x.generation for x in live})!=1:return current_end,()
         return current_end,live
 
@@ -73,17 +89,23 @@ class OriginalPlan:
         if get_ident()!=self.owner or self.closed:return None
         at=self.wall()
         actual,live=self.entries()
-        if end!=actual or not end<=at<end+60_000:return None
+        if end!=actual or not end<=at<end+QUARTER:return None
         candidate=next((x for x in live if x.pair==pair),None)
         if candidate is None or not self.bot.observed_ranked(candidate):return None
         residual=(candidate.expires_ns-self.mono())//1_000_000
-        expires=min(end+60_000,at+residual)
+        expires=min(self.evaluation_ceiling(candidate,end,at),at+residual)
         if expires<=self.wall():return None
         g=candidate.generation
-        self.provisional_caps={k:v for k,v in self.provisional_caps.items() if (k[0],k[1])==(g,end)}
-        # Receiver conversion to wall time is a conservative observation and
-        # varies by RTT. Never schedule this pair later than its first witness.
-        expires=self.provisional_caps.setdefault((g,end,pair),expires)
+        key=(g,end,pair)
+        if at>=end+60_000:
+            self.ready_provisional_caps={k:v for k,v in self.ready_provisional_caps.items() if k[:2]==(g,end)}
+            identity,expires=self.ready_provisional_caps.setdefault(key,(self._id(candidate),expires))
+            if identity!=self._id(candidate):
+                return None
+        else:
+            self.provisional_caps={k:v for k,v in self.provisional_caps.items() if k[:2]==(g,end)}
+            # An acquisition scope must not be extended past its first witness.
+            expires=self.provisional_caps.setdefault(key,expires)
         if expires<=self.wall():return None
         return Scope(pair,candidate.symbol,g,end,expires)
 
@@ -118,6 +140,14 @@ class OriginalPlan:
         instantaneous=now+max(0,(row.expires_ns-self.mono())//1_000_000)
         return min(wire_expires,floor,instantaneous)
 
+    def _scope_deadline(self,key,row,scope,now):
+        if scope.expires<=scope.end+60_000:
+            return self._effective_retry_deadline(key,row,now,scope.expires)
+        if now<scope.end+60_000 or self.ready_provisional_caps.get(key)!=(self._id(row),scope.expires):
+            return 0
+        instantaneous=now+max(0,(row.expires_ns-self.mono())//1_000_000)
+        return min(scope.expires,instantaneous,self.evaluation_ceiling(row,scope.end,now))
+
     def effective_expiry(self,scope,now):
         # Pure accepted roster witness and monotonic clock, no observer/SQL.
         end,live=self.entries()
@@ -125,10 +155,12 @@ class OriginalPlan:
         key=(scope.generation,scope.end,scope.pair)
         for row in live:
             if (row.pair,row.symbol,row.generation)==(scope.pair,scope.symbol,scope.generation):
-                return self._effective_retry_deadline(key,row,now,scope.expires)
+                return self._scope_deadline(key,row,scope,now)
         return 0
 
     def transport_still_due(self,j,now):
+        if not j.end<=now<j.expires<=j.end+60_000:
+            return False
         # Detached transport reads only immutable accepted roster tuples and
         # the clock; the SQLite original authority stays on original owner.
         end,live=self.entries()
@@ -149,7 +181,7 @@ class OriginalPlan:
         if s.end!=end or not end<=now<s.expires:return False
         candidate=next((x for x in live if (x.symbol,x.generation)==(s.symbol,s.generation)),None)
         return (candidate is not None and candidate.pair==s.pair and self.bot.observed_ranked(candidate)
-                and now<self._effective_retry_deadline((s.generation,s.end,s.pair),candidate,now,s.expires))
+                and now<self._scope_deadline((s.generation,s.end,s.pair),candidate,s,now))
 
     def has_frozen_five_offer(self,symbol,start,end,count,marker):
         if get_ident()!=self.owner or self.closed or type(marker) is not tuple or marker[1]!=end:
@@ -169,6 +201,11 @@ class OriginalPlan:
             self.retry_fenced.update(k for k in self.strict_retry if k[1]==end)
             return None
         g=live[0].generation
+        # Past the original acquisition window, this scope is evaluation-only
+        # and never opens or repeats an original wire task. Its safe callback
+        # requires a separately verified durable input owner.
+        if self.wall()>=end+60_000:
+            return g,end,()
         self.last={k:v for k,v in self.last.items() if k[0]==g and k[1]==end}
         self.strict_retry={k:v for k,v in self.strict_retry.items() if k[:2]==(g,end)}
         self.original_warm_offers={k:v for k,v in self.original_warm_offers.items() if k[:2]==(g,end)}
