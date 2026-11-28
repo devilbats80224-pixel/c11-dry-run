@@ -92,7 +92,9 @@ def run_settled_minute_repair():
     jobs.clear()
     lane.tick((f,),lambda:False)
     assert not jobs,'C11_CONTINUITY_BYPASSED_HEADROOM'
-    lane.tick((f,),lambda:True)
+    lane.tick((f,),lambda:True,occupied_ranges=lambda s:((missing,missing+QUARTER),) if s==sym else ())
+    assert not jobs,'C11_PRIMARY_DUPLICATED_ACTIVE_STALE_RANGE'
+    lane.tick((f,),lambda:True,occupied_ranges=lambda _:((full,full+QUARTER),))
     assert len(jobs)==1,'C11_SETTLED_RAW_1M_GAP_NOT_REFILLED'
     j,w=jobs.pop()
     assert (j.start,j.stop,j.n)==(missing,missing+QUARTER,15)

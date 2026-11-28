@@ -1,5 +1,7 @@
 """A previously unseen contract with a retained checkpoint must not go to listing."""
 from types import SimpleNamespace as N
+from threading import get_ident
+from prepared_owner_history import BoundOwnerHistory
 
 from admission_minute_job import make_job
 from causal_bars import CausalBars, ClosedBar, FIVE, SegmentStart
@@ -13,7 +15,7 @@ ORIGIN = T - 365 * 96 * Q
 
 
 
-def owner_replay(*, gap_quarters=None):
+def owner_replay(*, gap_quarters=None, primary_occupied=None):
     symbol = '陌生候選USDT'
     first = T - (300 if gap_quarters is None else gap_quarters) * Q
     origin = first - Q
@@ -57,6 +59,30 @@ def owner_replay(*, gap_quarters=None):
     loop.cycle_headroom = lambda: True
     try:
         loop.enroll_cold([fact])
+        if primary_occupied is not None:
+            bot=object()
+            slot=(first,first+PAGE) if primary_occupied=='overlap' else (T-2*Q,T-Q)
+            owner.owner=get_ident()
+            owner.worker=N(freqtrade=bot)
+            owner.tap.facts=lambda:tuple(roster)
+            owner.pending=owner.opg_recovery=None
+            owner.primary_admission=N(tick=lambda *_,**__:None,pending=N(
+                busy=lambda key:key==symbol,
+                inflight_ranges=lambda key:(slot,) if key==symbol else ()))
+            owner.minute_headroom=lambda:True
+            owner.minute_admission=loop
+            owner.cold_delivery_window=owner.phase_allows=lambda:False
+            owner._after_protection=lambda _:None
+            BoundOwnerHistory.after_protection(owner,bot)
+            if primary_occupied=='overlap':
+                assert calls==[], 'C11_COLD_DUPLICATED_OVERLAPPING_NATIVE_REQUEST'
+                return
+            assert calls==[(first,first+PAGE)], ('C11_COLD_STALE_CURSOR_STARVED_BY_DISJOINT_PAGE',calls)
+            BoundOwnerHistory.after_protection(owner,bot)
+            payload,=store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
+            assert RpdState.restore(payload).next_open==first+PAGE
+            assert not store.range(symbol,M,T-Q,T,wall)
+            return
         if gap_quarters is not None:
             cutoff=T-Q  # the live original Worker owns the terminal close
             expected_pages=((gap_quarters-1)*Q+PAGE-1)//PAGE
@@ -109,6 +135,8 @@ def main():
         assert make_job(fact, T, (), T+1, TOKEN) is None
         assert make_job(fact, None, (), T + 1, TOKEN) is None
     owner_replay()
+    owner_replay(primary_occupied="disjoint")
+    owner_replay(primary_occupied="overlap")
     for gap in (5*96, 7*96+1, 14*96):
         owner_replay(gap_quarters=gap)
     print('C11_STALE_VERIFIED_CURSOR_AUTO_MINUTE_BRIDGE_PASS')

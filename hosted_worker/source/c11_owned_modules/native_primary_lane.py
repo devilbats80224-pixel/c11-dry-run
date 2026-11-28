@@ -69,7 +69,7 @@ class NativePrimaryLane:
         return (j.valid(self.owner.run.wall()) and j.symbol==f.symbol and f.generation==j.generation
                 and self.current(f,s,self.owner.run.wall()))
 
-    def tick(self,facts,headroom):
+    def tick(self,facts,headroom,*,occupied_ranges=lambda _:()):
         if get_ident()!=self.thread:return
         self.pending.drain(self.complete)
         o=self.owner
@@ -127,7 +127,7 @@ class NativePrimaryLane:
                     missing=self.missing_recent_rpd_minutes(f,s,now)
                 else:
                     missing=missing_projection_quarters(o.store,f.symbol,end,now,NW_WARM)
-                for start,stop in self.pending.inflight_ranges(f.symbol):
+                for start,stop in (*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol)):
                     missing.difference_update(range(start,stop,QUARTER))
                 if not missing:continue
                 pages=iter(all_missing_pages(end,missing))
