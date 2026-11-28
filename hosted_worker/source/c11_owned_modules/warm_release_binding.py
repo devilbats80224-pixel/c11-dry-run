@@ -1,4 +1,5 @@
 """Original Worker single-receipt route; candidate, not a release authorization."""
+import sqlite3
 from committed_projection import AuthoritativePrimaryCommit,CommittedProjection,canonical,frame_sha
 from primary_coverage_gate import NativePrimaryHandoff
 from canonical_guard import same_native_frame
@@ -124,20 +125,47 @@ class WarmReleaseBinding:
         self.prepared=(first,s,*ready,False)
         return True
 
+    def _atomic_detail(self,s,kind,label):
+        sc=self.sc
+        first=getattr(sc,'first_gate',None)
+        if first is not None:
+            first.note(s.generation,s.symbol,kind,label,sc.wall())
+
     def frame(self,first):
         if self.prepared is None or self.prepared[0] is not first:return None
         sc=self.sc
         a,s,row,batches,committed=self.prepared
-        if not self._current(s):return ()
+        if not self._current(s):
+            self._atomic_detail(s,'atomic_refusal','ATOMIC_AUTHORITY_BEFORE_ROWS')
+            return ()
         store=sc.adapter.ready.store
-        try:
-            if not committed:
-                def write():
+        if not committed:
+            def write():
+                store.owner_atomic_phases=()
+                try:
                     store.record_owner_primary_batch(s.symbol,batches,lambda:self._current(s))
                     return True
-                if optional_observation(write,(store.db,)) is not True:return ()
-        except (Refused,ValueError):return ()
-        if not self._current(s):return ()
+                finally:
+                    for phase in store.owner_atomic_phases:
+                        self._atomic_detail(s,'atomic_phase',phase)
+            def busy(code):
+                self._atomic_detail(s,'atomic_refusal',
+                    'ATOMIC_SQLITE_BUSY' if code==sqlite3.SQLITE_BUSY else 'ATOMIC_SQLITE_LOCKED')
+            try:
+                outcome=optional_observation(write,(store.db,),on_busy=busy)
+                if outcome is not True:return ()
+            except (Refused,ValueError) as exc:
+                reason={
+                    'C11_OWNER_BATCH_SHAPE':'ATOMIC_BATCH_SHAPE',
+                    'C11_OWNER_BATCH_AUTHORITY':'ATOMIC_AUTHORITY_UNSPECIFIED',
+                    'C11_CANDLE_CAUSAL_ROW':'ATOMIC_INVALID_ROW',
+                    'C11_CLOSED_CANDLE_CHANGED':'ATOMIC_CANONICAL_CONFLICT',
+                }.get(str(exc),'ATOMIC_OTHER_REFUSED')
+                self._atomic_detail(s,'atomic_refusal',reason)
+                return ()
+        if not self._current(s):
+            self._atomic_detail(s,'atomic_refusal','ATOMIC_AUTHORITY_AFTER_ROWS')
+            return ()
         self.prepared=(a,s,row,batches,True)
         return batches[-1][1]
 
