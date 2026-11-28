@@ -36,3 +36,32 @@ for authoritative, now, expected in (
     assert audits[0]["parent_delivery_margin_ms"]==round((2.0-now)*1000)
     assert finishes==[(("t",None),{"cancel":True})]
 print("C11_PARENT_REJECTION_SPLIT_PASS")
+
+
+def granted_closed_data_has_separate_receipt_authority():
+    from admission_minute_job import MinuteHistoryJob
+    expired_rank=False
+    start=end-1_800_000
+    stop=start+900_000
+    history=MinuteHistoryJob("JCTUSDT",1,end,start,"a"*32,start,stop)
+    rows=[[t,'100','104','99','101','10',t+60_000-1,'1000',5,'4','400','0']
+          for t in range(start,stop,60_000)]
+    lane=SimpleNamespace(authority=lambda _: expired_rank,
+        receipt_authority=lambda candidate,granted: candidate is history and granted==end+4500)
+    outcomes=[]
+    parent=SimpleNamespace(waiting={'t':(lane,history,None,2.0,end+4500)},
+        wall=lambda:end+5000,audit=lambda *_a,**_k:None,
+        finish=lambda *a,**k:outcomes.append((a,k)))
+    with patch('shared_history_forwarder.monotonic',return_value=1.5):
+        SharedHistoryForwarder.inbound(parent,dict(tag='t',status=200,used=1,
+            rows=rows,received=end+4700,wire_ms=end+4600))
+    assert outcomes==[(('t',(end+4500,end+4700,rows)),{})], (
+        'C11_CLAMPED_RANK_LIFETIME_DISCARDS_ALREADY_GRANTED_CLOSED_DATA',outcomes)
+    # No still-current rank means an ungranted request may not start on wire.
+    parent.waiting['t']=(lane,history,None,2.0,None)
+    with patch('shared_history_forwarder.monotonic',return_value=1.5):
+        SharedHistoryForwarder.inbound(parent,dict(ready='t',abi=3))
+    assert outcomes[-1]==(('t',None),{'cancel':True})
+
+
+granted_closed_data_has_separate_receipt_authority()
