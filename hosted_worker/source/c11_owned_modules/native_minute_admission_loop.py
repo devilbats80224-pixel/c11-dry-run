@@ -31,19 +31,27 @@ class MinuteAdmissionLoop:
     def phase(self):
         return self.cycle_headroom() and not self.owner.run.queue.inflight
 
+    def _checkpoint_authority(self,j,f,as_of):
+        if (j.symbol,j.generation,j.end)!=(f.symbol,f.generation,f.boundary):
+            return False
+        # Fact.origin remains the original exchange listing and rank witness;
+        # the data page is fenced to the authenticated recurrence start.
+        proof=self.owner.store.contract_segment(f.symbol,f.origin,as_of)
+        return proof is not None and proof.open_ms==j.origin
+
     def authority(self,j,f):
-        return self.phase() and j.valid(self.owner.run.wall()) and self.owner.tap.current(f)
+        now=self.owner.run.wall()
+        return (self.phase() and j.valid(now) and self.owner.tap.current(f)
+                and self._checkpoint_authority(j,f,now))
 
     def receipt_authority(self,j,f,sent):
         o=self.owner
         if (get_ident()!=self.thread or getattr(o.run,'closed',False)
-                or type(j) is not MinuteHistoryJob or not j.valid(sent) or sent>o.run.wall()
-                or (j.symbol,j.origin,j.generation,j.end)!=(f.symbol,f.origin,f.generation,f.boundary)):
+                or type(j) is not MinuteHistoryJob or not j.valid(sent) or sent>o.run.wall()):
             return False
         # No rank refresh or strategy authorization here. Only the existing
         # canonical, same-contract checkpoint may receive this public data.
-        proof=o.store.segment(j.symbol)
-        return proof is not None and proof.open_ms==j.origin and proof.proven_at_ms<=sent
+        return self._checkpoint_authority(j,f,sent)
 
     def offer_reviewed_repair(self,f):
         prepare=getattr(self.owner,'cold_prefix',None)
@@ -105,21 +113,22 @@ class MinuteAdmissionLoop:
                     if primary is not None:
                         primary.gate(self.reason[f.symbol],f)
                     continue
-                if cursor is None or cursor.open_ms!=f.origin or cursor.proven_at_ms>now:
+                cursor=o.store.contract_segment(f.symbol,f.origin,now)
+                if cursor is None:
                     self.reason[f.symbol]='NO_AUTHENTICATED_LOCAL_STATE'
                     continue
                 if not stored:
                     self.reason[f.symbol]=self.offer_reviewed_repair(f)
                     continue
                 rpd=RpdState.restore(stored[0])
-                if (rpd.symbol,rpd.origin)!=(f.symbol,f.origin):
+                if (rpd.symbol,rpd.origin)!=(f.symbol,cursor.open_ms):
                     self.reason[f.symbol]='RPD_CHECKPOINT_IDENTITY_MISMATCH'
                     continue
                 if rpd.observed>now:
                     self.reason[f.symbol]='RPD_OBSERVATION_AFTER_CYCLE_CLOCK'
                     continue
                 floor,cutoff=f.boundary-MAX_ANALYZER_QUARTERS*Q,f.boundary-Q
-                if not repairable_checkpoint(f,rpd.next_open):
+                if not repairable_checkpoint(f,rpd.next_open,causal_origin=cursor.open_ms):
                     self.reason[f.symbol]=self.offer_reviewed_repair(f)
                     continue
                 rows=o.store.db.execute('SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? AND open_ms<? AND received_ms<=?',(f.symbol,Q,floor,cutoff,now))
@@ -127,7 +136,8 @@ class MinuteAdmissionLoop:
                 missing=[t for t in range(floor,cutoff,Q) if t>=cursor.open_ms and t not in have]
                 waiting=tuple((a.start,a.stop) for a,_,_ in self.granted.values() if a.symbol==f.symbol)
                 blocked=(*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol),*waiting)
-                planned=iter_jobs(f,rpd.next_open,missing,now,blocked,lambda:token_hex(16))
+                planned=iter_jobs(f,rpd.next_open,missing,now,blocked,lambda:token_hex(16),
+                                  causal_origin=cursor.open_ms)
                 ready.append((f,planned))
             except (Refused,ValueError):
                 self.reason[f.symbol]='NATIVE_PREPARATION_REFUSED'
