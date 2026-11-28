@@ -119,11 +119,17 @@ class WarmReleaseBinding:
         seal=AuthoritativePrimaryCommit(*key,at,s.expires,p.last_receipt,p.source_pin,p.frame_hash,
                                        canonical(p.primary),canonical(p.closed),p.rpd_pin)
         ok=lambda:self.late_current(first)
+        identity=sc.plan._id(candidate)
+        def exact_current(c):
+            # The native bot can authenticate the same publication again
+            # while consuming input. Do not confuse a fresh Python object
+            # with a different signed market identity or reopen its clock.
+            return type(c) is type(candidate) and sc.plan._id(c)==identity and ok()
         projector=CommittedProjection(wall=sc.wall,
             native_owner_lookup=lambda *k:seal if k==key and ok() else None,
-            current_authority=lambda c,r,t:c is candidate and r is seal and ok(),
-            trusted_rpd_pin=lambda c,e,t:p.rpd_pin if c is candidate and e==end and ok() else None,
-            verified_ready_at=lambda c,r,t:p.at if c is candidate and r is seal and ok() else None)
+            current_authority=lambda c,r,t:r is seal and exact_current(c),
+            trusted_rpd_pin=lambda c,e,t:p.rpd_pin if e==end and exact_current(c) else None,
+            verified_ready_at=lambda c,r,t:p.at if r is seal and exact_current(c) else None)
         try:
             event=projector.project(seal,candidate,before,p.primary,p.closed)
         except ValueError:
