@@ -101,10 +101,7 @@ def old_listing_with_blank_state_uses_recent_required_rows():
     # Supply only actual usable recent 1m rows, not a fake market start or 2020 replay.
     listing=1_577_836_800_000  # 2020-01-01 UTC, exact quarter boundary
     fact=N(symbol=SYMBOL,pair=FACT.pair,origin=listing,boundary=END)
-    from tempfile import TemporaryDirectory
-    ledger=TemporaryDirectory()
-    path=Path(ledger.name)/'causal.sqlite'
-    store=CausalBars(path)
+    store=CausalBars(':memory:')
     AtrErCheckpoint(store)
     owner=N(store=store,check_store=lambda:None,tap=N(current=lambda x:x is fact),
             cold_delivery_window=lambda:True,cold_delivery_allows=lambda x:x is fact)
@@ -133,8 +130,12 @@ def old_listing_with_blank_state_uses_recent_required_rows():
         assert proof is not None and proof.open_ms==earliest
         assert store.contract_segment(SYMBOL,listing+QUARTER,WALL) is None
         assert store.contract_segment(SYMBOL,listing,WALL-1) is None
-        reopened=CausalBars(path)
+        # The sealed build test has no writable filesystem. Round-trip the
+        # database image through SQLite to a separately opened connection.
+        image=store.db.serialize()
+        reopened=CausalBars(':memory:')
         try:
+            reopened.db.deserialize(image)
             assert reopened.contract_segment(SYMBOL,listing,WALL)==proof
             assert reopened.db.execute(
                 'SELECT count(*) FROM atr_er_checkpoint WHERE symbol=?',(SYMBOL,)).fetchone()==(2,)
@@ -144,7 +145,6 @@ def old_listing_with_blank_state_uses_recent_required_rows():
     finally:
         lane.close()
         store.db.close()
-        ledger.cleanup()
 
 
 if __name__=='__main__':
