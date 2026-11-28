@@ -39,12 +39,25 @@ class Peer:
     def close(self):
         self.pool.shutdown(wait=False)
 
+def owner_may_receive(lane,job,granted):
+    # An ungranted request always needs current rank/phase. An exact data
+    # job already granted before expiry may carry separately verified,
+    # data-only receipt authority. No effect on original strategy scopes.
+    if granted is not None:
+        from admission_minute_job import MinuteHistoryJob
+        allowed=getattr(lane,'receipt_authority',None)
+        if type(job) is MinuteHistoryJob and callable(allowed) and allowed(job,granted) is True:
+            return True
+    return lane.authority(job)
+
+
 class Lane:
     def __init__(self,wire,authority):
         self.wire,self.authority=wire,authority
         self.tag=None
         self.result=None
         self.last_offer_reason=None
+        self.receipt_authority=None
     def offer(self,job):
         return self.wire.offer(self,job)
     def tick(self):
@@ -147,7 +160,7 @@ class SharedHistoryForwarder:
                       response_ms=received if type(received) is int else None)
         if valid_keys and x['status'] in (418,429):
             self.budget.optional_wire_fault(x['status'],60000)
-        authority = lane.authority(job)
+        authority = owner_may_receive(lane,job,sent)
         parent_now = monotonic()
         if not authority or parent_now >= delivery_until:
             reason = ('SCOPE_AND_PARENT_DELIVERY_EXPIRED' if not authority and parent_now >= delivery_until
@@ -191,7 +204,7 @@ class SharedHistoryForwarder:
             self.finish(tag,None)
     def _expire(self):
         for tag,(lane,job,_,until,sent) in tuple(self.waiting.items()):
-            active=lane.authority(job)
+            active=owner_may_receive(lane,job,sent)
             if not active or monotonic()>=until:
                 self.audit(job,'EXPIRED','STALE_SCOPE' if not active else 'NO_REPLY' if sent is not None else 'NO_READY',grant_ms=sent)
                 self.finish(tag,None,cancel=True)

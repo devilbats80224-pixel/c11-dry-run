@@ -120,7 +120,12 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None, atr_must_continue=
                 print('C11_STALE_MINUTE_BRIDGE_CONTINUES_RPD_AND_BOTH_ATR_WIDTHS')
             roster.clear()
             loop.tick([fact],has_headroom=lambda:not loop.pending.busy(symbol))
-            assert not store.range(symbol,M,first+PAGE,first+2*PAGE,wall)
+            # Already-granted closed data survives rank loss, but entries
+            # and recurrence handoff still cannot use the stale candidate.
+            assert len(store.range(symbol,M,first+PAGE,first+2*PAGE,wall))==495
+            payload,=store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
+            assert RpdState.restore(payload).next_open==first+PAGE
+            print('C11_EXPIRED_RANK_PERSISTS_GRANTED_DATA_WITHOUT_OLD_STRATEGY_SCOPE')
     finally:
         loop.close()
         store.db.close()

@@ -2,7 +2,7 @@
 from collections import deque
 from secrets import token_hex
 from threading import get_ident
-from admission_minute_job import iter_jobs,MAX_ANALYZER_QUARTERS,repairable_checkpoint
+from admission_minute_job import MinuteHistoryJob,iter_jobs,MAX_ANALYZER_QUARTERS,repairable_checkpoint
 from cold_minute_commit import commit,restore_retained_derivatives
 from native_cold_minute_page import F,Q
 from parallel_history_pages import PendingHistoryPages
@@ -13,7 +13,9 @@ class MinuteAdmissionLoop:
     def __init__(self,owner,make_forwarder):
         self.owner=owner
         self.thread=get_ident()
-        self.pending=PendingHistoryPages(make_forwarder,self.authority,parallel_ranges=True)
+        self.pending=PendingHistoryPages(make_forwarder,self.authority,parallel_ranges=True,
+                                         receipt_authority=self.receipt_authority)
+        self.granted={}
         self.reason={}
         self._cursor=None
 
@@ -31,6 +33,17 @@ class MinuteAdmissionLoop:
 
     def authority(self,j,f):
         return self.phase() and j.valid(self.owner.run.wall()) and self.owner.tap.current(f)
+
+    def receipt_authority(self,j,f,sent):
+        o=self.owner
+        if (get_ident()!=self.thread or getattr(o.run,'closed',False)
+                or type(j) is not MinuteHistoryJob or not j.valid(sent) or sent>o.run.wall()
+                or (j.symbol,j.origin,j.generation,j.end)!=(f.symbol,f.origin,f.generation,f.boundary)):
+            return False
+        # No rank refresh or strategy authorization here. Only the existing
+        # canonical, same-contract checkpoint may receive this public data.
+        proof=o.store.segment(j.symbol)
+        return proof is not None and proof.open_ms==j.origin and proof.proven_at_ms<=sent
 
     def offer_reviewed_repair(self,f):
         prepare=getattr(self.owner,'cold_prefix',None)
@@ -68,11 +81,13 @@ class MinuteAdmissionLoop:
 
     def tick(self,facts,*,skip=lambda _:False,has_headroom=lambda:True,occupied_ranges=lambda _:()):
         if get_ident()!=self.thread:return
+        self.reason={}
         self.pending.drain(self.complete)
+        if not self.phase():return
+        self.flush_granted()
         if not self.phase():return
         o=self.owner; o.check_store()
         ordered=sorted(facts,key=lambda f:(self._cursor is not None and f.symbol<=self._cursor,f.symbol))
-        self.reason={}
         ready=deque()
         for f in ordered:
             if not self.phase():return
@@ -110,7 +125,8 @@ class MinuteAdmissionLoop:
                 rows=o.store.db.execute('SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? AND open_ms<? AND received_ms<=?',(f.symbol,Q,floor,cutoff,now))
                 have={r[0] for r in rows}
                 missing=[t for t in range(floor,cutoff,Q) if t>=cursor.open_ms and t not in have]
-                blocked=(*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol))
+                waiting=tuple((a.start,a.stop) for a,_,_ in self.granted.values() if a.symbol==f.symbol)
+                blocked=(*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol),*waiting)
                 planned=iter_jobs(f,rpd.next_open,missing,now,blocked,lambda:token_hex(16))
                 ready.append((f,planned))
             except (Refused,ValueError):
@@ -157,15 +173,35 @@ class MinuteAdmissionLoop:
                     self.reason[j.symbol]='NATIVE_ATR_CONTINUATION_REFUSED'
 
     def complete(self,j,f,data):
-        o=self.owner; due=lambda:self.authority(j,f)
-        if not due():return
-        sent,received,rows=data
-        try:
-            o.check_store()
-            commit(o.store,j.symbol,j.origin,j.start,j.stop,rows,sent,received,due)
-            self.advance_verified_state(j,f)
-            # The original worker consumes the updated read model through its
-            # normal admission on the next local cycle, never a fabricated signal.
-        except (Refused,ValueError):
-            self.reason[j.symbol]='NATIVE_MINUTES_REFUSED'
-    def close(self):self.pending.close()
+        sent,received,_=data
+        if (type(sent) is type(received) is int and sent<=received<=self.owner.run.wall()
+                and self.receipt_authority(j,f,sent)):
+            self.granted[(j.symbol,j.start,j.stop)]=(j,f,data)
+
+    def flush_granted(self):
+        o=self.owner
+        for key,(j,f,(sent,received,rows)) in tuple(self.granted.items()):
+            if not self.phase():
+                return
+            due=lambda:self.phase() and self.receipt_authority(j,f,sent)
+            if not due():
+                self.granted.pop(key)
+                continue
+            try:
+                o.check_store()
+                commit(o.store,j.symbol,j.origin,j.start,j.stop,rows,sent,received,due)
+            except (Refused,ValueError):
+                self.reason[j.symbol]='NATIVE_MINUTES_REFUSED'
+                self.granted.pop(key)
+                continue
+            # SQLite busy propagates to the existing owner handler. Leave
+            # the exact accepted payload pending so its next cycle can commit.
+            self.granted.pop(key)
+            try:
+                self.advance_verified_state(j,f)
+            except (Refused,ValueError):
+                self.reason[j.symbol]='NATIVE_MINUTES_REFUSED'
+
+    def close(self):
+        self.granted.clear()
+        self.pending.close()
