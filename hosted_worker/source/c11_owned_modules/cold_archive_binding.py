@@ -13,12 +13,20 @@ REVIEWED_ONLY='REVIEWED_OFFICIAL_ARCHIVE_ONLY_V1'
 class ColdSourceAdmission:
     """Prefer each candidate’s reviewed source without blocking other candidates."""
     def __init__(self,reviewed,wall,*,discover_unseeded=False):
+        self.discover_unseeded=discover_unseeded
         self.reviewed=ColdPrefixAdmission(
             {s:v for s,v in reviewed.items() if not v.download_only},wall,prewarm_idle=True)
         remote={s:v for s,v in reviewed.items() if v.download_only}
+        self.reviewed_remote=frozenset(remote)
         archive=AutomaticArchive(OfficialArchiveHTTP(wall),wall,reviewed_remote=remote,
                                  discover_unseeded=discover_unseeded)
         self.public=AutoColdAdmission(wall,archive.start)
+
+    def allows_unseeded_minutes(self,fact):
+        from native_cold_minute_page import bootstrap_bounds
+        return (self.discover_unseeded is True and fact.symbol not in self.reviewed.sources
+                and fact.symbol not in self.reviewed_remote
+                and bootstrap_bounds(fact.origin,fact.boundary) is not None)
 
     def offer(self,fact):
         if fact.symbol in self.reviewed.sources:

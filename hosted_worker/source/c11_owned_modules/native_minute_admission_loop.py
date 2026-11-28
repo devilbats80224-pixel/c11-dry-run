@@ -2,9 +2,9 @@
 from collections import deque
 from secrets import token_hex
 from threading import get_ident
-from admission_minute_job import MinuteHistoryJob,iter_jobs,MAX_ANALYZER_QUARTERS,repairable_checkpoint
-from cold_minute_commit import commit,restore_retained_derivatives
-from native_cold_minute_page import F,Q
+from admission_minute_job import MinuteHistoryJob,iter_jobs,iter_bootstrap_jobs,MAX_ANALYZER_QUARTERS,repairable_checkpoint
+from cold_minute_commit import commit,commit_bootstrap,restore_retained_derivatives
+from native_cold_minute_page import F,Q,M,bootstrap_bounds
 from parallel_history_pages import PendingHistoryPages
 from rpd_checkpoint import RpdState
 from bridge_protocol import Refused
@@ -31,8 +31,32 @@ class MinuteAdmissionLoop:
     def phase(self):
         return self.cycle_headroom() and not self.owner.run.queue.inflight
 
+    def blank_bootstrap(self,f):
+        o=self.owner
+        allows=getattr(getattr(o,'cold_prefix',None),'allows_unseeded_minutes',None)
+        return (callable(allows) and allows(f) is True
+                and o.store.segment(f.symbol) is None
+                and not o.store.db.execute('SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone())
+
+    def bootstrap_contract(self,f):
+        from native_candles import NativeCandles
+        o=self.owner
+        try:
+            bot=o.worker.freqtrade
+            if bot.config.get('dry_run') is not True or not bot.native_paper_exchange():
+                return False
+            c=NativeCandles.market(bot,f.pair,f.symbol)['info']
+            return (c['symbol']==f.symbol and c['status']=='TRADING' and c['contractType']=='PERPETUAL'
+                    and c['quoteAsset']==c['marginAsset']=='USDT'
+                    and type(c['onboardDate']) is int and c['onboardDate']==f.origin)
+        except (AttributeError,KeyError,Refused,TypeError,ValueError):
+            return False
+
     def authority(self,j,f):
-        return self.phase() and j.valid(self.owner.run.wall()) and self.owner.tap.current(f)
+        return (self.phase() and j.valid(self.owner.run.wall()) and self.owner.tap.current(f)
+                and (not j.bootstrap or (j.symbol,j.origin,j.generation,j.end)==
+                     (f.symbol,f.origin,f.generation,f.boundary)
+                     and self.blank_bootstrap(f) and self.bootstrap_contract(f)))
 
     def receipt_authority(self,j,f,sent):
         o=self.owner
@@ -40,6 +64,11 @@ class MinuteAdmissionLoop:
                 or type(j) is not MinuteHistoryJob or not j.valid(sent) or sent>o.run.wall()
                 or (j.symbol,j.origin,j.generation,j.end)!=(f.symbol,f.origin,f.generation,f.boundary)):
             return False
+        if j.bootstrap:
+            # GO was granted for this exact fact while current. Accept the
+            # completed data even after a roster change, not after the
+            # exchange contract identity changed or state was installed.
+            return self.blank_bootstrap(f) and self.bootstrap_contract(f)
         # No rank refresh or strategy authorization here. Only the existing
         # canonical, same-contract checkpoint may receive this public data.
         proof=o.store.segment(j.symbol)
@@ -69,7 +98,8 @@ class MinuteAdmissionLoop:
                 if segment is None and row is None:
                     retained=getattr(lane,'offer_retained',None)
                     status=retained(o,f) if callable(retained) else None
-                    status=status or lane.offer(f)
+                    status=status or ('WAITING_FOR_EXACT_BOOTSTRAP_MINUTES' if self.blank_bootstrap(f)
+                                      else lane.offer(f))
                 elif segment is not None and segment.open_ms==f.origin and (row is None or
                         not repairable_checkpoint(f,RpdState.restore(row[0]).next_open)):
                     status=self.offer_reviewed_repair(f)
@@ -99,8 +129,20 @@ class MinuteAdmissionLoop:
                 stored=o.store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()
                 if cursor is None and not stored:
                     prepare=getattr(o,'cold_prefix',None)
-                    self.reason[f.symbol]=(prepare.offer(f) if prepare is not None
-                                           else 'COLD_PREFIX_NO_REVIEWED_SOURCE')
+                    if self.blank_bootstrap(f):
+                        bounds=bootstrap_bounds(f.origin,f.boundary)
+                        if bounds is None:continue
+                        left,cutoff=bounds
+                        have=tuple(r[0] for r in o.store.db.execute(
+                            'SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? '
+                            'AND open_ms<? AND received_ms<=?',(f.symbol,M,left,cutoff,now)))
+                        waiting=tuple((a.start,a.stop) for a,_,_ in self.granted.values() if a.symbol==f.symbol)
+                        blocked=(*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol),*waiting)
+                        ready.append((f,iter_bootstrap_jobs(f,have,now,blocked,lambda:token_hex(16))))
+                        self.reason[f.symbol]='WAITING_FOR_EXACT_BOOTSTRAP_MINUTES'
+                    else:
+                        self.reason[f.symbol]=(prepare.offer(f) if prepare is not None
+                                               else 'COLD_PREFIX_NO_REVIEWED_SOURCE')
                     primary=getattr(o,'primary_admission',None)
                     if primary is not None:
                         primary.gate(self.reason[f.symbol],f)
@@ -140,8 +182,8 @@ class MinuteAdmissionLoop:
             if j is None:continue
             at=o.run.wall()
             try:
-                local=restore_retained_derivatives(o.store,j.symbol,j.origin,j.start,j.stop,at,
-                                                    lambda:self.authority(j,f))
+                local=not j.bootstrap and restore_retained_derivatives(
+                    o.store,j.symbol,j.origin,j.start,j.stop,at,lambda:self.authority(j,f))
                 if local:
                     self.reason[f.symbol]='VERIFIED_LOCAL_INTERVAL_REUSED'
                     self.advance_verified_state(j,f)
@@ -151,7 +193,7 @@ class MinuteAdmissionLoop:
                 self.reason[f.symbol]='NATIVE_PREPARATION_REFUSED'
                 continue
             if self.pending.offer(j,f):
-                self.reason[f.symbol]='SCHEDULED_NATIVE_MINUTES'
+                self.reason[f.symbol]=('SCHEDULED_BOOTSTRAP_MINUTES' if j.bootstrap else 'SCHEDULED_NATIVE_MINUTES')
                 self._cursor=f.symbol
                 ready.append((f,planned))
             else:self.reason[f.symbol]='NATIVE_BUDGET_OR_AUTHORITY_HELD'
@@ -189,7 +231,10 @@ class MinuteAdmissionLoop:
                 continue
             try:
                 o.check_store()
-                commit(o.store,j.symbol,j.origin,j.start,j.stop,rows,sent,received,due)
+                if j.bootstrap:
+                    commit_bootstrap(o.store,j,rows,sent,received,due)
+                else:
+                    commit(o.store,j.symbol,j.origin,j.start,j.stop,rows,sent,received,due)
             except (Refused,ValueError):
                 self.reason[j.symbol]='NATIVE_MINUTES_REFUSED'
                 self.granted.pop(key)
@@ -198,7 +243,7 @@ class MinuteAdmissionLoop:
             # the exact accepted payload pending so its next cycle can commit.
             self.granted.pop(key)
             try:
-                self.advance_verified_state(j,f)
+                if not j.bootstrap:self.advance_verified_state(j,f)
             except (Refused,ValueError):
                 self.reason[j.symbol]='NATIVE_MINUTES_REFUSED'
 

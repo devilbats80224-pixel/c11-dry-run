@@ -340,6 +340,10 @@ class BoundOwnerHistory:
             # fact is per-candidate. Do not starve the rest of the roster.
             if not self.phase_allows():return
             if not self.tap.current(f) or self.minute_admission.pending.busy(f.symbol):continue
+            if self.minute_admission.blank_bootstrap(f):
+                # An authenticated blank old listing uses only its exact
+                # missing recent raw minutes, even if shared budget is held.
+                continue
             if sr is not None and f.symbol=='OPGUSDT':
                 try:
                     choice=sr.offer(f,width,self.tap.current)

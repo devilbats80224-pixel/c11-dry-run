@@ -32,6 +32,33 @@ def main():
     assert len(peer)==1 and peer[0].start==second_hole and peer[0].symbol==other.symbol
     assert not tuple(run(fact,full,NOW,(),lambda:next(tickets)))
     assert not MinuteHistoryJob(fact.symbol,fact.generation,E,LISTED,'f'*32,hole,hole+M).valid(NOW)
+    from causal_bars import CausalBars
+    from cold_minute_commit import commit_bootstrap
+    from bridge_protocol import Refused
+    db=CausalBars(':memory:')
+    try:
+        row=[hole,'100','101','99','100','10',hole+M-1,'1000',2,'4','400','0']
+        incorrect=[*row]
+        incorrect[0]+=M
+        for response,sent,received,permit in (
+            ([incorrect],NOW,NOW+5,lambda:True),
+            ([row],NOW,NOW-1,lambda:True),
+            ([row],NOW,NOW+5,iter((True,True,False)).__next__),
+        ):
+            try:
+                commit_bootstrap(db,j,response,sent,received,permit)
+            except (ValueError,Refused):
+                pass
+            else:
+                raise AssertionError('C11_BOOTSTRAP_RAW_INVALID_RECEIPT_ACCEPTED')
+            assert not db.range(fact.symbol,M,hole,hole+M,NOW+10)
+        assert commit_bootstrap(db,j,[row],NOW,NOW+5,lambda:True)==1
+        assert len(db.range(fact.symbol,M,hole,hole+M,NOW+10))==1
+        assert db.db.execute('SELECT width,count(*) FROM candle GROUP BY width').fetchall()==[(M,1)]
+        assert db.segment(fact.symbol) is None
+        assert db.db.execute('SELECT count(*) FROM rpd_checkpoint').fetchone()==(0,)
+    finally:
+        db.db.close()
     print('C11_BLANK_EXACT_SINGLE_MISSING_MINUTE_PLAN_PASS')
 
 

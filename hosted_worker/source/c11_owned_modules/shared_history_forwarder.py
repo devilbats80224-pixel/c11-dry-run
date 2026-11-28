@@ -189,6 +189,8 @@ class SharedHistoryForwarder:
         elif status!=200: reason='HTTP_STATUS' if status else 'NO_HTTP_RECEIPT' if type(wire_ms) is int else 'NOT_DISPATCHED_BY_CHILD'
         elif type(used) is not int or not 0<=used<=50000: reason='WEIGHT_HEADER'
         elif type(received) is not int or not sent<=received<=min(self.wall(),sent+MAX_RESPONSE_MS): reason='RECEIPT_TIME'
+        elif getattr(job,'bootstrap',False) is True and (type(wire_ms) is not int or not sent<=wire_ms<=received):
+            reason='BOOTSTRAP_WIRE_TIME'
         elif count!=job.n: reason='ROW_COUNT'
         else:
             self.audit(job,'REPLY_ACCEPTED',**evidence)
