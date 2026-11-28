@@ -224,6 +224,13 @@ def missing_month_finds_daily_without_a_catalogue(month_has_gap=False):
             lane.tick(owner,ready_only=True)
             lane.tick(owner,ready_only=True)
         assert seen==['AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED'], 'C11_DAILY_FALLBACK_INSTALLED_NOT_RECORDED'
+        from retained_page_schema import accepted_history_trace
+        evidence=dict(schema='c11-primary-schedule-v1',end_ms=now,
+                      at_ms=now+120_000,symbol=symbol,generation=1,reason=seen[0])
+        assert accepted_history_trace(evidence), 'C11_DAILY_ARCHIVE_TRACE_DROPPED_AFTER_FIRST_MINUTE'
+        assert not accepted_history_trace(evidence|{'reason':'SQLITE_BUSY'})
+        assert not accepted_history_trace(evidence|{'raw_payload':'not allowed'})
+        assert not accepted_history_trace(evidence|{'at_ms':now+QUARTER})
     finally:
         lane.close()
     expected=[monthly+'.CHECKSUM']+([monthly] if month_has_gap else [])+[daily+'.CHECKSUM',daily]
