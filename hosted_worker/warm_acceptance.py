@@ -757,6 +757,17 @@ def main(outer):
                                  *(statuses[k] for k in observed),*sorted(actual))
         assert len([a for a in advice if a[1:]==(PAIR,'ORIGINAL_NATIVE_CALLBACK')])==1,advice
         assert not any(a[1:]==(UNKNOWN_PAIR,'ORIGINAL_NATIVE_CALLBACK') for a in advice)
+        # This runs the actual packaged owner/CCXT receipt and original
+        # strategy, not a readiness time injected into the planning object.
+        ready_clock=getattr(sc.plan,'verified_readiness_at',None)
+        assert callable(ready_clock), 'C11_ORIGINAL_WORKER_DOES_NOT_RECORD_READY_CLOCK'
+        _,still_ranked=sc.plan.entries()
+        candidate=next(r for r in still_ranked if r.pair==PAIR)
+        observed_ready=ready_clock(candidate,E,clock[0])
+        assert type(observed_ready) is int and E<=observed_ready<=clock[0], (
+            'C11_ORIGINAL_WARM_COMMIT_LACKS_VERIFIED_READINESS',observed_ready)
+        assert ready_clock(candidate,E+900000,clock[0]) is None
+        print('C11_ACTUAL_PACKAGED_WORKER_PRESERVES_VERIFIED_READABLE_AT',observed_ready,flush=True)
         assert not Trade.get_trades().all()
         assert [x for x in exact_requests if x[0]=='STBLUSDT' and x[1]=='1m']==[('STBLUSDT','1m',45)],exact_requests
         assert not any(x[0]=='STBLUSDT' and (x[1]=='5m' or x[1]=='15m' and x[2]!=499) for x in exact_requests),exact_requests
