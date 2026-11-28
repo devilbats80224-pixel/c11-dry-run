@@ -142,8 +142,13 @@ class WarmReleaseBinding:
             with gate.committed(event):
                 if gate.resolve(pair,candidate,end) is None or not ok():
                     return 'HOLD_ORIGINAL_ANALYZER_CHANGED',None
-                self.claimed.add((pair,end))
-                return 'ORIGINAL_NATIVE_CALLBACK',callback()
+                # This active gate already prohibits reentrant publication.
+                # Mark the callback spent even on throw, but not while the
+                # original strategy is still rechecking that same gate.
+                try:
+                    return 'ORIGINAL_NATIVE_CALLBACK',callback()
+                finally:
+                    self.claimed.add((pair,end))
         finally:
             del bot._c11_native_primary_handoff
             self.late=None
