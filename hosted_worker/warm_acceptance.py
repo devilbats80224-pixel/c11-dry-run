@@ -166,6 +166,12 @@ async def async_send(self,method,url,*,ssl=True,**kwargs):
 class ReplayPublication:
     def response(self,nonce):
         raw=W['actual_page']
+        if getattr(self,'late_fixture',False):
+            from datetime import datetime,timezone,timedelta
+            first=datetime.fromtimestamp(clock[0]/1000,timezone.utc)
+            fresh={**raw,'generation':W['generation']+1,'received_at':first.isoformat(),
+                   'lease_until':(first+timedelta(seconds=60)).isoformat()}
+            return {**fresh,'nonce':nonce,'status':'FRESH','left_ms':60_000}
         if unicode_case:
             # Synthetic contract alias only: reuse harmless fixture candles as
             # injected transport response; never claim historical Chinese data.
@@ -215,7 +221,8 @@ def main(outer):
     import startup_status
     o=DockerObserver(ROOT/'docker-observer.sqlite',B)
     f=None
-    b=CaptureBridge(ReplayPublication(),o,B,lambda:f.classification)
+    publication=ReplayPublication()
+    b=CaptureBridge(publication,o,B,lambda:f.classification)
     b.send(dict(op='C11_PAPER_BRIDGE_V1',nonce='0'*32));b.receive(2)
     f=entry_feed.EntryFeed(b,1)
     f.classification=N(verified={'STBLUSDT':PAIR,MISSING:UNKNOWN_PAIR},body_sha256=MIX['meta'],received_monotonic_ns=time.monotonic_ns())
@@ -623,6 +630,7 @@ def main(outer):
                 print('C11_MIXED_WARM_REAL_SQLITE_WRITE_HELD',flush=True)
                 return result
             return exact_frame(binding,first)
+        first_hold=None
         for i in range(3):
           clock[0]=E+2000+5000*i
           if i==0:
@@ -734,6 +742,7 @@ def main(outer):
                 expected_hold=('HOLD_UNPROVEN_ANALYZED_FRAME' if missing_analysis_case
                                else 'HOLD_NATIVE_MINUTE_NOT_COMMITTED')
                 assert (2000,PAIR,expected_hold) in advice,advice
+                first_hold=lane.holds.get(PAIR)
                 print('DELAYED_MINUTE_FIRST_ANALYSIS_HELD',flush=True)
             for x in sc.adapter.capture.records.values():
                 print('ACTUAL_OWNER_CAPTURE_GRADE',x['timeframe'],x['capture_grade'],x['reported_http'],len(x['raw_kline_rows']),flush=True)
@@ -814,6 +823,43 @@ def main(outer):
             assert len(actual)==1 and actual[0].close==source_close
             assert all(float(new)!=source_close for _,_,new in divergent_fallback)
             print('C11_DIVERGENT_FALLBACK_DID_NOT_BLOCK_ORIGINAL_DECISION',flush=True)
+        if missing_analysis_case:
+            # Independent reconstructed delivery scenario: keep the exact
+            # committed original rows, original readiness proof and the
+            # original pending scope; reset only the isolated delivery markers.
+            # This does not assert that the first callback was never attempted
+            # in the initial scenario (that scenario is checked above).
+            lane=w.freqtrade.strategy._c11_native_entry_owner
+            assert first_hold is not None and first_hold.end==E
+            assert observed_ready+60_000>E+62_000
+            clock[0]=E+62_000
+            publication.late_fixture=True
+            refreshed=tuple(f.read())
+            fresh=next(x for x in refreshed if x.pair==PAIR)
+            assert fresh.generation==first_hold.generation+1
+            assert w.freqtrade.observed_ranked(fresh) and not sc.plan.current(first_hold,clock[0])
+            assert ready_clock(fresh,E,clock[0])==observed_ready
+            sc.warm.claimed.remove((PAIR,E))
+            lane.spent.discard((PAIR,E))
+            lane.holds[PAIR]=first_hold
+            baseline_wire=len(exact_requests)
+            strategy=w.freqtrade.strategy
+            primary=strategy.primary_inputs
+            actual=[]
+            def observe_primary(pair):
+                value=primary(pair)
+                if pair==PAIR and value is not None:
+                    actual.append(value)
+                return value
+            with patch.object(strategy,'primary_inputs',side_effect=observe_primary):
+                strategy.analyze_pair(PAIR)
+                strategy.analyze_pair(PAIR)
+            calls=[a for a in advice if a==(62_000,PAIR,'ORIGINAL_NATIVE_CALLBACK')]
+            assert len(calls)==1 and actual, (
+                'C11_LATE_ORIGINAL_WORKER_NO_CALLBACK_OR_INPUT',
+                len(calls),len(actual),[status for dt,pair,status in advice if dt==62_000 and pair==PAIR])
+            assert len(exact_requests)==baseline_wire and not Trade.get_trades().all()
+            print('C11_LATE_ORIGINAL_WORKER_ONE_CALLBACK_VALID_INPUT_NO_WIRE',flush=True)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)
         print('PACKAGED_WARM_ROUTE_ORIGINAL_CALLBACK',json.dumps(exact_requests),flush=True)
         return
