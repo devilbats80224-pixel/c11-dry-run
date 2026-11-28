@@ -99,7 +99,10 @@ def main():
     meter.note_authoritative_ip_header(clock, 1190, 2400)
     another = PrimaryMinuteJob("SYNTHUSDT", GENERATION, E, E+60_000,
                                E-900_000, E, "e"*32)
-    assert meter.try_reserve_history(another) is None
+    token=meter.try_reserve_history(another)
+    assert token is not None, "C11_TYPED_REFILL_BLOCKED_BY_DIRECT_RESERVE"
+    meter.note_authoritative_ip_header(clock, 2399, 2400)
+    assert not meter.claim_history_send(token, another)
     assert meter.last_history_hold == "HISTORY_BUDGET_IP_RESERVE"
     print("C11_MIXED_CLOSE_PRESSURE_REASON_AND_GRANT_ACCOUNTING_PASS")
 

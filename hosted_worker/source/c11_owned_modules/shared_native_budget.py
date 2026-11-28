@@ -139,7 +139,12 @@ class SharedNativeBudget:
             if n-history_n+len(direct)+self.escrow+count>96:return rate('HISTORY_BUDGET_REQUEST_COUNT')
             if w-history_w+sum(t.weight for t in direct)+self.escrow+weight>144:
                 return rate('HISTORY_BUDGET_WEIGHT_COUNT')
-        if self.meta[1]+w+extra+self.escrow+weight+1200>self.meta[2]:return rate('HISTORY_BUDGET_IP_RESERVE')
+        # Data-only refill uses the same fresh external ceiling and actual
+        # debits, in-flight reservations and claimed protection escrow.
+        # The incumbent native entry/reconfirmation limit is separate.
+        incumbent_reserve=0 if data_only else 1200
+        if self.meta[1]+w+extra+self.escrow+weight+incumbent_reserve>self.meta[2]:
+            return rate('HISTORY_BUDGET_IP_RESERVE')
         return None
     def _allow(self,weight,count=1):
         return self._denial(weight,count) is None
