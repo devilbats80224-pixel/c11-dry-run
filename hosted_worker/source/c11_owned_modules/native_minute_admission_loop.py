@@ -31,12 +31,24 @@ class MinuteAdmissionLoop:
     def phase(self):
         return self.cycle_headroom() and not self.owner.run.queue.inflight
 
+    def _unusable_bootstrap_prior(self,f):
+        from cold_prefix import unusable_retained_prior
+        from stale_state_install import snapshot
+        o=self.owner
+        # Incomplete legacy test/observer stubs and entirely blank live state
+        # cannot produce an old-checkpoint permit.
+        if o.store.segment(f.symbol) is None:
+            return None
+        prior=snapshot(o.store.db,f.symbol)
+        return prior if unusable_retained_prior(o.store.db,prior,f,o.run.wall()) else None
+
     def blank_bootstrap(self,f):
         o=self.owner
         allows=getattr(getattr(o,'cold_prefix',None),'allows_unseeded_minutes',None)
         return (callable(allows) and allows(f) is True
-                and o.store.segment(f.symbol) is None
-                and not o.store.db.execute('SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone())
+                and ((o.store.segment(f.symbol) is None
+                      and not o.store.db.execute('SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone())
+                     or self._unusable_bootstrap_prior(f) is not None))
 
     def bootstrap_contract(self,f):
         from native_candles import NativeCandles
@@ -109,6 +121,11 @@ class MinuteAdmissionLoop:
                     status=retained(o,f) if callable(retained) else None
                     status=status or ('WAITING_FOR_EXACT_BOOTSTRAP_MINUTES' if self.blank_bootstrap(f)
                                       else lane.offer(f))
+                elif self.blank_bootstrap(f):
+                    prior=self._unusable_bootstrap_prior(f)
+                    retained=getattr(lane,'offer_retained',None)
+                    status=(retained(o,f,prior=prior) if prior is not None and callable(retained) else None)
+                    status=status or 'WAITING_FOR_EXACT_BOOTSTRAP_MINUTES'
                 elif segment is not None and segment.open_ms==f.origin and (row is None or
                         not repairable_checkpoint(f,RpdState.restore(row[0]).next_open)):
                     status=self.offer_reviewed_repair(f)
@@ -136,9 +153,10 @@ class MinuteAdmissionLoop:
                 cursor=o.store.segment(f.symbol)
                 now=o.run.wall()
                 stored=o.store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()
-                if cursor is None and not stored:
+                use_bootstrap=self.blank_bootstrap(f)
+                if (cursor is None and not stored) or use_bootstrap:
                     prepare=getattr(o,'cold_prefix',None)
-                    if self.blank_bootstrap(f):
+                    if use_bootstrap:
                         bounds=bootstrap_bounds(f.origin,f.boundary)
                         if bounds is None:continue
                         left,cutoff=bounds
@@ -243,7 +261,8 @@ class MinuteAdmissionLoop:
             try:
                 o.check_store()
                 if j.bootstrap:
-                    commit_bootstrap(o.store,j,rows,sent,received,due)
+                    commit_bootstrap(o.store,j,rows,sent,received,due,
+                                     prior_is_unusable=lambda:self._unusable_bootstrap_prior(f) is not None)
                 else:
                     commit(o.store,j.symbol,j.origin,j.start,j.stop,rows,sent,received,due)
             except (Refused,ValueError):

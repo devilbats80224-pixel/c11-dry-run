@@ -484,7 +484,7 @@ else:
             # The stale-state replay tests a complete raw interval; #29's mixed
             # blank variant must actually request its one-minute history hole.
             h.store.record(SYMBOL,M,tuple(mixed_rows[t].closed() for t in range(mixed_start,mixed_cutoff,M)
-                if MIXED!='blank' or t!=mixed_hole))
+                if t!=mixed_hole))
         if REVIEWED_PARTIAL or AUTO_STALE:
             # Simulate the real half-initialized shape in this private
             # temporary store using the separately pinned JCT origin.
@@ -779,7 +779,7 @@ else:
                     proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
                     assert proof and proof.open_ms==mixed_start
                     late=[(a,b,n,k) for _g,a,b,n,k in mixed_shared if b<=mixed_cutoff]
-                    expected=[(mixed_hole,mixed_hole+M,1,1)] if MIXED=='blank' else []
+                    expected=[(mixed_hole,mixed_hole+M,1,1)]
                     assert late==expected, ('C11_MIXED_HISTORY_REQUESTS',late,expected)
                     assert not Trade.get_open_trades()
                     check_mixed_ledger()

@@ -40,7 +40,7 @@ def commit(store,symbol,origin,start,stop,rows,sent,received,authority):
     return tuple(written)
 
 
-def commit_bootstrap(store,job,rows,sent,received,authority):
+def commit_bootstrap(store,job,rows,sent,received,authority,*,prior_is_unusable=None):
     """Commit new verified minutes only, never a strategy checkpoint or rollup."""
     from admission_minute_job import MinuteHistoryJob
     if (type(job) is not MinuteHistoryJob or job.bootstrap is not True or not job.valid(sent)
@@ -52,8 +52,11 @@ def commit_bootstrap(store,job,rows,sent,received,authority):
     db=store.db
     with db:
         db.execute('BEGIN IMMEDIATE')
-        if (authority() is not True or store.segment(job.symbol) is not None
-                or db.execute('SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(job.symbol,)).fetchone()):
+        if authority() is not True:
+            raise ValueError('C11_BOOTSTRAP_RAW_MINUTE_SCOPE')
+        occupied=(store.segment(job.symbol) is not None
+                  or db.execute('SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(job.symbol,)).fetchone())
+        if occupied and (not callable(prior_is_unusable) or prior_is_unusable() is not True):
             raise ValueError('C11_BOOTSTRAP_RAW_MINUTE_NOT_BLANK')
         before=db.total_changes
         store._record_checked_rows(job.symbol,MINUTE,minutes)
