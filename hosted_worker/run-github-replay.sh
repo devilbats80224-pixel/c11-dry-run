@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 [ "$#" = 3 ] || exit 64
-case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank) ;; *) exit 64;; esac
+case "$2" in build|package-entry|warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure|early-roster-return|auto-stale|reviewed-partial|reviewed-opg|cached-blank|cached-stale|pinned-remote-blank|pinned-remote-stale|pinned-remote-no-listing|prepared-blank|prepared-stale|prepared-return|unseeded-on-demand|archive-source-outage|background-blank|mixed-blank|mixed-unusable) ;; *) exit 64;; esac
 out=$1
 artifact=$3
 base=sha256:1bb9a6b11a4dae39444331aa324b139dcd635f6a1c586ce9ecccac17994edc0c
@@ -285,6 +285,33 @@ reviewed_opg() {
     }
     echo 'C11_REVIEWED_OLD_CORRECTIONS_AND_ORIGINAL_STRATEGY_PASS'
 }
+mixed() {
+    case "$1" in mixed-blank|mixed-unusable) ;; *) exit 64;; esac
+    if sh "$d/native_history_scheduler/run_jct_worker_review.sh" "$image" "$out/fixture/jct"         "$out/fixture/stopped-paper-only.tgz" "$out/mixed" no "$1" >"$out/mixed.log" 2>&1; then
+        if python3 -I -B - "$out/mixed.log" "${1#mixed-}" <<'PY_MIXED'
+import json
+from pathlib import Path
+import sys
+events=[]
+for line in Path(sys.argv[1]).read_text(errors='replace').splitlines():
+    if not line.startswith('{"status": "C11_FINAL_MIXED_PACKAGED_PASS"'):
+        continue
+    events.append(json.loads(line))
+assert len(events)==1, 'C11_MIXED_RESULT_COUNT'
+e,=events
+assert e['variant']==sys.argv[2] and e['generation']==8
+assert e['callback_count']==e['read_count']==1
+assert e['original_status'] in ('NO_SIGNAL','NW15_PRIMARY_SIGNAL') and e['rpd'] in ('PASS','VETO')
+print('C11_FINAL_MIXED_PACKAGED_PASS',e['variant'],e['original_status'],e['rpd'])
+PY_MIXED
+        then return 0; fi
+    fi
+    printf '%s\n' "C11_FINAL_MIXED_PACKAGED_FAIL $1"
+    # Public CI: only disclose allow-listed test reason names, no raw fixture,
+    # candidate dumps, stack traces or ledger contents.
+    grep -Eo 'C11_MIXED_[A-Z_]+|C11_REPLAY_FIXTURE_NOT_READABLE' "$out/mixed.log" | sort -u || :
+    return 1
+}
 cold() {
     remote=no
     prepared=no
@@ -326,4 +353,4 @@ cold() {
     fi
     return 1
 }
-case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; *) cold "$2";; esac
+case "$2" in package-entry) package_entry;; warm|warm-missing-analysis|warm-unicode|warm-ready-basis|warm-terminal-gap|warm-divergent-fallback|warm-mixed-history-pressure) warm "$@";; reviewed-opg) reviewed_opg;; mixed-blank|mixed-unusable) mixed "$2";; *) cold "$2";; esac
