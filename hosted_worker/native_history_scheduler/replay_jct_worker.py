@@ -292,14 +292,17 @@ else:
     observer=N(point=lambda sym,_: (generation,1,Decimal('.25')) if sym==SYMBOL and qualified else None)
     if MIXED:
         from mixed_replay_evidence import assert_known_once, load_causal_tape, observer_feed
+        print('C11_MIXED_STAGE LOCKED_DRIVER_INPUTS_VERIFIED',flush=True)
         mixed_start,mixed_cutoff,mixed_rows=load_causal_tape(
             Path('/archive-wire'),tail,'57265967efa958cd734e8ed4070ea91f1d703e445deef5fec32385de35df729e',END,SHIFT)
+        print('C11_MIXED_STAGE REQUIRED_CANONICAL_TAPE_VERIFIED',flush=True)
         # A real missing closed minute, rather than an artificial response or fabricated candle.
         mixed_hole=mixed_start+8*M
         c=Clock()
         feed,observer,mixed_observer,publication=observer_feed(ROOT,SYMBOL,PAIR,
             (DATA/'contract.json').read_bytes(),lambda:now,c.monotonic_ns)
         publication.publish(generation,qualified=True)
+        print('C11_MIXED_STAGE INITIAL_PUBLICATION_STAGED',flush=True)
     @contextmanager
     def intake(*_):
         yield feed,observer
@@ -473,6 +476,7 @@ else:
                        for tab in ('segment','candle','rpd_checkpoint','atr_er_checkpoint'))
         h.atr=AtrErCheckpoint(h.store)
         if MIXED:
+            print('C11_MIXED_STAGE ORIGINAL_OWNER_LEDGER_BOUND',flush=True)
             if MIXED=='unusable':
                 from causal_bars import SegmentStart
                 old=SegmentStart(SYMBOL,ORIGIN,ORIGIN)

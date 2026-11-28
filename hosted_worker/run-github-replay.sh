@@ -307,9 +307,31 @@ PY_MIXED
         then return 0; fi
     fi
     printf '%s\n' "C11_FINAL_MIXED_PACKAGED_FAIL $1"
-    # Public CI: only disclose allow-listed test reason names, no raw fixture,
-    # candidate dumps, stack traces or ledger contents.
-    grep -Eo 'C11_MIXED_[A-Z_]+|C11_REPLAY_FIXTURE_NOT_READABLE' "$out/mixed.log" | sort -u || :
+    # Never expose fixture rows, user data, URLs, or database values. Print
+    # only allowlisted code locations and assertion/exception classifications.
+    python3 -I -B - "$out/mixed.log" "$1" <<'PY_MIXED_FAILURE' | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+from pathlib import Path
+import re
+import sys
+rows=Path(sys.argv[1]).read_text(errors='replace').splitlines()
+where=re.compile(r'^  File "(?:/fixture-driver/|/opt/c11_owned_modules/)([a-z0-9_]+\.py)", line ([0-9]{1,5}), in [A-Za-z_<>]+$')
+error=re.compile(r'^([a-zA-Z_.]*(?:Error|Exception)|Refused|Hold)(?::|$)')
+known=re.compile(r'\bC11_[A-Z0-9_]{5,80}\b')
+stage=re.compile(r'^C11_MIXED_STAGE [A-Z_0-9]{4,50}$')
+loc=[f'{m[1]}:{m[2]}' for l in rows if (m:=where.fullmatch(l))]
+why=[(m[1],known.findall(l)) for l in rows if (m:=error.match(l))]
+marks=[l for l in rows if stage.fullmatch(l)]
+print('### Combined original Worker replay: '+sys.argv[2])
+print('- Expected: one original decision and canonical read after a real missing minute is resolved and the same-close roster changes.')
+print('- Actual: no complete combined receipt.')
+print('- Last successful stage: '+(marks[-1].split(' ',1)[1] if marks else 'fixture driver or image setup'))
+if why:
+    kind, codes=why[-1]
+    print('- First available diagnosed error: '+kind+' at '+(loc[-1] if loc else 'driver/setup')
+          + (' ('+', '.join(codes)+')' if codes else ''))
+else:
+    print('- First available diagnosed error: no Python error signature; check mounted inputs or driver startup.')
+PY_MIXED_FAILURE
     return 1
 }
 cold() {
