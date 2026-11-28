@@ -513,7 +513,7 @@ else:
                 def observe_raw_write(symbol,width,rows,**kw):
                     try:
                         return raw_write(symbol,width,rows,**kw)
-                    except ValueError as exc:
+                    except RuntimeError as exc:
                         if symbol==SYMBOL and width==Q and str(exc)=='C11_CLOSED_CANDLE_CHANGED':
                             if any(b.open_ms==at and b.payload()!=mixed_direct.payload() for b in rows):
                                 print('C11_RETAINED_DIRECT_OVERLAP_WRITE_CONFLICT expected=preserve_raw_and_install_verified_1m actual=immutable_write_refused',flush=True)
