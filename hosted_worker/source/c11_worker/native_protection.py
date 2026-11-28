@@ -10,6 +10,7 @@ from atr_er_checkpoint import AtrErCheckpoint, PAGE
 from bridge_protocol import need
 from causal_bars import FIVE, HOUR, MINUTE, QUARTER
 from confirmed_features_v1 import sample
+from entry_verdict_receipt import unavailable_order_fact
 from hour_stage import transport
 from policy_snapshot import Bar, Published, State
 
@@ -37,31 +38,34 @@ def next_open(api, symbol, end, side):
     """Prove the active candle's open and an equal, executable-side public quote."""
     start = wall_ms()
     if type(end) is not int or not end % MINUTE == 0 or not end <= start < end + MINUTE:
-        return None
+        return unavailable_order_fact('ENTRY_FACTS_CLOCK_NOT_CURRENT')
     need(side in ('buy', 'sell'), 'C11_OPEN_ORDER_SIDE')
     rows = api.fapiPublicGetKlines(dict(symbol=symbol, interval='1m', startTime=end,
                                        endTime=end + MINUTE - 1, limit=1))
     sampled = wall_ms()
     if (type(rows) is not list or len(rows) != 1 or sampled >= end + MINUTE
             or not start <= sampled or type(rows[0]) is not list or len(rows[0]) < 9):
-        return None
+        return unavailable_order_fact('ENTRY_FACTS_ACTIVE_MINUTE_UNAVAILABLE')
     row = rows[0]
     if int(row[0]) != end or int(row[6]) != end + MINUTE - 1 or int(row[8]) <= 0:
-        return None
+        return unavailable_order_fact('ENTRY_FACTS_ACTIVE_MINUTE_UNAVAILABLE')
     op = Decimal(row[1])
     book = api.fapiPublicGetTickerBookTicker(dict(symbol=symbol))
     received = wall_ms()
     quote = book['time']
     if book['symbol'] != symbol or type(quote) is not int or not end <= quote <= received:
-        return None
+        return unavailable_order_fact('ENTRY_FACTS_QUOTE_CLOCK_INVALID')
     deadline = min(end + MINUTE, quote + BOOK_AGE_MS)
     if not sampled <= received < deadline:
-        return None
+        return unavailable_order_fact('ENTRY_FACTS_QUOTE_STALE')
     side_price = Decimal(book['askPrice'] if side == 'buy' else book['bidPrice'])
     size = Decimal(book['askQty'] if side == 'buy' else book['bidQty'])
     if not (op.is_finite() and side_price.is_finite() and size.is_finite()
             and op == side_price and op > 0 and size > 0 and math.isfinite(float(op)) and math.isfinite(float(size))):
-        return None
+        reason = ('ENTRY_FACTS_EXECUTABLE_SIDE_MISMATCH'
+                  if op.is_finite() and side_price.is_finite() and op != side_price
+                  else 'ENTRY_FACTS_EXECUTABLE_QUOTE_INVALID')
+        return unavailable_order_fact(reason)
     return NextOpen(symbol, side, end, float(op), float(size), quote, received, deadline)
 
 

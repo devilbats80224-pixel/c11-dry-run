@@ -2,7 +2,7 @@
 import sqlite3
 import time
 
-from entry_verdict_receipt import ADMISSION, publish
+from entry_verdict_receipt import ADMISSION, ORDER_FACT, publish
 
 from c11_native_runner_v1 import C11PreAmountOfflineRunnerV1, SyntheticExchange
 from c11_native_rules import paper_entry
@@ -66,14 +66,21 @@ class C11NativePaperRunner(C11PreAmountOfflineRunnerV1):
                 or mode != 'initial' or trade is not None or is_short or ordertype is not None
                 or leverage_ is not None or enter_tag not in ('c11_primary','c11_nw5','c11_supplement')):
             return denied('ENTRY_PAPER_ROUTE_GUARD')
-        if enter_tag=='c11_nw5':
-            facts,features = self.nw5_inputs(pair)
-        elif enter_tag=='c11_supplement':
-            facts,features = self.supplement_inputs(pair)
-        else:
-            facts,features = self.entry_inputs(pair)
+        first = [None]
+        token = ORDER_FACT.set(first if enter_tag=='c11_primary' else None)
+        try:
+            if enter_tag=='c11_nw5':
+                facts,features = self.nw5_inputs(pair)
+            elif enter_tag=='c11_supplement':
+                facts,features = self.supplement_inputs(pair)
+            else:
+                facts,features = self.entry_inputs(pair)
+        finally:
+            ORDER_FACT.reset(token)
         if facts is None or features is None or facts.pair != pair:
-            return denied('ENTRY_FACTS_UNAVAILABLE')
+            return denied(first[0] or ('ENTRY_FACTS_PAIR_MISMATCH' if (
+                enter_tag=='c11_primary' and facts is not None and features is not None and facts.pair != pair)
+                else 'ENTRY_FACTS_UNAVAILABLE'))
         order_end = facts.decision_ms
         if price is None:
             price = self.exchange.get_rate(pair, side='entry', is_short=False, refresh=True)

@@ -5,6 +5,7 @@ import time
 
 ACTIVE = ContextVar("c11_entry_verdict", default=None)
 ADMISSION = ContextVar("c11_native_admission", default=None)
+ORDER_FACT = ContextVar("c11_order_fact_first_denial", default=None)
 DIAGNOSTIC_SINK = ContextVar("c11_entry_verdict_diagnostic_sink", default=None)
 SCHEMA = "c11-entry-verdict-v1"
 Q = 900_000
@@ -27,7 +28,21 @@ ADMISSION_REASONS = frozenset((
     "NATIVE_ENTRY_PAIR_LOCKED",
     "NATIVE_ENTRY_DEPTH_REJECTED", "NATIVE_ENTRY_NOT_REQUESTED",
 ))
-ORDER_REASONS = frozenset((
+ORDER_FACT_REASONS = frozenset((
+    "ENTRY_FACTS_PRIMARY_RECHECK_UNAVAILABLE", "ENTRY_FACTS_PAIR_MISMATCH",
+    "ENTRY_FACTS_JOURNAL_NOT_READY", "ENTRY_FACTS_NOT_PAPER",
+    "ENTRY_FACTS_ATR_UNAVAILABLE", "ENTRY_FACTS_ATR_SCOPE_UNAVAILABLE",
+    "ENTRY_FACTS_SIGNAL_CLOSE_UNAVAILABLE", "ENTRY_FACTS_ACTIVE_MINUTE_UNAVAILABLE",
+    "ENTRY_FACTS_QUOTE_CLOCK_INVALID", "ENTRY_FACTS_QUOTE_STALE",
+    "ENTRY_FACTS_EXECUTABLE_SIDE_MISMATCH", "ENTRY_FACTS_EXECUTABLE_QUOTE_INVALID",
+    "ENTRY_FACTS_CLOSED_OPEN_PRICE_MISMATCH", "ENTRY_FACTS_ATR_AFTER_QUOTE",
+    "ENTRY_FACTS_CLOCK_UNAVAILABLE", "ENTRY_FACTS_CLOCK_NOT_CURRENT",
+    "ENTRY_FACTS_STRUCTURE_UNAVAILABLE", "ENTRY_FACTS_CURRENT_5M_UNAVAILABLE",
+    "ENTRY_FACTS_PRIOR_HOUR_UNAVAILABLE", "ENTRY_FACTS_STRUCTURE_UNKNOWN",
+    "ENTRY_FACTS_ARCHIVE_HALF_UNAVAILABLE", "ENTRY_FACTS_INCUMBENT_UNAVAILABLE",
+    "ENTRY_FACTS_EVIDENCE_ERROR",
+))
+ORDER_REASONS = ORDER_FACT_REASONS | frozenset((
     "ENTRY_PAPER_ROUTE_GUARD", "ENTRY_FACTS_UNAVAILABLE", "ENTRY_PRICE_MISMATCH",
     "ENTRY_SCOPE_MISMATCH", "ENTRY_POSITION_STATE_CHANGED", "ENTRY_PRIMARY_RECHECK_DENIED",
     "ENTRY_NW5_ROUTE_NOT_BOUND", "ENTRY_SUPPLEMENT_NOT_AVAILABLE", "ENTRY_PLAN_ERROR",
@@ -76,6 +91,14 @@ def mark_primary(reason, force=False):
         return
     if force or state[0] is None:
         state[0] = reason
+
+def unavailable_order_fact(reason):
+    """Record one allowlisted first denial only for a bound native attempt."""
+    state = ORDER_FACT.get()
+    if state is not None and state[0] is None and type(reason) is str and reason in ORDER_FACT_REASONS:
+        state[0] = reason
+    return None
+
 
 def publish(pair, end, phase, reason, route="c11_primary"):
     if not route_valid(route, end, phase, reason):
