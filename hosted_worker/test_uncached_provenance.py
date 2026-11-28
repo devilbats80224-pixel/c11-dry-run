@@ -293,10 +293,36 @@ def production_archive_mode_discovers_for_current_unseeded_candidates():
     lane=plan(runtime,{},lambda:1795773600000,True)
     assert lane.discover_unseeded is True,'C11_PUBLIC_MODE_DID_NOT_ALLOW_ON_DEMAND_DISCOVERY'
 
+def rotating_candidates_keep_current_archive_admission():
+    now=[1795773605000]
+    end=now[0]//QUARTER*QUARTER
+    origin=end-8*QUARTER
+    lane=AutoColdAdmission(lambda:now[0],lambda *_:None)
+    def fact(i):
+        return Ns(symbol=f'ASSET{i}USDT',pair=f'ASSET{i}/USDT:USDT',
+                  origin=origin,boundary=end)
+    try:
+        for i in range(60):
+            assert lane.offer(fact(i))=='AUTO_ARCHIVE_QUEUED'
+        # Two otherwise legitimate batches rotate within the retention period.
+        # Admission of a current candidate must not depend on stale peers.
+        now[0]+=60_000
+        for i in range(60,120):
+            assert lane.offer(fact(i))=='AUTO_ARCHIVE_QUEUED',(
+                'C11_DEPARTED_ROSTER_BLOCKS_NEW_ARCHIVE_CANDIDATES',i)
+        now[0]+=lane.RETAIN_MS-60_000
+        lane.retire_stale()
+        assert set(lane.pending)=={fact(i).symbol for i in range(60,120)}
+        print('C11_ARCHIVE_ROTATION_NO_FIXED_CANDIDATE_REJECTION')
+    finally:
+        lane.close()
+
+
 if __name__ == "__main__":
     missing_month_finds_daily_without_a_catalogue()
     missing_month_finds_daily_without_a_catalogue(month_has_gap=True)
     expired_completed_source_cannot_block_ready_peer()
+    rotating_candidates_keep_current_archive_admission()
     production_archive_mode_discovers_for_current_unseeded_candidates()
     boundary_cases()
     discovered_archives_use_existing_bounds()
