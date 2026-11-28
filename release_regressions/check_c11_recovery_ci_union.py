@@ -9,6 +9,7 @@ STARTUP_REGRESSIONS={
     'test_original_revisit_offer.py',
     'test_original_unwired_retry.py',
     'test_stale_analyzed_cache_revisit.py',
+    'test_entry_verdict_production_sink.py',
     'test_retained_minute_cold_prefix.py',
     'test_bootstrap_minute_ranges.py',
     'test_unusable_old_state_bootstrap.py',
@@ -38,6 +39,7 @@ def main():
         'test_observer_classifier_lease.py': 'C11_FRESH_CLASSIFIER_BEFORE_SHORT_SCOPE_PASS',
         'test_original_revisit_offer.py': 'C11_READABLE_DECISION_CLOCK_DOES_NOT_INHERIT_PRE_WARM_SCOPE',
         'test_stale_analyzed_cache_revisit.py': 'C11_RECEIPT_VISIBLE_BUT_CURRENT_CACHE_HIDES_NATIVE_REVISIT',
+        'test_entry_verdict_production_sink.py': 'C11_ORDER_FACT_FIRST_DENIAL_MISSING',
     }
     for fixture,marker in first_current.items():
         path=ROOT/'hosted_worker'/fixture
