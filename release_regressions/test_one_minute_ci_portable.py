@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -257,3 +258,13 @@ class StoppedPaperBindingChecks(unittest.TestCase):
         self.assertEqual(attempts,[])
         states=iter((True,False))
         self.assertFalse(confirm(lambda:next(states),lambda:True,lambda:None))
+
+
+class ObserverLeaseChecks(unittest.TestCase):
+    def test_refreshed_same_generation_proof_is_current_not_backdated(self):
+        script = HERE.parent / "hosted_worker" / "test_observer_classifier_lease.py"
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", str(script)], capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertIn("C11_OBSERVER_CLASSIFIER_LEASE_PASS", result.stdout)

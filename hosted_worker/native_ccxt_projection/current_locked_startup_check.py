@@ -184,7 +184,9 @@ def main():
     feed=entry_feed.EntryFeed(Wire(),1)
     feed.classification=N(verified={SYMBOL:PAIR},received_monotonic_ns=time.monotonic_ns())
     assert feed.tracking_pairs()==() and feed.latest_owner_observation==()
-    observer=N(point=lambda sym,_: (fixture_generation(),1,Decimal('.25')) if sym==SYMBOL else None)
+    def fixed_point(sym,_):
+        return (fixture_generation(),1,Decimal('.25')) if sym==SYMBOL else None
+    observer=N(point=fixed_point,current_point=fixed_point)
     archived=ArchivedGuaWire(Path('/archived-gua.json')) if NATIVE_GUA else None
     E=archived.end if archived else 1795488300000
     replay_wall=[(E-900000+65001 if FULL_TAPE else max(archived.now,E+65001)) if archived else E+90000]

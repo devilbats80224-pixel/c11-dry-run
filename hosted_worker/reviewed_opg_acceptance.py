@@ -193,7 +193,7 @@ def main(outer):
     bridge.send(dict(op='C11_PAPER_BRIDGE_V1',nonce='0'*32)); bridge.receive(2)
     f=entry_feed.EntryFeed(bridge,1)
     f.classification=N(verified={'OPGUSDT':PAIR},body_sha256='b'*64,received_monotonic_ns=time.monotonic_ns())
-    obs=ObserverClient(bridge,B)
+    obs=ObserverClient(bridge,B,docked_current=True)
     assert tuple(x.symbol for x in f.read())==('OPGUSDT',)
     assert f.tracking_pairs()==(PAIR,)
     cfg=config_for(1000.0,[PAIR])

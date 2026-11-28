@@ -226,7 +226,7 @@ def main(outer):
     b.send(dict(op='C11_PAPER_BRIDGE_V1',nonce='0'*32));b.receive(2)
     f=entry_feed.EntryFeed(b,1)
     f.classification=N(verified={'STBLUSDT':PAIR,MISSING:UNKNOWN_PAIR},body_sha256=MIX['meta'],received_monotonic_ns=time.monotonic_ns())
-    obs=ObserverClient(b,B)
+    obs=ObserverClient(b,B,docked_current=True)
     got=tuple(x.symbol for x in f.read())
     assert got==(MISSING,'STBLUSDT'),got
     assert f.tracking_pairs()==(UNKNOWN_PAIR,PAIR),f.tracking_pairs()

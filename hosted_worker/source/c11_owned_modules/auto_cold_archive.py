@@ -525,12 +525,12 @@ class AutoColdAdmission(ColdPrefixAdmission):
 
     def offer_retained(self,owner,f,*,prior=None,advanced=False):
         from atr_er_state import REQUIRED_QUARTERS
-        from causal_bars import MINUTE
+        from causal_bars import FIVE,MINUTE
         now=self.wall()
         if (get_ident()!=self.thread or f.symbol in self.active_jobs or not owner.tap.current(f)
                 or not quote_contract_shape(f.symbol) or f.pair!=f.symbol[:-4]+'/USDT:USDT'
                 or type(f.origin) is not int or type(f.boundary) is not int
-                or not 0<f.origin<f.boundary-QUARTER or f.origin%QUARTER
+                or not 0<f.origin<f.boundary-QUARTER or f.origin%FIVE
                 or f.boundary%QUARTER):
             return None
         existing=self.pending.get(f.symbol)
@@ -555,13 +555,26 @@ class AutoColdAdmission(ColdPrefixAdmission):
         # A blank strategy has no lifetime recurrence to resume. Derive a
         # new, explicitly labeled segment from the needed contiguous local
         # minutes. A recent listing still uses its original verified start.
-        if prior is not None and origin==f.origin:
+        if origin%QUARTER or (prior is not None and origin==f.origin):
             return None
         rows=store.range(f.symbol,MINUTE,origin,cutoff,now)
         if not rows or not owner.tap.current(f):
             return None
-        self.offer(f)
-        slot=self.pending.get(f.symbol)
+        if f.origin%QUARTER:
+            # Only a fully causal, quarter-aligned retained window can enter
+            # here. Do not enable listing-day archive discovery when the
+            # venue's authentically five-aligned date is not a quarter.
+            slot=self.pending.get(f.symbol)
+            if slot is None:
+                slot=Slot(f,now,now)
+                self.pending[f.symbol]=slot
+            elif slot.fact.origin!=f.origin:
+                return None
+            else:
+                slot.fact,slot.seen_ms=f,now
+        else:
+            self.offer(f)
+            slot=self.pending.get(f.symbol)
         if slot is None:
             return None
         if prior is not None:
@@ -667,7 +680,10 @@ class AutoColdAdmission(ColdPrefixAdmission):
         # Drain completed, in-scope work before launching another fetch.
         # In insertion order a due retry could otherwise bypass the ready
         # candidate at every completion, even when no new data is needed.
+        delivered=False
         for symbol,slot in tuple(self.pending.items()):
+            if ready_only and not allowed():
+                return delivered
             if slot.result is not None and (owner.cold_delivery_allows(slot.fact) if ready_only else owner.tap.current(slot.fact)):
                 source,prefix=slot.result
                 if (source.review_expires_ms is not None
@@ -699,14 +715,18 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 finally:
                     self.sources.pop(symbol,None)
                 if installed:
+                    delivered=True
                     self.pending.pop(symbol,None)
                     self.repair_prior.pop(symbol,None)
                     if getattr(source,'daily_fallback',False) is True:
                         emit=getattr(getattr(owner,'primary_admission',None),'gate',None)
                         if callable(emit):
                             emit('AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED',slot.fact)
-                return True
-        if ready_only or not allowed():
+                if not ready_only:
+                    return True
+        if ready_only:
+            return delivered
+        if not allowed():
             return
         for symbol,slot in tuple(self.pending.items()):
             if not allowed():

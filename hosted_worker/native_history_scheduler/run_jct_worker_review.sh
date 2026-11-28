@@ -8,13 +8,13 @@ out=$4
 baseline=$5
 automatic=${6:-no}
 printf '%s\n' "$image" | grep -Eq '^sha256:[a-f0-9]{64}$'
-case "$baseline:$automatic" in yes:no|no:yes|no:han|no:han-restart|no:init|no:no|no:reviewed-partial|no:auto-stale|no:roster-return|no:early-roster-return|no:early-deliver|no:early-hold|no:early-start|no:early-no-start|no:mixed-blank|no:mixed-unusable) ;; *) exit 64;; esac
+case "$baseline:$automatic" in yes:no|no:yes|no:han|no:han-restart|no:init|no:no|no:reviewed-partial|no:auto-stale|no:roster-return|no:early-roster-return|no:early-deliver|no:early-hold|no:early-start|no:early-no-start|no:mixed-blank|no:mixed-unusable|no:mixed-retained-blank|no:mixed-advanced|no:mixed-retained-thin-classifier|no:mixed-advanced-direct-conflict) ;; *) exit 64;; esac
 test "$(shasum -a 256 "$stopped" | awk '{print $1}')" = 470d26f561f5ef25e8467fc67b3250e36fb4f54f280e20afa8f725c5767c2eac
 root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 mkdir -m 755 "$out"
 cp "$root/native_history_scheduler/replay_jct_worker.py" "$root/native_ccxt_projection/current_locked_startup_check.py" "$out/"
 set --
-case "$automatic" in mixed-blank|mixed-unusable)
+case "$automatic" in mixed-blank|mixed-unusable|mixed-retained-blank|mixed-advanced|mixed-retained-thin-classifier|mixed-advanced-direct-conflict)
     cp "$root/native_history_scheduler/mixed_replay_evidence.py" "$out/"
     set -- "$@" -e "C11_JCT_MIXED_PACKAGED=${automatic#mixed-}"
     automatic=yes

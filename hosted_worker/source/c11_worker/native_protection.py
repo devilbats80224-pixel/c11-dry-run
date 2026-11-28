@@ -92,10 +92,14 @@ class FeatureSpan:
             return 'ATR_ER_INVALID_CLOCK', None
         market = bot.exchange.markets[pair]
         symbol, launch = market['id'], market['info'].get('onboardDate')
-        if type(launch) is not int or launch <= 0 or launch % QUARTER or launch > end:
+        if type(launch) is not int or launch <= 0 or launch % FIVE or launch > end:
             return 'ATR_ER_ORIGIN_UNVERIFIED', None
         warming = (end // QUARTER * QUARTER - launch) // QUARTER < REQUIRED_QUARTERS
         proof = self.store.contract_segment(symbol,launch,now)
+        # A non-quarter venue timestamp is an identity, not an ATR start.
+        # Admit only a separately bound, quarter-aligned computation proof.
+        if launch%QUARTER and (proof is None or proof.open_ms%QUARTER):
+            return 'ATR_ER_ORIGIN_UNVERIFIED', None
         if proof is None:
             return ('WARMUP_LT_401_15M' if warming else 'ATR_ER_TRUSTED_ORIGIN_REQUIRED'), None
         warming = (end // QUARTER * QUARTER - proof.open_ms) // QUARTER < REQUIRED_QUARTERS

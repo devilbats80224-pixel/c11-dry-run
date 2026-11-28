@@ -312,7 +312,7 @@ class WarmReleaseBinding:
                 store.owner_atomic_phases=()
                 try:
                     self._retained_minutes=store.record_owner_primary_batch(
-                        s.symbol,batches,lambda:self._current(s),scope=s,preserve_warm_prefix=True)
+                        s.symbol,batches,lambda:self._current(s),scope=s,wall=sc.wall,preserve_warm_prefix=True)
                     return True
                 finally:
                     for phase in store.owner_atomic_phases:

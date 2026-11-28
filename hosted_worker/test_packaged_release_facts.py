@@ -46,7 +46,12 @@ def check_in_image(pins, expectation):
         try:
             actual = verify_activation_assets()
         except ReleaseRefused as exc:
-            assert str(exc) == expectation, ("C11_PACKAGED_RELEASE_FACTS", expectation, str(exc))
+            expected_reason = "C11_RELEASE_FILE_MISSING" if expectation == "UNREADABLE_AS_UID_1000" else expectation
+            assert str(exc) == expected_reason, ("C11_PACKAGED_RELEASE_FACTS", expectation, str(exc))
+            if expectation == "UNREADABLE_AS_UID_1000":
+                assert isinstance(exc.__cause__, PermissionError), (
+                    "C11_PACKAGED_RELEASE_ASSET_MODE", "PermissionError", type(exc.__cause__).__name__
+                )
         else:
             assert expectation == "PASS" and tuple(actual) == tuple(ROUTES)
     print("C11_PACKAGED_RELEASE_FACTS", expectation)

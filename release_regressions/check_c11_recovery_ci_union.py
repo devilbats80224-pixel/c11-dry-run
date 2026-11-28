@@ -14,8 +14,9 @@ STARTUP_REGRESSIONS={
     'test_bounded_official_archive.py',
     'test_advanced_checkpoint_long_gap.py',
     'test_archive_fallback_wire_evidence.py',
+    'test_kava_venue_history_alignment.py',
 }
-WORKER_REPLAYS={'warm-missing-analysis','mixed-blank','mixed-unusable',
+WORKER_REPLAYS={'warm-missing-analysis','mixed-blank','mixed-unusable','mixed-retained-blank','mixed-advanced','mixed-retained-thin-classifier','mixed-advanced-direct-conflict',
                 'early-roster-return','unseeded-on-demand','archive-source-outage'}
 
 
@@ -28,6 +29,15 @@ def main():
     matrix={x.strip() for x in cases[0].split(',')} if len(cases)==1 else set()
     absent=sorted((STARTUP_REGRESSIONS-executed)|(WORKER_REPLAYS-matrix))
     absent.extend(sorted(t for t in STARTUP_REGRESSIONS if not (ROOT/'hosted_worker'/t).is_file()))
+    portable=(ROOT/'release_regressions/test_one_minute_ci_portable.py').read_text()
+    gate=(ROOT/'hosted_worker/check_packaged_release_facts.sh').read_text()
+    if 'test_observer_classifier_lease.py' not in portable:
+        absent.append('current-rank classifier lease reproduction')
+    if ('UNREADABLE_AS_UID_1000' not in gate or 'create_release_facts_layer_context.sh' not in gate):
+        absent.append('packaged runtime UID release facts')
+    if ('complete_cached_candidates_share_one_ready_owner_pass()' not in
+            (ROOT/'hosted_worker/test_retained_minute_cold_prefix.py').read_text()):
+        absent.append('same-pass multiple retained prefixes')
     if absent:
         print('C11_REQUIRED_RECOVERY_CI_CASE_MISSING: '+', '.join(sorted(set(absent))))
         return 1
