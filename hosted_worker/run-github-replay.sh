@@ -334,7 +334,7 @@ for line in rows:
         try: diag=json.loads(line.split(' ',1)[1])
         except ValueError: pass
 safe={}
-for key in ('generation','age_ms','covers','warm_scopes','history_requests','callback_count','read_count'):
+for key in ('generation','age_ms','covers','warm_scopes','terminal_rows','history_requests','callback_count','read_count'):
     val=diag.get(key)
     if type(val) is int and 0<=val<=1000000:safe[key]=val
 for key in ('proof','slot','minute'):
