@@ -33,6 +33,7 @@ class ReadableWarmInput:
     rpd_pin:str
     last_receipt:int
     durable_check:object
+    quarters:tuple
 
 
 class WarmReleaseBinding:
@@ -48,6 +49,7 @@ class WarmReleaseBinding:
         self.reused=set()
         self.owner=get_ident()
         self.readable={}
+        self.late=None
 
     def readiness_at(self,candidate,end,now):
         if get_ident()!=self.owner or type(now) is not int or not end<=now<end+QUARTER:
@@ -58,6 +60,87 @@ class WarmReleaseBinding:
         store=self.sc.adapter.ready.store
         usable=optional_observation(proof.durable_check,(store.db,))
         return proof.at if usable is True else None
+
+    def clear_late(self):
+        self.late=None
+
+    def late_current(self,first):
+        if self.late is None or self.late[0] is not first:
+            return False
+        _,scope,proof=self.late
+        sc=self.sc
+        now=sc.wall()
+        bot=sc.worker.freqtrade
+        return (get_ident()==self.owner and (scope.pair,scope.end) not in self.claimed
+            and proof.at<=now<min(scope.expires,proof.at+60_000,scope.end+QUARTER)
+            and bot.config.get('dry_run') is True and bot.native_paper_exchange()
+            and getattr(bot,'_owned_revisit_no_positions',False) is True
+            and getattr(bot,'_owned_revisit_reconciled',False) is True
+            and sc.commit_and_decide.remaining()>sc.adapter.ready.latency_budget
+            and sc.plan.current(scope,now)
+            and optional_observation(proof.durable_check,(sc.adapter.ready.store.db,)) is True)
+
+    def arm_late(self,first,pair,end):
+        self.late=None
+        if (first.pair,first.end)!=(pair,end) or self.sc.wall()<min(first.expires,end+60_000):
+            return False
+        fresh=self.sc.plan.provisional_scope(pair,end)
+        if fresh is None or (fresh.pair,fresh.symbol,fresh.end)!=(pair,first.symbol,end):
+            return False
+        proof=self.readable.get((fresh.pair,fresh.symbol,fresh.end))
+        if proof is None:
+            return False
+        self.late=(first,fresh,proof)
+        if not self.late_current(first):
+            self.late=None
+            return False
+        return True
+
+    def publish_late(self,pair,end,frame,callback):
+        if self.late is None:
+            return None
+        first,s,p=self.late
+        if (s.pair,s.end)!=(pair,end):
+            return None
+        if not self.late_current(first):
+            return 'HOLD_ORIGINAL_PUBLISHER_LEASE',None
+        sc=self.sc
+        bot=sc.worker.freqtrade
+        store=sc.adapter.ready.store
+        candidate=sc.plan.accepted_candidate(s)
+        if candidate is None or hasattr(bot,'_c11_native_primary_handoff'):
+            return 'HOLD_NO_ORIGINAL_ACCEPTED_RANK',None
+        at=sc.wall()
+        before=frame()
+        same=optional_observation(lambda:same_native_frame(store,s,before,at),(store.db,))
+        if same!=p.frame_hash:
+            return 'HOLD_ANALYZER_NOT_DURABLE_NATIVE_FRAME',None
+        key=(s.pair,s.symbol,s.generation,s.end)
+        seal=AuthoritativePrimaryCommit(*key,at,s.expires,p.last_receipt,p.source_pin,p.frame_hash,
+                                       canonical(p.primary),canonical(p.closed),p.rpd_pin)
+        ok=lambda:self.late_current(first)
+        projector=CommittedProjection(wall=sc.wall,
+            native_owner_lookup=lambda *k:seal if k==key and ok() else None,
+            current_authority=lambda c,r,t:c is candidate and r is seal and ok(),
+            trusted_rpd_pin=lambda c,e,t:p.rpd_pin if c is candidate and e==end and ok() else None,
+            verified_ready_at=lambda c,r,t:p.at if c is candidate and r is seal and ok() else None)
+        try:
+            event=projector.project(seal,candidate,before,p.primary,p.closed)
+        except ValueError:
+            if not ok():return 'HOLD_ORIGINAL_PUBLISHER_LEASE',None
+            raise
+        gate=NativePrimaryHandoff(wall=sc.wall,original_scope=projector.still_native,
+                    frame_sha=lambda p,e:frame_sha(frame(),e)[0],verified_ready_at=projector.readiness_for)
+        bot._c11_native_primary_handoff=gate
+        try:
+            with gate.committed(event):
+                if gate.resolve(pair,candidate,end) is None or not ok():
+                    return 'HOLD_ORIGINAL_ANALYZER_CHANGED',None
+                self.claimed.add((pair,end))
+                return 'ORIGINAL_NATIVE_CALLBACK',callback()
+        finally:
+            del bot._c11_native_primary_handoff
+            self.late=None
 
     def eligible(self,s,start):
         sc=self.sc
@@ -304,7 +387,7 @@ class WarmReleaseBinding:
         # no stale rank permission, and source-clock refresh never restamps it.
         key_input=(s.pair,s.symbol,s.end)
         self.readable.setdefault(key_input,ReadableWarmInput(*key_input,at,identity,material,closed,
-                          provenance,lineage,last,durable_check))
+                          provenance,lineage,last,durable_check,tuple(batches[-1][1])))
         gate=NativePrimaryHandoff(wall=sc.wall,original_scope=projector.still_native,
             frame_sha=lambda _p,e:frame_sha(frame(),e)[0])
         bot._c11_native_primary_handoff=gate

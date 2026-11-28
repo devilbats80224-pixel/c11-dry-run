@@ -202,6 +202,10 @@ sites=[m[1] for row in rows if (m:=frame.fullmatch(row))]
 errors=[(m[1],sorted(set(code.findall(row)))) for row in rows if (m:=fault.match(row))]
 if errors:
     name, reasons=errors[-1]
+    counts=[row.split()[1:] for row in rows if re.fullmatch(r'C11_LATE_DELIVERY_COUNTS [0-9]+ [0-9]+ [0-9]+',row)]
+    if counts:
+        cb,inputs,wire=counts[-1]
+        print('late delivery (expected callbacks=1, valid inputs>=1, new requests=0): actual callbacks='+cb+', valid inputs='+inputs+', new requests='+wire)
     print('first failing fixture site: '+(sites[-1] if sites else 'unknown')+'; '+name+'; '+(', '.join(reasons) if reasons else 'no allowlisted code'))
 else:
     print('no exception signature; last confirmed stage: immutable image and fixture loaded')

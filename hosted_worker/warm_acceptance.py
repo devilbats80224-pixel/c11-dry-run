@@ -855,9 +855,13 @@ def main(outer):
                 w.freqtrade.process()
                 strategy.analyze_pair(PAIR)
             calls=[a for a in advice if a==(62_000,PAIR,'ORIGINAL_NATIVE_CALLBACK')]
+            print('C11_LATE_DELIVERY_COUNTS',len(calls),len(actual),len(exact_requests)-baseline_wire,flush=True)
             assert len(calls)==1 and actual, (
                 'C11_LATE_ORIGINAL_WORKER_NO_CALLBACK_OR_INPUT',
                 len(calls),len(actual),[status for dt,pair,status in advice if dt==62_000 and pair==PAIR])
+            assert all(x['scope'].generation==fresh.generation and x['scope'].end_ms==E
+                       and x['as_of_ms']==clock[0]<x['valid_until_ms'] for x in actual), (
+                'C11_LATE_INPUT_WRONG_FRESH_SCOPE',len(actual))
             assert len(exact_requests)==baseline_wire and not Trade.get_trades().all()
             print('C11_LATE_ORIGINAL_WORKER_ONE_CALLBACK_VALID_INPUT_NO_WIRE',flush=True)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)
