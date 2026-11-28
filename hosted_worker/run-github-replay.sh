@@ -315,7 +315,7 @@ import re
 import sys
 rows=Path(sys.argv[1]).read_text(errors='replace').splitlines()
 where=re.compile(r'^  File "(?:/fixture-driver/|/opt/c11_owned_modules/)([a-z0-9_]+\.py)", line ([0-9]{1,5}), in [A-Za-z_<>]+$')
-error=re.compile(r'^([a-zA-Z_.]*(?:Error|Exception)|Refused|Hold)(?::|$)')
+error=re.compile(r'^([a-zA-Z_.]*(?:Error|Exception|Refused|Hold))(?::|$)')
 known=re.compile(r'\bC11_[A-Z0-9_]{5,80}\b')
 stage=re.compile(r'^C11_MIXED_STAGE [A-Z_0-9]{4,50}$')
 loc=[f'{m[1]}:{m[2]}' for l in rows if (m:=where.fullmatch(l))]

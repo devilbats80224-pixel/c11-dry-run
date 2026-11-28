@@ -122,7 +122,12 @@ def observer_feed(root, symbol, pair, metadata, wall, mono):
     """The same checked EntryFeed/CaptureBridge/SQLite path the packaged Worker uses."""
     binding = sha256(b'isolated-c11-mixed-packaged-callback-v1').hexdigest()
     body_sha = sha256(metadata).hexdigest()
-    observer = DockerObserver(root/'docker-observer.sqlite', binding, wall=wall, mono=mono)
+    # The stopped comparison bundle includes its own observer binding.
+    # Give this synthetic publication its own isolated fixture store instead
+    # of attempting to reuse or alter that existing stopped-bundle evidence.
+    directory=root/'mixed-observer'
+    directory.mkdir(mode=0o700)
+    observer = DockerObserver(directory/'docker-observer.sqlite', binding, wall=wall, mono=mono)
     publication = ReplayPublication(symbol, wall)
     feed = None
     bridge = CaptureBridge(publication, observer, binding, lambda:feed.classification)

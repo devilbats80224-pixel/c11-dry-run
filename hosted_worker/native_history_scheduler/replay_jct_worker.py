@@ -1140,6 +1140,11 @@ else:
     factory=installed.installed_site_factory(RUNTIME_SHA,lambda *_:None)
     try:
         with ExitStack() as patches:
+            if MIXED:
+                import observer_host
+                # Keep the real observer freshness predicate, but reference
+                # the same explicit causal tape clock as the paper Worker.
+                patches.enter_context(patch.object(observer_host,'now_ms',lambda:now))
             if LEASE_CLOCK:
                 import refresh
                 # Align the fixture's monotonic lease with its market time,
