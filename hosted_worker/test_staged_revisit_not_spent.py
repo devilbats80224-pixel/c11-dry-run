@@ -63,7 +63,7 @@ def same_close_warm_receipt_failure_is_explained_before_source_expiry():
                         _owned_revisit_reconciled=True)
     adapter=SimpleNamespace(ready=ready,_proven={})
     scheduler=SimpleNamespace(wall=lambda:now[0],marker=(s.generation,E),
-        covers={PAIR:s},worker=SimpleNamespace(freqtrade=bot),
+        covers={PAIR:s},worker=SimpleNamespace(freqtrade=bot),adapter=adapter,
         commit_and_decide=SimpleNamespace(remaining=lambda:remaining[0]),
         _transition=lambda scope,why:diagnostic.append((scope,why)),
         queue=SimpleNamespace(accept_completed_original_scope=lambda *_:None),tickets={})
