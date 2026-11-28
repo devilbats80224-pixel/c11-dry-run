@@ -24,6 +24,25 @@ from cold_archive_identity import archive_location
 from stale_state_install import install as install_stale, snapshot
 
 
+def unusable_retained_prior(db,prior,fact,now):
+    """Only a provable never-advanced listing marker may be replaced."""
+    if (prior.symbol!=fact.symbol or prior.segment is None or len(prior.segment)!=2
+            or prior.segment[0]!=fact.origin or not fact.origin<=prior.segment[1]<=now
+            or prior.atr):
+        return False
+    if prior.checkpoint is not None:
+        expected=RpdState.start(SegmentStart(fact.symbol,*prior.segment))
+        if RpdState.restore(prior.checkpoint)!=expected:
+            return False
+    # Any prior computed evidence or provenance means this is not a blank-
+    # equivalent cursor, even if the current checkpoint stopped advancing.
+    for table in ('atr_er_sample','cold_prefix_lineage','retained_bootstrap_contract'):
+        if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone()
+                and db.execute(f'SELECT 1 FROM {table} WHERE symbol=?',(fact.symbol,)).fetchone()):
+            return False
+    return True
+
+
 @dataclass(frozen=True)
 class ClosedPrefixSource:
     directory: Path
@@ -382,8 +401,7 @@ class ColdPrefixAdmission:
             if (source.retained_listing_ms!=f.origin or not f.origin<source.origin
                     or source.origin%QUARTER or source.cutoff!=state.next_open
                     or source.cutoff-source.origin!=REQUIRED_QUARTERS*QUARTER
-                    or tuple(w for w,_ in prefix.terminal_atr_samples)!=(FIVE,QUARTER)
-                    or f.symbol in self.repair_prior):
+                    or tuple(w for w,_ in prefix.terminal_atr_samples)!=(FIVE,QUARTER)):
                 self.failed.add(f.symbol)
                 return True
             origin=source.origin
@@ -393,7 +411,7 @@ class ColdPrefixAdmission:
             self.failed.add(f.symbol)
             return True
         prior=self.repair_prior.get(f.symbol)
-        if prior is not None:
+        if prior is not None and not bootstrap:
             # Drop this old attempt if a new state won the race; next owner
             # tick reevaluates the current cursor. Do not rewrite recent data.
             if snapshot(owner.store.db,f.symbol)!=prior:
@@ -403,8 +421,21 @@ class ColdPrefixAdmission:
         db = owner.store.db
         with db:
             db.execute('BEGIN IMMEDIATE')
-            if any(db.execute(f'SELECT 1 FROM {table} WHERE symbol=?',(f.symbol,)).fetchone()
-                   for table in ('segment','rpd_checkpoint','atr_er_checkpoint')):
+            if not allowed() or not owner.tap.current(f):
+                return False
+            if prior is not None:
+                if snapshot(db,f.symbol)!=prior or not unusable_retained_prior(db,prior,f,now):
+                    return True
+                db.execute('CREATE TABLE IF NOT EXISTS retained_bootstrap_prior ('
+                           'symbol TEXT NOT NULL, start_ms INTEGER NOT NULL, '
+                           'listing_ms INTEGER NOT NULL, proven_ms INTEGER NOT NULL, '
+                           'previous_rpd TEXT, manifest_sha TEXT NOT NULL, PRIMARY KEY(symbol,start_ms))')
+                db.execute('INSERT INTO retained_bootstrap_prior VALUES (?,?,?,?,?,?)',
+                           (f.symbol,origin,*prior.segment,prior.checkpoint,source.manifest_sha))
+                db.execute('DELETE FROM rpd_checkpoint WHERE symbol=?',(f.symbol,))
+                db.execute('DELETE FROM segment WHERE symbol=?',(f.symbol,))
+            elif any(db.execute(f'SELECT 1 FROM {table} WHERE symbol=?',(f.symbol,)).fetchone()
+                     for table in ('segment','rpd_checkpoint','atr_er_checkpoint')):
                 return True
             db.execute('INSERT INTO segment VALUES (?,?,?)',(f.symbol,origin,now))
             db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(f.symbol,replace(state,observed=now).pack()))
