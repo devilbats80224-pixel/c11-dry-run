@@ -189,6 +189,28 @@ warm() {
             fi
         else
             echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback
+            # Do not print fixture rows or trace payloads. Keep the exact
+            # assertion site/type and bounded allowlisted reason codes.
+            detail="$(python3 - "$out/warm-runtime.log" <<'PYFAIL'
+from pathlib import Path
+import re,sys
+rows=Path(sys.argv[1]).read_text(errors='replace').splitlines()
+frame=re.compile(r'^  File "/proof/warm_acceptance\.py", line ([0-9]{1,5}), in [A-Za-z_<>]+$')
+fault=re.compile(r'^(AssertionError|StopIteration|ValueError|TypeError|KeyError|UnboundLocalError|AttributeError|OperationalError|RuntimeError)(?::|$)')
+code=re.compile(r'\bC11_[A-Z0-9_]{4,85}\b')
+sites=[m[1] for row in rows if (m:=frame.fullmatch(row))]
+errors=[(m[1],sorted(set(code.findall(row)))) for row in rows if (m:=fault.match(row))]
+if errors:
+    name, reasons=errors[-1]
+    print('first failing fixture site: '+(sites[-1] if sites else 'unknown')+'; '+name+'; '+(', '.join(reasons) if reasons else 'no allowlisted code'))
+else:
+    print('no exception signature; last confirmed stage: immutable image and fixture loaded')
+PYFAIL
+)"
+            printf '%s\n' "$detail"
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+                { echo '### Warm Worker replay failed'; echo 'Expected: original callback once in this close, with required stored provenance.'; printf 'Actual: %s\n' "$detail"; } >>"$GITHUB_STEP_SUMMARY"
+            fi
         fi
         return 1
     }
