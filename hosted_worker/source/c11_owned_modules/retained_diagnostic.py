@@ -2,6 +2,7 @@
 import json,os,stat
 from retained_page_schema import BUDGET_REASONS, PAGE_SCHEMA, SCHEDULE_SCHEMA, accepted_history_trace
 from diagnostic_schema import MAX_LINE,accepted_symbol_event
+from entry_verdict_receipt import DIAGNOSTIC_SINK,SCHEMA as VERDICT_SCHEMA,accepted_verdict_event
 FIELDS={
  'c11-gate-readback-v1':frozenset(('schema','symbol','generation','end_ms','first_gate','owner_wire_charged_lanes','valid_reply_lanes','original_callbacks','observed_expiry_bound_ms','note','transition_ms')),
  'c11-owner-window-counters-v1':frozenset(('schema','end_ms','counters','saturated')),
@@ -42,6 +43,8 @@ def redacted_fd2_only():
           if type(d) is not dict:return False
           if d.get('schema') in ('c11-gate-readback-v1','c11-gate-detail-v1'):
              if not accepted_symbol_event(d):return False
+          elif d.get('schema')==VERDICT_SCHEMA:
+             if not accepted_verdict_event(d):return False
           elif d.get('schema')=='c11-opg-history-status-v1':
              if not accepted_history_status(d):return False
           elif d.get('schema') in (PAGE_SCHEMA,SCHEDULE_SCHEMA):
@@ -49,4 +52,8 @@ def redacted_fd2_only():
           elif set(d)!=FIELDS.get(d.get('schema')):return False
           return os.write(fd,line)==len(line)
        except (OSError,TypeError,ValueError,KeyError):return False
-    return emit,lambda:os.close(fd)
+    token=DIAGNOSTIC_SINK.set(emit)
+    def close():
+       try:DIAGNOSTIC_SINK.reset(token)
+       finally:os.close(fd)
+    return emit,close
