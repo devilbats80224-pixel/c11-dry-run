@@ -24,6 +24,7 @@ class WarmReleaseBinding:
         self.prefix={}
         self.selected=set()
         self.prepared=None
+        self._retained_minutes=()
         self.claimed=set()
         self.claim_end=None
         self.refresh=None
@@ -140,10 +141,12 @@ class WarmReleaseBinding:
             return ()
         store=sc.adapter.ready.store
         if not committed:
+            self._retained_minutes=()
             def write():
                 store.owner_atomic_phases=()
                 try:
-                    store.record_owner_primary_batch(s.symbol,batches,lambda:self._current(s))
+                    self._retained_minutes=store.record_owner_primary_batch(
+                        s.symbol,batches,lambda:self._current(s),scope=s,preserve_warm_prefix=True)
                     return True
                 finally:
                     for phase in store.owner_atomic_phases:
@@ -219,7 +222,12 @@ class WarmReleaseBinding:
                 if store.db.execute(query,(s.symbol,width,opened)).fetchone()!=saved:
                     return False
             return True
-        provenance=canonical(('AUTHENTIC_ORIGINAL_CCXT_MINUTE_DERIVED',key,receipt.source_proof,batches,durable))
+        # The archived incoming receipt and the already-durable old raw
+        # rows are distinct. No retained old minute is a new 5m/15m input.
+        proof=('AUTHENTIC_ORIGINAL_CCXT_MINUTE_DERIVED',key,receipt.source_proof,batches,durable)
+        if self._retained_minutes:
+            proof=(*proof,('PREEXISTING_UNUSED_MINUTES',self._retained_minutes))
+        provenance=canonical(proof)
         lineage=canonical((provenance,packed,origin.open_ms,origin.proven_at_ms))
         last=max(receipt.received_ms,st.observed,*(r.observed_ms for r in material[0]),*(r.received_ms for r in material[1]))
         at=sc.wall()
