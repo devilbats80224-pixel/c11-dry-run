@@ -28,6 +28,9 @@ class ClosedBar:
     volume: float
     quote: float
 
+    def payload(self):
+        return (self.op,self.high,self.low,self.close,self.volume,self.quote)
+
     def valid(self, width):
         return (type(self.open_ms) is type(self.received_ms) is int and self.open_ms >= 0
                 and self.open_ms % width == 0 and self.open_ms + width <= self.received_ms
@@ -103,7 +106,30 @@ class CausalBars:
             else:
                 self.db.execute('INSERT INTO candle VALUES (?,?,?,?,?,?,?,?,?,?)', (*key, bar.received_ms, *values))
 
-    def record_owner_primary_batch(self, symbol, batches, authority, *, historical=None, scope=None, multi=None, wall=None, revision_append=None):
+    def _warm_immutable_minutes(self, symbol, batches, scope):
+        """Select stored prefix rows only when no planned 5m aggregate depends on that new value."""
+        end=scope.end
+        need(scope.symbol==symbol and type(end) is int and end%QUARTER==0,
+             'C11_OWNER_BATCH_SHAPE')
+        need(all(type(bar) is ClosedBar for _,rows in batches for bar in rows),
+             'C11_CANDLE_CAUSAL_ROW')
+        fives={bar.open_ms:bar for bar in batches[1][1]}
+        chosen=[]
+        retained=[]
+        for bar in batches[0][1]:
+            replacement=bar
+            if bar.valid(MINUTE) and bar.open_ms+MINUTE<=end-QUARTER:
+                previous=self.range(symbol,MINUTE,bar.open_ms,bar.open_ms+MINUTE,bar.received_ms)
+                if previous and previous[0].payload()!=bar.payload():
+                    at=bar.open_ms//FIVE*FIVE
+                    use=fives.get(at)
+                    if use is None or self.range(symbol,FIVE,at,at+FIVE,bar.received_ms)==(use,):
+                        replacement=previous[0]
+                        retained.append(replacement)
+            chosen.append(replacement)
+        return ((MINUTE,tuple(chosen)),*batches[1:]),tuple(retained)
+
+    def record_owner_primary_batch(self, symbol, batches, authority, *, historical=None, scope=None, multi=None, wall=None, revision_append=None, preserve_warm_prefix=False):
         # Only the original owner may call through its guarded session. Scope
         # callback belongs to the actual current original worker, not receipt data.
         phases=['ATOMIC_PRECHECK']
@@ -111,6 +137,7 @@ class CausalBars:
         began=False
         committing=False
         version=None
+        preserved=()
         try:
             need(not self.db.in_transaction and type(batches) is tuple and
                  tuple(width for width,_ in batches)==(MINUTE,FIVE,QUARTER), 'C11_OWNER_BATCH_SHAPE')
@@ -123,6 +150,12 @@ class CausalBars:
                 need(authority() is True,'C11_OWNER_BATCH_AUTHORITY')
                 phases.append('ATOMIC_ROWS_ENTERED')
                 reviewed_keys=()
+                if preserve_warm_prefix:
+                    need(historical is None and multi is None and revision_append is None and scope is not None,
+                         'C11_OWNER_BATCH_SHAPE')
+                    batches,preserved=self._warm_immutable_minutes(symbol,batches,scope)
+                    if preserved:
+                        phases.append('ATOMIC_HISTORICAL_MINUTE_RETAINED')
                 if multi is not None:
                     from multilane_history_view import FrozenReadView
                     need(type(multi) is FrozenReadView and historical is None and callable(wall),'C11_OWNER_BATCH_SHAPE')
@@ -150,7 +183,7 @@ class CausalBars:
                 phases.append('ATOMIC_COMMIT_ENTERED')
                 committing=True
             phases.append('ATOMIC_COMMIT_RETURNED')
-            return version
+            return preserved if preserve_warm_prefix else version
         except BaseException:
             # No extra SQL nor rollback/commit control. Transaction-state only.
             try:active=self.db.in_transaction

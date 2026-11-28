@@ -645,6 +645,21 @@ def main(outer):
             policy.bars.record('STBLUSDT',QUARTER,(legacy,))
             assert policy.bars.range('STBLUSDT',QUARTER,E-QUARTER,E,clock[0])==(legacy,)
             assert policy.bars.range('STBLUSDT',MINUTE,E-45*MINUTE,E,clock[0])==()
+            if mixed_pressure:
+                # Keep one earlier 5m bucket immutable while another older
+                # missing bucket still demands the original 45-minute reply.
+                archived=next(a for a in W['actual_public_receipts'] if a['timeframe']=='5m')
+                at=E-25*MINUTE
+                saved=next(row for row in archived['raw_kline_rows'] if row[0]==at)
+                # Explicit synthetic prior receipt, already saved in the
+                # previous audit epoch; do not use current wire clock here.
+                old_seen=E-1000
+                policy.bars.record('STBLUSDT',FIVE,(ClosedBar(at,old_seen,
+                     *(float(saved[j]) for j in (1,2,3,4,5,7))),))
+                original=next(a for a in W['actual_public_receipts'] if a['timeframe']=='1m')
+                sample=next(row for row in original['raw_kline_rows'] if row[0]==at)
+                old_overlap=ClosedBar(at,old_seen,*(float(sample[j]) for j in (1,2,3,4,5)),float(sample[7])+1.)
+                policy.bars.record('STBLUSDT',MINUTE,(old_overlap,))
           if i==1:
             assert not Trade.get_open_trades()
             if intent_case=='orphan_entry':
@@ -725,7 +740,21 @@ def main(outer):
             print('PROVEN',[(r.ticket.lane,len(r.raw))for r in sc.adapter._proven.values()],flush=True)
             if i==1:print('STRATEGY_SAME_CANDLE_OPTION',w.freqtrade.strategy.process_only_new_candles,flush=True)
           if i<2: w._sleep(w._throttle_secs)
-        assert (PAIR,E) in sc.warm.claimed,advice
+        if (PAIR,E) not in sc.warm.claimed:
+            observed=sorted({status for _,pair,status in advice if pair==PAIR
+                             and status in ('HOLD_NATIVE_RPD_LINEAGE','HOLD_ANALYZER_NOT_DURABLE_NATIVE_FRAME',
+                                            'HOLD_NATIVE_MINUTE_NOT_COMMITTED','HOLD_NOT_READY')})
+            statuses={'HOLD_NATIVE_RPD_LINEAGE':'C11_NATIVE_RPD_LINEAGE_HELD',
+                      'HOLD_ANALYZER_NOT_DURABLE_NATIVE_FRAME':'C11_ANALYZER_FRAME_HELD',
+                      'HOLD_NATIVE_MINUTE_NOT_COMMITTED':'C11_NATIVE_MINUTE_NOT_COMMITTED',
+                      'HOLD_NOT_READY':'C11_ORIGINAL_NOT_READY'}
+            actual=set()
+            for (_g,symbol),states in sc.first_gate.rows.items():
+                if symbol=='STBLUSDT':
+                    actual.update('C11_'+k for k in states['atomic_refusals'])
+                    actual.update('C11_'+k for k in states['atomic_phases'])
+            raise AssertionError('C11_MIXED_NATIVE_CALLBACK_MISSING',
+                                 *(statuses[k] for k in observed),*sorted(actual))
         assert len([a for a in advice if a[1:]==(PAIR,'ORIGINAL_NATIVE_CALLBACK')])==1,advice
         assert not any(a[1:]==(UNKNOWN_PAIR,'ORIGINAL_NATIVE_CALLBACK') for a in advice)
         assert not Trade.get_trades().all()
@@ -751,6 +780,12 @@ def main(outer):
         assert 0<=ready_at<60_000, 'C11_UNREADY_PEER_DELAYED_SAME_CLOSE'
         if mixed_pressure:
             assert ready_at==12_000 and len(delayed_frames)>=1, ('C11_COMBINED_REVISIT_CLOCK',ready_at,delayed_frames)
+            assert policy.bars.range('STBLUSDT',MINUTE,old_overlap.open_ms,old_overlap.open_ms+MINUTE,clock[0])==(old_overlap,)
+            held=delayed_frames[0]
+            row=sc.first_gate.rows[(held.generation,held.symbol)]
+            kept=row['atomic_phases'].get('ATOMIC_HISTORICAL_MINUTE_RETAINED')
+            assert kept and kept[:2]==[12000,12000], ('C11_HISTORICAL_MINUTE_RETENTION_NOT_RECORDED',kept)
+            print('C11_WARM_OVERLAP_OLD_BAR_AND_NEW_CALLBACK_BOTH_PRESERVED',flush=True)
             print('C11_COMBINED_HISTORY_PRESSURE_AND_SAME_CLOSE_REVISIT_PASS',flush=True)
         print('C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK',ready_at,flush=True)
         print('C11_LEGACY_WIDE_DID_NOT_MASK_RAW_MINUTE_GAP',flush=True)
