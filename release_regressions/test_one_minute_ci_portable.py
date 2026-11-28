@@ -227,3 +227,33 @@ class PublicTrackedFilesChecks(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StoppedPaperBindingChecks(unittest.TestCase):
+    def helper(self):
+        probe=HERE/'stopped_paper_binding.py'
+        self.assertTrue(probe.is_file(),'C11_STOPPED_BINDING_RETRY_NOT_REGISTERED')
+        return runpy.run_path(str(probe))['confirm']
+
+    def test_transient_mismatch_can_only_retry_the_same_exact_proof(self):
+        events=[]
+        observations=iter((False,True))
+        def exact():
+            events.append('exact')
+            return next(observations)
+        self.assertTrue(self.helper()(lambda:True,exact,lambda:events.append('settle')))
+        self.assertEqual(events,['exact','settle','exact'])
+
+    def test_persistent_mismatch_or_active_writer_never_passes(self):
+        attempts=[]
+        def mismatch():
+            attempts.append(1)
+            return False
+        confirm=self.helper()
+        self.assertFalse(confirm(lambda:True,mismatch,lambda:None))
+        self.assertEqual(len(attempts),3)
+        attempts.clear()
+        self.assertFalse(confirm(lambda:False,mismatch,lambda:None))
+        self.assertEqual(attempts,[])
+        states=iter((True,False))
+        self.assertFalse(confirm(lambda:next(states),lambda:True,lambda:None))
