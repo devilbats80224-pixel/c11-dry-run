@@ -75,7 +75,8 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
             owner._after_protection=lambda _:None
             BoundOwnerHistory.after_protection(owner,bot)
             if primary_occupied=='overlap':
-                assert calls==[], 'C11_COLD_DUPLICATED_OVERLAPPING_NATIVE_REQUEST'
+                assert calls==[(first+PAGE,first+2*PAGE)], (
+                    'C11_COLD_DUPLICATED_OVERLAPPING_NATIVE_REQUEST',calls)
                 return
             assert calls==[(first,first+PAGE)], ('C11_COLD_STALE_CURSOR_STARVED_BY_DISJOINT_PAGE',calls)
             BoundOwnerHistory.after_protection(owner,bot)

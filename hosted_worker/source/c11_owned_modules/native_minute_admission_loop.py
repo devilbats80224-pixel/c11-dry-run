@@ -126,7 +126,11 @@ class MinuteAdmissionLoop:
             if self._already_stored(j,at):
                 self.reason[f.symbol]='VERIFIED_LOCAL_INTERVAL_REUSED'
                 if self.authority(j,f):
-                    o.store.rpd_progress(j.symbol,j.end-Q,at,authority=lambda:self.authority(j,f))
+                    try:
+                        o.store.rpd_progress(j.symbol,j.end-Q,at,authority=lambda:self.authority(j,f))
+                    except (Refused,ValueError):
+                        self.reason[f.symbol]='NATIVE_PREPARATION_REFUSED'
+                        continue
                 ready.append((f,planned))
                 continue
             if self.pending.offer(j,f):
