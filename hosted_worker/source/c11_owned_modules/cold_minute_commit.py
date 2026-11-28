@@ -40,6 +40,29 @@ def commit(store,symbol,origin,start,stop,rows,sent,received,authority):
     return tuple(written)
 
 
+def commit_bootstrap(store,job,rows,sent,received,authority):
+    """Commit new verified minutes only, never a strategy checkpoint or rollup."""
+    from admission_minute_job import MinuteHistoryJob
+    if (type(job) is not MinuteHistoryJob or job.bootstrap is not True or not job.valid(sent)
+            or type(received) is not int or not job.stop<=sent<=received
+            or received-sent>1200 or authority() is not True or store.db.in_transaction):
+        raise ValueError('C11_BOOTSTRAP_RAW_MINUTE_SCOPE')
+    raw=sanitize(rows,'1m',job.stop,job.n,sent,bootstrap=True)
+    minutes=tuple(ClosedBar(r[0],received,*(float(r[i]) for i in (1,2,3,4,5,7))) for r in raw)
+    db=store.db
+    with db:
+        db.execute('BEGIN IMMEDIATE')
+        if (authority() is not True or store.segment(job.symbol) is not None
+                or db.execute('SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(job.symbol,)).fetchone()):
+            raise ValueError('C11_BOOTSTRAP_RAW_MINUTE_NOT_BLANK')
+        before=db.total_changes
+        store._record_checked_rows(job.symbol,MINUTE,minutes)
+        written=db.total_changes-before
+        if authority() is not True:
+            raise ValueError('C11_BOOTSTRAP_RAW_MINUTE_EXPIRED')
+    return written
+
+
 def restore_retained_derivatives(store,symbol,origin,start,stop,as_of,authority):
     """Derive absent wider bars without retransmitting available base bars."""
     from closed_minute_basis import project_closed_minutes

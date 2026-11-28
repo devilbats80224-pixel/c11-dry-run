@@ -35,9 +35,10 @@ def query_for(t):
     return dict(symbol=t.symbol,interval=t.tf,startTime=str(t.end-n*WIDTH[t.tf]),
                 endTime=str(t.end-1),limit=str(n))
 
-def sanitize(rows,tf,end,n,send):
+def sanitize(rows,tf,end,n,send,*,bootstrap=False):
     width=WIDTH[tf]
-    if len(rows)!=n or not acceptable(tf,n):raise ValueError('EXACT_ROW_COUNT_REQUIRED')
+    legal=(tf=='1m' and type(n) is int and 1<=n<=495) if bootstrap is True else acceptable(tf,n)
+    if len(rows)!=n or not legal:raise ValueError('EXACT_ROW_COUNT_REQUIRED')
     safe=[]
     for i,row in enumerate(rows):
         if len(row)!=12:raise ValueError('EXACT_TWELVE_FIELDS_REQUIRED')

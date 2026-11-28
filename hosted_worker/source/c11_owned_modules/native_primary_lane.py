@@ -127,6 +127,11 @@ class NativePrimaryLane:
                     missing=self.missing_recent_rpd_minutes(f,s,now)
                 else:
                     missing=missing_projection_quarters(o.store,f.symbol,end,now,NW_WARM)
+                blank_bootstrap=getattr(o.minute_admission,'blank_bootstrap',None)
+                if callable(blank_bootstrap) and blank_bootstrap(f):
+                    # The raw bootstrap owns earlier minutes; a native
+                    # terminal request still owns only the last quarter.
+                    missing={t for t in missing if t>=end-QUARTER}
                 for start,stop in (*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol)):
                     missing.difference_update(range(start,stop,QUARTER))
                 if not missing:continue
