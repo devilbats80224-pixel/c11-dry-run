@@ -312,6 +312,24 @@ class UnifiedScheduler:
             self.plan.remember_original_warm_offer(provisional)
         return provisional
 
+    def has_visible_warm_minute(self,pair,end):
+        # Freqtrade's same-close cache is no evidence that the native warm
+        # path used our validated reply. Only an exact current owner receipt
+        # can request a revisit; the ordinary path still checks durability.
+        self._owner()
+        for key,scope in self.covers.items():
+            if (key[1]!=60_000 or key not in self.verified or
+                    (scope.pair,scope.end)!=(pair,end) or
+                    self.marker!=(scope.generation,scope.end)):
+                continue
+            ticket=self.tickets[key]
+            receipt=self.adapter._proven.get(ticket)
+            if (receipt is not None and receipt.ticket.scope is scope and
+                    receipt.ticket.lane=='1m' and receipt.ticket.request_id==ticket and
+                    self.warm._current(scope)):
+                return True
+        return False
+
     def requires_staged_revisit_frame(self,proof):
         # The warm route installs exact reconstructed input. Ordinary and
         # verified non-warm routes may already have the canonical frame.
