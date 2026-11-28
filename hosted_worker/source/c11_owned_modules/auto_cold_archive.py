@@ -266,8 +266,9 @@ class ArchiveProgress:
         return zipped,dict(name=name,sha256=expected,url=url,bytes=size,actual_received_ms=zipped.received_ms)
 
     def substitute_closed_days(self,name,closed_at):
-        # Pinned manifests cannot change assets. Only an actual 404/410
-        # from the official unpinned monthly route reaches this method.
+        # Pinned manifests cannot change assets. An official unpinned
+        # monthly source can be replaced only after its actual 404/410
+        # or a checksum-verified file exhibits a real requested-grid gap.
         match=re.fullmatch(re.escape(self.recurrence.symbol)+r'-1m-(\d{4}-\d{2})\.zip',name)
         if self.reviewed is not None or match is None:
             return False
@@ -338,9 +339,14 @@ class ArchiveProgress:
             except (ValueError,RuntimeError,OSError,TypeError,KeyError,BadZipFile) as exc:
                 if event.is_set():
                     raise Hold('AUTO_ARCHIVE_CANCELLED') from exc
-                if exc.args==('COLD_ARCHIVE_ORIGIN_GAP',):
-                    raise Hold('AUTO_ARCHIVE_ORIGIN_GAP') from exc
-                if exc.args in (('COLD_ARCHIVE_GRID',),('COLD_ARCHIVE_INCOMPLETE',)):
+                if exc.args in (('COLD_ARCHIVE_ORIGIN_GAP',),('COLD_ARCHIVE_GRID',),('COLD_ARCHIVE_INCOMPLETE',)):
+                    # The failed parse used a disposable recurrence copy.
+                    # Retry the same interval with independently verified
+                    # daily evidence; never publish a partial monthly parse.
+                    if self.substitute_closed_days(name,closed_at):
+                        return self
+                    if exc.args==('COLD_ARCHIVE_ORIGIN_GAP',):
+                        raise Hold('AUTO_ARCHIVE_ORIGIN_GAP') from exc
                     raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP') from exc
                 raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
             self.recurrence=candidate
