@@ -10,7 +10,7 @@ from ccxt import BaseError
 from freqtrade.persistence import Trade
 
 from bridge_protocol import Refused, need
-from entry_verdict_receipt import mark_primary
+from entry_verdict_receipt import mark_primary, unavailable_order_fact
 from campaign_journal import CampaignJournal
 from causal_bars import CausalBars, FIVE, HOUR, MINUTE, QUARTER
 from c11_native_rules import EntryFacts, PositionFacts
@@ -114,29 +114,35 @@ class StandalonePolicy:
         end, symbol = scope.end_ms, scope.symbol
         now = time.time_ns() // 1_000_000
         if not self.slots.ready:
-            return None
+            return unavailable_order_fact('ENTRY_FACTS_JOURNAL_NOT_READY')
         try:
             clock = self.facts.entry_clock(bot, pair, end)
             if (type(clock) is not EntryClock or (clock.pair, clock.end_ms) != (pair, end)
                     or not end <= now < min(features['valid_until_ms'], clock.valid_until_ms)
                     or not math.isfinite(clock.observed_open) or clock.observed_open <= 0
                     or clock.atr_entry_source_known is not True):
-                return None
+                return unavailable_order_fact('ENTRY_FACTS_CLOCK_UNAVAILABLE')
             before = (end-1)//QUARTER*QUARTER
             structure = self.bars.range(symbol, MINUTE, before-QUARTER, end, now)
             m5 = self.bars.range(symbol, FIVE, end-FIVE, end, now)
             hour = end//HOUR*HOUR
             h1 = self.bars.range(symbol, HOUR, hour-HOUR, hour, now)
-            if not structure or not m5 or not h1:
-                return None
+            if not structure:
+                return unavailable_order_fact('ENTRY_FACTS_STRUCTURE_UNAVAILABLE')
+            if not m5:
+                return unavailable_order_fact('ENTRY_FACTS_CURRENT_5M_UNAVAILABLE')
+            if not h1:
+                return unavailable_order_fact('ENTRY_FACTS_PRIOR_HOUR_UNAVAILABLE')
             close = structure[-1].close
             # Archived entry uses the same-E close as the basis for STRUCT40.
             # A native next-open price drift is refused by the paper runner.
             rule, _ = structure40(end, len(structure)-1, np.asarray([b.open_ms+MINUTE for b in structure]),
                                   np.asarray([(b.op,b.high,b.low,b.close) for b in structure]), close)
             half = archived_half(self.bars, symbol, end, now, close)
-            if rule == 'UNKNOWN_RANGE' or half is None:
-                return None
+            if rule == 'UNKNOWN_RANGE':
+                return unavailable_order_fact('ENTRY_FACTS_STRUCTURE_UNKNOWN')
+            if half is None:
+                return unavailable_order_fact('ENTRY_FACTS_ARCHIVE_HALF_UNAVAILABLE')
             meta, tiers = market_meta(bot.exchange, pair)
             trades = tuple(Trade.get_open_trades())
             positions = []
@@ -145,7 +151,7 @@ class StandalonePolicy:
                 if type(state) is not PositionFacts or not state.valid() or (
                     state.pair, state.quantity, state.entry, state.initial_stop, state.funding) != (
                     trade.pair, trade.amount, trade.open_rate, trade.initial_stop_loss, trade.funding_fees):
-                    return None
+                    return unavailable_order_fact('ENTRY_FACTS_INCUMBENT_UNAVAILABLE')
                 positions.append(state)
             bot._entry_open_clock = clock
             wallet = bot.wallets.get_total_stake_amount()
@@ -153,7 +159,7 @@ class StandalonePolicy:
             return EntryFacts(pair, symbol, end, clock.observed_open, wallet, free, m5[0].quote,
                               h1[0].quote, meta, tiers, tuple(positions), rule == 'STRUCT40', half, True)
         except INPUT_ERRORS:
-            return None
+            return unavailable_order_fact('ENTRY_FACTS_EVIDENCE_ERROR')
 
     def partial_facts(self, bot, trade):
         if not bot.native_paper_exchange():
