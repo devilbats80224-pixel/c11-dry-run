@@ -100,3 +100,37 @@ with TemporaryDirectory() as dirname, patch("time.time_ns", mono), patch("time.m
         observer.close()
 
 print("C11_OBSERVER_CLASSIFIER_LEASE_PASS")
+
+# Production-shaped boundary: fresh source generation, but the cached
+# exchange classifier would otherwise clip all offers to E+4.201s.
+provider_seen = end + 1_456
+provider_expires = provider_seen + 60_000
+now = end + 3_271
+with TemporaryDirectory() as dirname, patch("time.time_ns", mono), patch("time.monotonic_ns", mono):
+    observer = DockerObserver(Path(dirname).resolve() / "docker-observer.sqlite", binding, wall=wall, mono=mono)
+    try:
+        bridge = CaptureBridge(Publication(), observer, binding, lambda: feed.classification)
+        bridge.send(dict(op="C11_PAPER_BRIDGE_V1", nonce="0"*32))
+        bridge.receive(2)
+        feed = entry_feed.EntryFeed(bridge, generation)
+        feed.classification = classifier(end + 4_201 - 300_000)
+        refreshes = []
+        def refresh():
+            refreshes.append(now)
+            return classifier(now)
+        feed._reviewed_metaclass_fetch = refresh
+        (first,) = feed.read()
+        assert refreshes == [end + 3_271], (
+            "C11_THIN_CLASSIFIER_MINTED_SHORT_NATIVE_SCOPE", first.expires_ns//1_000_000-end
+        )
+        assert first.expires_ns == provider_expires*1_000_000
+        now = end + 7_797
+        (current,) = feed.read()
+        proof = ObserverClient(bridge, binding, docked_current=True)
+        assert first.generation == current.generation and current.expires_ns == first.expires_ns
+        assert proof.current_point(current.symbol, now) == (current.generation,current.rank,current.ratio)
+        assert refreshes == [end + 3_271], "Do not refetch metadata for each candidate"
+    finally:
+        observer.close()
+
+print("C11_FRESH_CLASSIFIER_BEFORE_SHORT_SCOPE_PASS")
