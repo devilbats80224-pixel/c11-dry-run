@@ -11,7 +11,7 @@ REVIEWED_ONLY='REVIEWED_OFFICIAL_ARCHIVE_ONLY_V1'
 
 
 class ColdSourceAdmission:
-    """Prefer reviewed local sources; only one prefix preparation at a time."""
+    """Prefer each candidate’s reviewed source without blocking other candidates."""
     def __init__(self,reviewed,wall,*,discover_unseeded=False):
         self.reviewed=ColdPrefixAdmission(
             {s:v for s,v in reviewed.items() if not v.download_only},wall,prewarm_idle=True)
@@ -54,13 +54,10 @@ class ColdSourceAdmission:
     def tick(self,owner,*,ready_only=False,prepare_only=False):
         if ready_only:
             # Both lanes can drain completed work, but neither may start work.
-            if self.reviewed.tick(owner,ready_only=True):
-                return
-            return self.public.tick(owner,ready_only=True)
+            reviewed=self.reviewed.tick(owner,ready_only=True)
+            public=self.public.tick(owner,ready_only=True)
+            return bool(reviewed or public)
         flags={'prepare_only':True} if prepare_only else {}
-        if self.public.active is not None:
-            self.public.tick(owner,**flags)
-            return
         self.public.retire_stale()
         now=self.public.wall()
         # Unresolvable, backing-off or vanished peers cannot reserve this
@@ -68,11 +65,10 @@ class ColdSourceAdmission:
         public_due=any(owner.tap.current(slot.fact) and
                        (now>=slot.due_ms or slot.result is not None and not prepare_only)
                        for slot in self.public.pending.values())
-        if public_due:
+        if public_due or self.public.active is not None:
             self.reviewed.cancel_idle()
-        self.reviewed.tick(owner,allow_idle=not public_due,**flags)
-        if self.reviewed.active is None:
-            self.public.tick(owner,**flags)
+        self.reviewed.tick(owner,allow_idle=not public_due and self.public.active is None,**flags)
+        self.public.tick(owner,**flags)
 
     def close(self):
         self.reviewed.close()

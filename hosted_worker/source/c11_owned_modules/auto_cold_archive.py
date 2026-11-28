@@ -1,5 +1,6 @@
 """Bounded public archive preparation after reviewed owner startup."""
 from collections import deque
+from concurrent.futures import Future
 from copy import deepcopy
 from dataclasses import astuple, dataclass
 from datetime import datetime, timedelta, timezone
@@ -9,7 +10,7 @@ from pathlib import Path
 from requests.adapters import DEFAULT_CA_BUNDLE_PATH
 import re
 import ssl
-from threading import Event, get_ident
+from threading import Event, Lock, Thread, get_ident
 from time import monotonic, sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Request, build_opener
@@ -90,8 +91,9 @@ class NoRedirect(HTTPRedirectHandler):
 
 class OfficialArchiveHTTP:
     """Dedicated public static download only. No proxy, redirects or credentials."""
-    def __init__(self,wall,spacing=.5):
-        self.wall,self.spacing=wall,spacing
+    def __init__(self,wall):
+        self.wall=wall
+        self.retry_lock=Lock()
         context=ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.load_verify_locations(DEFAULT_CA_BUNDLE_PATH)
         self.opener=build_opener(ProxyHandler({}),NoRedirect(),HTTPSHandler(context=context))
@@ -100,10 +102,11 @@ class OfficialArchiveHTTP:
     def get(self,url,maximum,cancel):
         if not official_archive_url(url):
             raise Hold('AUTO_ARCHIVE_UNVERIFIED')
-        delay=max(0,(self.next_allowed_ms-self.wall())/1000)
-        if delay>self.spacing:
-            raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=int(delay*1000))
-        if cancel.wait(delay):
+        with self.retry_lock:
+            delay=max(0,self.next_allowed_ms-self.wall())
+        if delay:
+            raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=delay)
+        if cancel.is_set():
             raise Hold('AUTO_ARCHIVE_CANCELLED')
         try:
             with self.opener.open(Request(url,method='GET'),timeout=7) as response:
@@ -127,15 +130,14 @@ class OfficialArchiveHTTP:
             if exc.code in (408,425,429,500,502,503,504):
                 retry=exc.headers.get('Retry-After','')
                 wait=int(retry)*1000 if retry.isdecimal() and len(retry)<=5 else 30_000
-                self.next_allowed_ms=self.wall()+max(wait,int(self.spacing*1000))
+                with self.retry_lock:
+                    self.next_allowed_ms=max(self.next_allowed_ms,self.wall()+wait)
                 raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=wait) from exc
             raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
         except (URLError,TimeoutError,ConnectionError,OSError) as exc:
             if isinstance(getattr(exc,'reason',None),ssl.SSLCertVerificationError):
                 raise Hold('AUTO_ARCHIVE_UNVERIFIED') from exc
             raise Hold('AUTO_ARCHIVE_TRANSIENT',wait_ms=30_000) from exc
-        finally:
-            self.next_allowed_ms=max(self.next_allowed_ms,self.wall()+int(self.spacing*1000))
 
 
 def windows(symbol,origin,boundary):
@@ -441,6 +443,39 @@ class AutoColdAdmission(ColdPrefixAdmission):
         super().__init__({},wall)
         self.prepare=prepare
         self.dormant={}
+        self.active_jobs={}
+
+    def _set_active_view(self):
+        # Compatibility for the reviewed-source coordinator and old tests.
+        self.active=next(iter(self.active_jobs.values()),None)
+
+    def _start_candidate(self,symbol,action,args,cancel):
+        result=Future()
+        self.active_jobs[symbol]=(symbol,cancel,result)
+        self._set_active_view()
+        def run():
+            if not result.set_running_or_notify_cancel():
+                return
+            try:
+                result.set_result(action(*args,cancel))
+            except BaseException as exc:
+                result.set_exception(exc)
+        try:
+            # One task per eligible current candidate, never one process
+            # per candidate. Any request backoff is shared by the transport.
+            Thread(target=run,name='c11-archive-prefix',daemon=True).start()
+        except (RuntimeError,OSError):
+            self.active_jobs.pop(symbol)
+            self._set_active_view()
+            return False
+        return True
+
+    def close(self):
+        for _,cancel,_ in self.active_jobs.values():
+            cancel.set()
+        self.active_jobs.clear()
+        self._set_active_view()
+        super().close()
 
     def _take_dormant(self,f,now):
         key=f.symbol,f.origin
@@ -457,7 +492,7 @@ class AutoColdAdmission(ColdPrefixAdmission):
         prefix=slot.continuation
         if (type(prefix) is not ArchiveProgress or not prefix.ledger
                 or prefix.origin+prefix.shift!=slot.fact.origin
-                or self.active is not None and self.active[0]==symbol):
+                or symbol in self.active_jobs):
             return
         key=symbol,slot.fact.origin
         self.dormant.pop(key,None)
@@ -479,8 +514,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 continuation=saved)
         slot=self.pending[f.symbol]
         if slot.fact.origin!=f.origin:
-            if self.active is not None and self.active[0]==f.symbol:
-                self.active[1].set()
+            if f.symbol in self.active_jobs:
+                self.active_jobs[f.symbol][1].set()
             del self.pending[f.symbol]
             self.repair_prior.pop(f.symbol,None)
             return 'AUTO_ARCHIVE_NO_VERIFIED_ORIGIN'
@@ -490,15 +525,15 @@ class AutoColdAdmission(ColdPrefixAdmission):
     def offer_retained(self,owner,f):
         from causal_bars import MAX_SEGMENT_BARS,MINUTE
         now=self.wall()
-        if (get_ident()!=self.thread or self.active is not None or not owner.tap.current(f)
+        if (get_ident()!=self.thread or f.symbol in self.active_jobs or not owner.tap.current(f)
                 or not quote_contract_shape(f.symbol) or f.pair!=f.symbol[:-4]+'/USDT:USDT'
                 or type(f.origin) is not int or type(f.boundary) is not int
                 or not 0<f.origin<f.boundary-QUARTER or f.origin%QUARTER
                 or f.boundary%QUARTER):
             return None
         existing=self.pending.get(f.symbol)
-        if (existing is not None and (existing.result is not None or existing.continuation is not None)
-                or any(s.retained is not None for s in self.pending.values())):
+        if existing is not None and any(item is not None for item in
+                (existing.result,existing.continuation,existing.retained)):
             return None
         owner.check_store()
         store=owner.store
@@ -556,8 +591,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 self._keep_dormant(symbol,slot,now)
                 self.pending.pop(symbol)
                 self.repair_prior.pop(symbol,None)
-                if self.active is not None and self.active[0]==symbol:
-                    self.active[1].set()
+                if symbol in self.active_jobs:
+                    self.active_jobs[symbol][1].set()
 
     def settled(self,symbol,cancel,future):
         slot=self.pending.get(symbol)
@@ -601,9 +636,11 @@ class AutoColdAdmission(ColdPrefixAdmission):
         allowed=owner.cold_delivery_window if ready_only or prepare_only else owner.phase_allows
         if not allowed():
             return
-        if self.active is not None and self.active[2].done():
-            self.settled(*self.active)
-            self.active=None
+        for symbol,job in tuple(self.active_jobs.items()):
+            if job[2].done():
+                self.settled(*job)
+                del self.active_jobs[symbol]
+        self._set_active_view()
         # Drain completed, in-scope work before launching another fetch.
         # In insertion order a due retry could otherwise bypass the ready
         # candidate at every completion, even when no new data is needed.
@@ -646,21 +683,25 @@ class AutoColdAdmission(ColdPrefixAdmission):
                         if callable(emit):
                             emit('AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED',slot.fact)
                 return True
-        if ready_only or self.active is not None or not allowed():
+        if ready_only or not allowed():
             return
         for symbol,slot in tuple(self.pending.items()):
-            if (slot.result is not None or not owner.tap.current(slot.fact)
-                    or self.wall()<slot.due_ms):
+            if not allowed():
+                return
+            if (symbol in self.active_jobs or slot.result is not None
+                    or not owner.tap.current(slot.fact) or self.wall()<slot.due_ms):
                 continue
             cancel=Event()
-            slot.status='AUTO_ARCHIVE_FETCHING'
             if slot.retained is not None:
-                retained=slot.retained
-                slot.retained=None
-                future=self.pool.submit(retained_minute_prefix,*retained,cancel)
+                action,args=retained_minute_prefix,slot.retained
             elif slot.continuation is None:
-                future=self.pool.submit(self.prepare,slot.fact,cancel)
+                action,args=self.prepare,(slot.fact,)
             else:
-                future=self.pool.submit(slot.continuation.resume,cancel)
-            self.active=symbol,cancel,future
-            return
+                action,args=slot.continuation.resume,()
+            if self._start_candidate(symbol,action,args,cancel):
+                slot.retained=None
+                slot.status='AUTO_ARCHIVE_FETCHING'
+            else:
+                # OS refused to start an actual worker. Keep the request
+                # pending for the next cycle, never mark its history complete.
+                return
