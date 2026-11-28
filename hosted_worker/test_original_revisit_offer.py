@@ -98,7 +98,10 @@ def ready_decision_does_not_inherit_the_same_generation_wire_cap():
     assert first is not None and first.expires==END+60_000
     offered=plan(bot)
     assert offered and offered[:2]==(7,END) and len(offered[2])==3
-    native_task=offered[2][0][0]
+    from dedicated_queue import Job
+    old_task,old_scope,request_id=offered[2][0]
+    native_task=Job(request_id,old_scope.symbol,old_scope.generation,old_scope.end,
+                    old_scope.expires,old_task.tf,2,old_task,request_id)
     assert plan.transport_still_due(native_task,now[0])
     now[0]=END+68_000
     plan.verified_readiness_at=lambda candidate,e,at: END+68_000 if (
