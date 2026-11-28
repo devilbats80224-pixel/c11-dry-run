@@ -60,5 +60,28 @@ def main():
     print('C11_RETAINED_UNFAMILIAR_COLD_PREFIX_PASS')
 
 
+def older_but_fully_retained_can_queue_without_archive():
+    old_origin=END-300*QUARTER  # older than the prior 260-quarter listing gate
+    fact=N(symbol=SYMBOL,pair=FACT.pair,origin=old_origin,boundary=END)
+    store=CausalBars(':memory:')
+    owner=N(store=store,check_store=lambda:None,tap=N(current=lambda x:x is fact))
+    lane=AutoColdAdmission(lambda:WALL,lambda *_:None)
+    gap=old_origin+MINUTE
+    def bar(t):
+        return ClosedBar(t,t+MINUTE,100,101,99,100,10,1000)
+    try:
+        store.record(SYMBOL,MINUTE,tuple(bar(t) for t in range(old_origin,CUTOFF,MINUTE) if t!=gap))
+        assert lane.offer_retained(owner,fact) is None, 'C11_OLDER_COLD_PREFIX_INVENTED_A_MISSING_MINUTE'
+        store.record(SYMBOL,MINUTE,(bar(gap),))
+        assert lane.offer_retained(owner,fact)=='AUTO_RETAINED_MINUTES_QUEUED',(
+            'C11_OLDER_FULLY_RETAINED_COLD_PREFIX_WRONGLY_REJECTED')
+        assert len(lane.pending[SYMBOL].retained[1])==(CUTOFF-old_origin)//MINUTE
+        assert store.segment(SYMBOL) is None  # only queue, no premature authorization
+    finally:
+        lane.close()
+        store.db.close()
+
+
 if __name__=='__main__':
     main()
+    older_but_fully_retained_can_queue_without_archive()
