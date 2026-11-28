@@ -147,7 +147,7 @@ def old_listing_with_blank_state_uses_recent_required_rows():
         store.db.close()
 
 
-def complete_cached_candidates_share_one_ready_owner_pass():
+def complete_cached_candidates_share_one_ready_owner_pass(*, headroom_loss=False):
     """Regression: ready candidate installation was serialized after worker completion."""
     names=('CACHEDONE','CACHEDTWO','CACHEDTHREE')
     facts=tuple(N(symbol=x+'USDT',pair=x+'/USDT:USDT',origin=ORIGIN,
@@ -156,8 +156,11 @@ def complete_cached_candidates_share_one_ready_owner_pass():
     AtrErCheckpoint(store)
     permitted={f.symbol for f in facts}
     ready=lambda f:f.symbol in permitted and any(f is x for x in facts)
+    limited=headroom_loss
+    def window():
+        return not limited or store.segment(facts[0].symbol) is None
     owner=N(store=store,check_store=lambda:None,tap=N(current=ready),
-            cold_delivery_window=lambda:True,cold_delivery_allows=ready)
+            cold_delivery_window=window,cold_delivery_allows=ready)
     def unexpected_archive(*_):
         raise AssertionError('C11_READY_COLD_CANDIDATE_UNEXPECTED_REFETCH')
     lane=AutoColdAdmission(lambda:WALL,unexpected_archive)
@@ -172,7 +175,14 @@ def complete_cached_candidates_share_one_ready_owner_pass():
             worker.result(timeout=10)
         revoked=facts[1].symbol
         permitted.remove(revoked)
-        lane.tick(owner,ready_only=True)
+        assert lane.tick(owner,ready_only=True) is True
+        if headroom_loss:
+            assert store.segment(facts[0].symbol) is not None
+            assert store.segment(facts[2].symbol) is None
+            assert lane.pending[facts[2].symbol].result is not None
+            assert not lane.active_jobs
+            limited=False
+            assert lane.tick(owner,ready_only=True) is True
         actual={f.symbol for f in facts if store.segment(f.symbol) is not None}
         assert actual==permitted, ('C11_READY_COLD_OWNER_SERIALIZED_INSTALL',
                                    'expected_current',len(permitted),'installed',len(actual))
@@ -180,7 +190,8 @@ def complete_cached_candidates_share_one_ready_owner_pass():
     finally:
         lane.close()
         store.db.close()
-    print('C11_ALL_CURRENT_READY_COLD_PREFIXES_INSTALL_IN_OWNER_PASS')
+    print('C11_READY_COLD_HEADROOM_RETAINS_PENDING' if headroom_loss
+          else 'C11_ALL_CURRENT_READY_COLD_PREFIXES_INSTALL_IN_OWNER_PASS')
 
 
 if __name__=='__main__':
@@ -188,3 +199,4 @@ if __name__=='__main__':
     older_but_fully_retained_can_queue_without_archive()
     old_listing_with_blank_state_uses_recent_required_rows()
     complete_cached_candidates_share_one_ready_owner_pass()
+    complete_cached_candidates_share_one_ready_owner_pass(headroom_loss=True)
