@@ -3,8 +3,8 @@ from collections import deque
 from secrets import token_hex
 from threading import get_ident
 from admission_minute_job import iter_jobs,MAX_ANALYZER_QUARTERS,repairable_checkpoint
-from cold_minute_commit import commit
-from native_cold_minute_page import F,M,Q
+from cold_minute_commit import commit,restore_retained_derivatives
+from native_cold_minute_page import F,Q
 from parallel_history_pages import PendingHistoryPages
 from rpd_checkpoint import RpdState
 from bridge_protocol import Refused
@@ -123,28 +123,22 @@ class MinuteAdmissionLoop:
             j=next(planned,None)
             if j is None:continue
             at=o.run.wall()
-            if self._already_stored(j,at):
-                self.reason[f.symbol]='VERIFIED_LOCAL_INTERVAL_REUSED'
-                if self.authority(j,f):
-                    try:
-                        self.advance_verified_state(j,f)
-                    except (Refused,ValueError):
-                        self.reason[f.symbol]='NATIVE_PREPARATION_REFUSED'
-                        continue
-                ready.append((f,planned))
+            try:
+                local=restore_retained_derivatives(o.store,j.symbol,j.origin,j.start,j.stop,at,
+                                                    lambda:self.authority(j,f))
+                if local:
+                    self.reason[f.symbol]='VERIFIED_LOCAL_INTERVAL_REUSED'
+                    self.advance_verified_state(j,f)
+                    ready.append((f,planned))
+                    continue
+            except (Refused,ValueError):
+                self.reason[f.symbol]='NATIVE_PREPARATION_REFUSED'
                 continue
             if self.pending.offer(j,f):
                 self.reason[f.symbol]='SCHEDULED_NATIVE_MINUTES'
                 self._cursor=f.symbol
                 ready.append((f,planned))
             else:self.reason[f.symbol]='NATIVE_BUDGET_OR_AUTHORITY_HELD'
-
-    def _already_stored(self,j,as_of):
-        db=self.owner.store.db
-        return all(db.execute('SELECT COUNT(*) FROM candle WHERE symbol=? AND width=? '
-                              'AND open_ms>=? AND open_ms<? AND received_ms<=?',
-                              (j.symbol,w,j.start,j.stop,as_of)).fetchone()[0]==(j.stop-j.start)//w
-                   for w in (M,F,Q))
 
     def advance_verified_state(self,j,f):
         o=self.owner
