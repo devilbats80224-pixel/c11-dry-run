@@ -229,8 +229,14 @@ class UnifiedScheduler:
                 scope=self.covers[key]
                 meter=getattr(self.queue.limiter,'charged_for_diagnostic',None)
                 debit=meter(ticket) if callable(meter) else None
+                # A busy meter cannot tell us whether the request was sent.
+                # Keep the original completed minute ticket for a later probe
+                # while its own scope is still open; never send on uncertainty.
+                still_open=scope.end<=self.wall()<scope.expires
+                if debit is None and callable(meter) and key[1]==60_000 and still_open:
+                    continue
                 forgotten=self.adapter.forget_unsent(ticket)
-                if debit is False and not forgotten:
+                if debit is False and not forgotten and still_open:
                     # No proof that the owner-side reservation is released
                     # yet. Preserve it for the next owner cycle instead.
                     continue
