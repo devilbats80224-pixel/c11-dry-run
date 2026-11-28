@@ -22,9 +22,8 @@ class PendingHistoryPages:
     def inflight_ranges(self, symbol):
         """Only suppress the exact ranges already submitted for this symbol."""
         self._check_owner()
-        if not self.parallel_ranges:
-            raise RuntimeError('C11_HISTORY_NOT_RANGE_SCOPED')
-        return tuple((start, stop) for pair, start, stop in self.pending if pair == symbol)
+        return tuple((job.start,job.stop) for job,_,_ in self.pending.values()
+                     if job.symbol==symbol)
 
     def offer(self, job, fact):
         self._check_owner()

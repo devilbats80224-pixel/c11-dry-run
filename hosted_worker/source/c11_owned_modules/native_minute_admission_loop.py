@@ -65,7 +65,7 @@ class MinuteAdmissionLoop:
             except (Refused,ValueError):
                 continue
 
-    def tick(self,facts,*,skip=lambda _:False,has_headroom=lambda:True):
+    def tick(self,facts,*,skip=lambda _:False,has_headroom=lambda:True,occupied_ranges=lambda _:()):
         if get_ident()!=self.thread:return
         self.pending.drain(self.complete)
         if not self.phase():return
@@ -111,6 +111,9 @@ class MinuteAdmissionLoop:
                 j=make_job(f,rpd.next_open,missing,now,token_hex(16))
                 if j is None:
                     self.reason[f.symbol]='ALREADY_CURRENT_OR_NO_RECENT_VERIFIED_START'
+                    continue
+                if any(j.start<stop and start<j.stop for start,stop in occupied_ranges(f.symbol)):
+                    self.reason[f.symbol]='OVERLAPPING_SHARED_MINUTE_PAGE'
                     continue
                 if self.pending.offer(j,f):
                     self.reason[f.symbol]='SCHEDULED_NATIVE_MINUTES'

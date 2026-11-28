@@ -66,7 +66,7 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
             owner.worker=N(freqtrade=bot)
             owner.tap.facts=lambda:tuple(roster)
             owner.pending=owner.opg_recovery=None
-            owner.primary_admission=N(tick=lambda *_:None,pending=N(
+            owner.primary_admission=N(tick=lambda *_,**__:None,pending=N(
                 busy=lambda key:key==symbol,
                 inflight_ranges=lambda key:(slot,) if key==symbol else ()))
             owner.minute_headroom=lambda:True

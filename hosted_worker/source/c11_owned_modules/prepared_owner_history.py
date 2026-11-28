@@ -230,13 +230,14 @@ class BoundOwnerHistory:
                         self.cold_prefix.tick(self,ready_only=True)
                         self.minute_admission.enroll_cold(facts)
                         self.cold_prefix.tick(self,prepare_only=True)
-                    self.primary_admission.tick(facts,self.minute_headroom)
+                    self.primary_admission.tick(facts,self.minute_headroom,
+                        occupied_ranges=self.minute_admission.pending.inflight_ranges)
                     self.minute_admission.tick(
                         facts,
-                        skip=lambda s:self.primary_admission.pending.busy(s)
-                               or (self.pending is not None and self.pending[2].symbol==s)
+                        skip=lambda s:(self.pending is not None and self.pending[2].symbol==s)
                                or (self.opg_recovery is not None and s=='OPGUSDT'),
-                        has_headroom=self.minute_headroom)
+                        has_headroom=self.minute_headroom,
+                        occupied_ranges=self.primary_admission.pending.inflight_ranges)
             except OperationalError as exc:
                 code=getattr(exc,'sqlite_errorcode',None)
                 if not(type(code) is int and (code&255) in (SQLITE_BUSY,SQLITE_LOCKED)):
