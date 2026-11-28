@@ -94,3 +94,59 @@ assert route.frame(proof)==(), "C11_WARM_DISPUTED_MINUTE_USED_BY_NEW_FIVE"
 assert not store.range(unsafe, MINUTE,E-QUARTER,E,stamp)
 assert not store.range(unsafe, FIVE,E-QUARTER,E,stamp)
 assert store.range(unsafe, MINUTE,E-30*MINUTE,E-QUARTER,stamp)==old_prefix
+
+# #41 Mac 16:15: existing complete historical 1m inputs agree byte for
+# byte at the representation boundary, but local fsum 5m quantities are
+# one binary unit away from a new exact decimal projection of those same
+# inputs. A previous quarter conflict must not roll back the current one.
+from dataclasses import replace
+from decimal import Decimal
+from math import fsum, ulp
+
+symbol = "FLOATBASISUSDT"
+scope = SimpleNamespace(generation=4, symbol=symbol, end=E)
+t = E - 2 * QUARTER
+old_minutes = tuple(ClosedBar(t+i*MINUTE,t+(i+1)*MINUTE,1.,1.,1.,1.,
+                              float(v),float(v))
+                    for i,v in enumerate(("0.1","0.1","0.1","0","0")))
+stored_sum = fsum(x.volume for x in old_minutes)
+decimal_sum = float(sum(Decimal(str(x.volume)) for x in old_minutes))
+assert abs(stored_sum-decimal_sum)==ulp(decimal_sum)
+direct_five=ClosedBar(t,t+FIVE,1.,1.,1.,1.,stored_sum,stored_sum)
+computed_five=replace(direct_five,received_ms=stamp,volume=decimal_sum,quote=decimal_sum)
+store.record(symbol,MINUTE,old_minutes)
+store.record(symbol,FIVE,(direct_five,))
+now_minutes=span(MINUTE,E-QUARTER,E,1.)
+incoming=((MINUTE,old_minutes+now_minutes),(FIVE,(computed_five,)+terminal5),(QUARTER,terminal15))
+notes.clear()
+route.prepared=(proof,scope,object(),incoming,False)
+assert route.frame(proof)==terminal15, (
+    "C11_HISTORICAL_FIVE_NUMERIC_PATH_ROLLED_BACK_CURRENT_QUARTER",
+    "expected same proven minute quantities and a complete committed current quarter",
+    "actual native strategy frame absent")
+assert store.range(symbol,FIVE,t,t+FIVE,stamp)==(direct_five,)
+assert store.range(symbol,MINUTE,E-QUARTER,E,stamp)==now_minutes
+assert store.range(symbol,QUARTER,E-QUARTER,E,stamp)==terminal15
+assert any(n[2:4]==("atomic_phase", "ATOMIC_HISTORICAL_FIVE_BASIS_RETAINED") for n in notes)
+print("C11_WARM_HISTORICAL_FIVE_SAME_EXACT_BASIS_PRESERVES_RAW_AND_COMMITS_NEW")
+
+# The same alternate calculation cannot hide an added quantity, a
+# different constituent receipt, or a conflict in the just-closed quarter.
+for seq,kind in enumerate(("different-quantity","different-minute","terminal"),5):
+    sym="FIVEPROOFNEG"+str(seq)+"USDT"
+    fence=SimpleNamespace(generation=seq,symbol=sym,end=E)
+    store.record(sym,MINUTE,old_minutes)
+    if kind=="terminal":
+        store.record(sym,FIVE,(replace(terminal5[0],volume=2.),))
+        variant=(now_minutes,terminal5)
+    else:
+        store.record(sym,FIVE,(direct_five,))
+        variant=(old_minutes+now_minutes,(replace(computed_five,quote=decimal_sum+1.) if kind=="different-quantity" else computed_five,)+terminal5)
+        if kind=="different-minute":
+            variant=((replace(old_minutes[0],quote=9.),)+variant[0][1:],variant[1])
+    notes.clear()
+    route.prepared=(proof,fence,object(),((MINUTE,variant[0]),(FIVE,variant[1]),(QUARTER,terminal15)),False)
+    assert route.frame(proof)==(), ("C11_WARM_FIVE_BASIS_ON_UNPROVEN_INPUT",kind)
+    assert not store.range(sym,QUARTER,E-QUARTER,E,stamp)
+    assert not any(n[3]=="ATOMIC_HISTORICAL_FIVE_BASIS_RETAINED" for n in notes)
+print("C11_WARM_FIVE_BASIS_NEGATIVES_EXACTLY_REFUSED")

@@ -1,5 +1,6 @@
 """Durable, causal bars for pinned C11 admission. No inferred segment start."""
 from dataclasses import astuple, dataclass
+from decimal import Decimal, InvalidOperation, localcontext
 from hashlib import sha256
 import json
 import math
@@ -227,6 +228,46 @@ class CausalBars:
             chosen.append(replacement)
         return ((MINUTE,tuple(chosen)),*batches[1:]),tuple(retained)
 
+    def _same_basis_historical_fives(self, symbol, originals, incoming, end, as_of):
+        # The warm native wire and locally projected historic rows use two
+        # exact representations (decimal before float vs fsum of stored
+        # floats) of the same raw minute quantities. This is not epsilon
+        # equality. Keep the first immutable historical view only when the
+        # exact two algorithms are independently reproduced over all five
+        # identical, already-observed minutes; never touch the terminal.
+        wire = {r.open_ms: r for r in originals}
+        retained = []
+        for new in incoming:
+            t = new.open_ms
+            if not new.valid(FIVE) or t+FIVE > end-QUARTER:
+                continue
+            keys = tuple(range(t,t+FIVE,MINUTE))
+            if any(k not in wire for k in keys):
+                continue
+            history = self.range(symbol,FIVE,t,t+FIVE,as_of)
+            if not history or history[0].payload()==new.payload():
+                continue
+            old = history[0]
+            rows = self.range(symbol,MINUTE,t,t+FIVE,as_of)
+            if (tuple(r.open_ms for r in rows)!=keys
+                    or any(r.payload()!=wire[r.open_ms].payload()
+                           or not wire[r.open_ms].valid(MINUTE) for r in rows)):
+                continue
+            price = rows[0].op,max(r.high for r in rows),min(r.low for r in rows),rows[-1].close
+            if old.payload()[:4]!=price or new.payload()[:4]!=price:
+                continue
+            try:
+                with localcontext() as ctx:
+                    ctx.prec=50
+                    old_quantities = tuple(math.fsum(getattr(r,k) for r in rows) for k in ('volume','quote'))
+                    new_quantities = tuple(float(sum(Decimal(str(getattr(r,k))) for r in rows))
+                                           for k in ('volume','quote'))
+            except (ValueError,OverflowError,InvalidOperation):
+                continue
+            if old.payload()[4:]==old_quantities and new.payload()[4:]==new_quantities:
+                retained.append((FIVE,t))
+        return tuple(retained)
+
     def record_owner_primary_batch(self, symbol, batches, authority, *, historical=None, scope=None, multi=None, wall=None, revision_append=None, preserve_warm_prefix=False):
         # Only the original owner may call through its guarded session. Scope
         # callback belongs to the actual current original worker, not receipt data.
@@ -251,6 +292,7 @@ class CausalBars:
                 if preserve_warm_prefix:
                     need(historical is None and multi is None and revision_append is None and scope is not None,
                          'C11_OWNER_BATCH_SHAPE')
+                    original_minutes=batches[0][1]
                     batches,preserved=self._warm_immutable_minutes(symbol,batches,scope)
                     if preserved:
                         phases.append('ATOMIC_HISTORICAL_MINUTE_RETAINED')
@@ -270,6 +312,13 @@ class CausalBars:
                                 if incoming.open_ms == direct.open_ms == projected.open_ms
                                 and projected.payload() != direct.payload()
                                 and incoming.payload() == projected.payload())
+                    clock=wall() if callable(wall) else max(
+                        (r.received_ms for r in original_minutes),default=scope.end)
+                    same_basis=self._same_basis_historical_fives(
+                        symbol,original_minutes,batches[1][1],scope.end,clock)
+                    if same_basis:
+                        reviewed_keys+=same_basis
+                        phases.append('ATOMIC_HISTORICAL_FIVE_BASIS_RETAINED')
 
                 if multi is not None:
                     from multilane_history_view import FrozenReadView
