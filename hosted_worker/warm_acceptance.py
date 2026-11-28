@@ -169,7 +169,7 @@ class ReplayPublication:
         if getattr(self,'late_fixture',False):
             from datetime import datetime,timezone,timedelta
             first=datetime.fromtimestamp(clock[0]/1000,timezone.utc)
-            fresh={**raw,'generation':W['generation']+1,'received_at':first.isoformat(),
+            fresh={**raw,'generation':self.late_fixture,'received_at':first.isoformat(),
                    'lease_until':(first+timedelta(seconds=60)).isoformat()}
             return {**fresh,'nonce':nonce,'status':'FRESH','left_ms':60_000}
         if unicode_case:
@@ -235,6 +235,90 @@ def main(outer):
     seal=sha256(Path('/opt/c11_owned_modules/compiled_candidate_factory.py').read_bytes()).hexdigest()
     advice=[]
     terminal=[]
+    def verify_renewed_scope_delivery(w,sc,first_hold,observed_ready,lane,f,publication,ready_clock,advice,offset):
+        # Independent reconstructed delivery scenario: keep the exact
+        # committed original rows, original readiness proof and the
+        # original pending scope; reset only the isolated delivery markers.
+        # This does not assert that the first callback was never attempted
+        # in the initial scenario (that scenario is checked above).
+        assert first_hold is not None and first_hold.end==E
+        assert E+offset<observed_ready+60_000
+        assert (E+offset<first_hold.expires)==(offset<60_000)
+        clock[0]=E+offset
+        publication.late_fixture=f.generation_floor+1
+        refreshed=tuple(f.read())
+        fresh=next(x for x in refreshed if x.pair==PAIR)
+        assert fresh.generation==publication.late_fixture and fresh.generation>first_hold.generation
+        assert w.freqtrade.observed_ranked(fresh) and not sc.plan.current(first_hold,clock[0])
+        assert ready_clock(fresh,E,clock[0])==observed_ready
+        sc.warm.claimed.remove((PAIR,E))
+        lane.spent.discard((PAIR,E))
+        lane.holds[PAIR]=first_hold
+        wire_scope=lambda:sum(symbol==fresh.symbol for symbol,_,_ in exact_requests)
+        baseline_wire=wire_scope()
+        strategy=w.freqtrade.strategy
+        policy=w.freqtrade.policy
+        native_inputs=policy.bars.inputs
+        original_proof=sc.warm.readable[(PAIR,fresh.symbol,E)]
+        from c11_primary_decision_seam_v1.exact_rpd5_join import join
+        from contextlib import ExitStack
+        from primary_coverage_gate import NativePrimaryHandoff
+        actual=[]
+        flow=[]
+        def wrapper(label,original):
+            def deliver(*args,**kwargs):
+                tracked=hasattr(w.freqtrade,'_c11_native_primary_handoff')
+                if tracked:flow.append(label+'_ENTER')
+                try:
+                    result=original(*args,**kwargs)
+                except Exception:
+                    if tracked:flow.append(label+'_EXCEPTION')
+                    raise
+                if tracked:
+                    flow.append(label+('_NONE' if result is None else '_VALUE'))
+                return result
+            return deliver
+        def observe_native_inputs(symbol,end,as_of,**kwargs):
+            value=native_inputs(symbol,end,as_of,**kwargs)
+            if symbol==fresh.symbol and hasattr(w.freqtrade,'_c11_native_primary_handoff'):
+                actual.append((end,as_of,kwargs,value))
+            return value
+        with ExitStack() as witnesses:
+            for owner,name,label in (
+                (strategy,'primary_inputs','STRATEGY'),
+                (f,'candidate','RANK'),
+                (policy,'primary_inputs','POLICY'),
+                (NativePrimaryHandoff,'validated_expiry','EXPIRY'),
+                (NativePrimaryHandoff,'resolve','RESOLVE'),
+            ):
+                witnesses.enter_context(patch.object(owner,name,wrapper(label,getattr(owner,name))))
+            witnesses.enter_context(patch.object(policy.bars,'inputs',side_effect=observe_native_inputs))
+            w.freqtrade.process()
+            strategy.analyze_pair(PAIR)
+        print('C11_LATE_DELIVERY_FLOW',*flow[:42],flush=True)
+        calls=[a for a in advice if a==(offset,PAIR,'ORIGINAL_NATIVE_CALLBACK')]
+        print('C11_LATE_DELIVERY_COUNTS',len(calls),len(actual),wire_scope()-baseline_wire,flush=True)
+        assert len(calls)==1 and len(actual)==1, (
+            'C11_LATE_ORIGINAL_WORKER_NO_CALLBACK_OR_NATIVE_INPUT',len(calls),len(actual))
+        end,read_at,received,evidence=actual[0]
+        assert (end,read_at)==(E,clock[0])
+        if offset>=60_000:
+            assert read_at<received['valid_until_ms']
+        else:
+            assert received.get('valid_until_ms') is None
+        assert received['primary'] is original_proof.primary and received['state'] is original_proof.closed
+        assert w.freqtrade.observed_ranked(fresh)
+        signal=received['primary'][2].status
+        state=received['state']
+        rpd_status,_=join(state.scope,read_at,[state])
+        assert state.known and rpd_status in ('PASS','VETO') and signal!='UNKNOWN'
+        assert (evidence is not None)==(signal=='NW15_PRIMARY_SIGNAL' and rpd_status=='PASS'), (
+            'C11_LATE_NATIVE_RESULT_DIVERGES_FROM_ORIGINAL_RULES',signal,rpd_status)
+        print('C11_LATE_ORIGINAL_RESULT',signal,rpd_status,flush=True)
+        print('C11_FRESH_READY_OFFSET_MS',offset,flush=True)
+        assert wire_scope()==baseline_wire and not Trade.get_trades().all()
+        print('C11_LATE_ORIGINAL_WORKER_ONE_CALLBACK_VALID_INPUT_NO_WIRE',flush=True)
+
     def trace(pair,status):
         advice.append((clock[0]-E,pair,status))
         print('ACTUAL_ORIGINAL_ADVICE',status,flush=True)
@@ -824,82 +908,11 @@ def main(outer):
             assert all(float(new)!=source_close for _,_,new in divergent_fallback)
             print('C11_DIVERGENT_FALLBACK_DID_NOT_BLOCK_ORIGINAL_DECISION',flush=True)
         if missing_analysis_case:
-            # Independent reconstructed delivery scenario: keep the exact
-            # committed original rows, original readiness proof and the
-            # original pending scope; reset only the isolated delivery markers.
-            # This does not assert that the first callback was never attempted
-            # in the initial scenario (that scenario is checked above).
             lane=w.freqtrade.strategy._c11_native_entry_owner
-            assert first_hold is not None and first_hold.end==E
-            assert observed_ready+60_000>E+62_000
-            clock[0]=E+62_000
-            publication.late_fixture=True
-            refreshed=tuple(f.read())
-            fresh=next(x for x in refreshed if x.pair==PAIR)
-            assert fresh.generation==first_hold.generation+1
-            assert w.freqtrade.observed_ranked(fresh) and not sc.plan.current(first_hold,clock[0])
-            assert ready_clock(fresh,E,clock[0])==observed_ready
-            sc.warm.claimed.remove((PAIR,E))
-            lane.spent.discard((PAIR,E))
-            lane.holds[PAIR]=first_hold
-            baseline_wire=len(exact_requests)
-            strategy=w.freqtrade.strategy
-            policy=w.freqtrade.policy
-            native_inputs=policy.bars.inputs
-            original_proof=sc.warm.readable[(PAIR,fresh.symbol,E)]
-            from c11_primary_decision_seam_v1.exact_rpd5_join import join
-            from contextlib import ExitStack
-            from primary_coverage_gate import NativePrimaryHandoff
-            actual=[]
-            flow=[]
-            def wrapper(label,original):
-                def deliver(*args,**kwargs):
-                    tracked=hasattr(w.freqtrade,'_c11_native_primary_handoff')
-                    if tracked:flow.append(label+'_ENTER')
-                    try:
-                        result=original(*args,**kwargs)
-                    except Exception:
-                        if tracked:flow.append(label+'_EXCEPTION')
-                        raise
-                    if tracked:
-                        flow.append(label+('_NONE' if result is None else '_VALUE'))
-                    return result
-                return deliver
-            def observe_native_inputs(symbol,end,as_of,**kwargs):
-                value=native_inputs(symbol,end,as_of,**kwargs)
-                if symbol==fresh.symbol and hasattr(w.freqtrade,'_c11_native_primary_handoff'):
-                    actual.append((end,as_of,kwargs,value))
-                return value
-            with ExitStack() as witnesses:
-                for owner,name,label in (
-                    (strategy,'primary_inputs','STRATEGY'),
-                    (f,'candidate','RANK'),
-                    (policy,'primary_inputs','POLICY'),
-                    (NativePrimaryHandoff,'validated_expiry','EXPIRY'),
-                    (NativePrimaryHandoff,'resolve','RESOLVE'),
-                ):
-                    witnesses.enter_context(patch.object(owner,name,wrapper(label,getattr(owner,name))))
-                witnesses.enter_context(patch.object(policy.bars,'inputs',side_effect=observe_native_inputs))
-                w.freqtrade.process()
-                strategy.analyze_pair(PAIR)
-            print('C11_LATE_DELIVERY_FLOW',*flow[:42],flush=True)
-            calls=[a for a in advice if a==(62_000,PAIR,'ORIGINAL_NATIVE_CALLBACK')]
-            print('C11_LATE_DELIVERY_COUNTS',len(calls),len(actual),len(exact_requests)-baseline_wire,flush=True)
-            assert len(calls)==1 and len(actual)==1, (
-                'C11_LATE_ORIGINAL_WORKER_NO_CALLBACK_OR_NATIVE_INPUT',len(calls),len(actual))
-            end,read_at,received,evidence=actual[0]
-            assert (end,read_at)==(E,clock[0]) and read_at<received['valid_until_ms']
-            assert received['primary'] is original_proof.primary and received['state'] is original_proof.closed
-            assert w.freqtrade.observed_ranked(fresh)
-            signal=received['primary'][2].status
-            state=received['state']
-            rpd_status,_=join(state.scope,read_at,[state])
-            assert state.known and rpd_status in ('PASS','VETO') and signal!='UNKNOWN'
-            assert (evidence is not None)==(signal=='NW15_PRIMARY_SIGNAL' and rpd_status=='PASS'), (
-                'C11_LATE_NATIVE_RESULT_DIVERGES_FROM_ORIGINAL_RULES',signal,rpd_status)
-            print('C11_LATE_ORIGINAL_RESULT',signal,rpd_status,flush=True)
-            assert len(exact_requests)==baseline_wire and not Trade.get_trades().all()
-            print('C11_LATE_ORIGINAL_WORKER_ONE_CALLBACK_VALID_INPUT_NO_WIRE',flush=True)
+            early=clock[0]-E+1
+            assert E+early<first_hold.expires, 'C11_EXPECTED_EARLY_REFRESH_BEFORE_PREDECESSOR_EXPIRY'
+            verify_renewed_scope_delivery(w,sc,first_hold,observed_ready,lane,f,publication,ready_clock,advice,early)
+            verify_renewed_scope_delivery(w,sc,first_hold,observed_ready,lane,f,publication,ready_clock,advice,62_000)
         print('NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK',flush=True)
         print('PACKAGED_WARM_ROUTE_ORIGINAL_CALLBACK',json.dumps(exact_requests),flush=True)
         return

@@ -233,6 +233,10 @@ PYFAIL
       grep -Fx NATIVE_FALLBACK_15M_WITH_DURABLE_1M_AND_ORIGINAL_CALLBACK "$out/warm-runtime.log" &&
       grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
+    if [ "$missing" = yes ]; then
+      grep -E '^C11_LATE_ORIGINAL_RESULT NW15_[A-Z_]+ (PASS|VETO)$' "$out/warm-runtime.log" &&
+      grep -E '^C11_FRESH_READY_OFFSET_MS [0-9]+$' "$out/warm-runtime.log" || return 1
+    fi
     if [ "$mixed_history_pressure" = yes ]; then
       grep -Fx C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY "$out/warm-runtime.log"
       grep -Fx C11_MIXED_WARM_REAL_SQLITE_WRITE_HELD "$out/warm-runtime.log"
