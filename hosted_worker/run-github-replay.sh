@@ -253,6 +253,7 @@ PYFAIL
       grep -Fx C11_DIVERGENT_FALLBACK_DID_NOT_BLOCK_ORIGINAL_DECISION "$out/warm-runtime.log"
     fi
     if [ "$missing" = yes ]; then
+      python3 -I -B "$d/check_entry_verdict_receipts.py" "$out/warm-runtime.log" || return 1
       grep -Fx ACTUAL_ANALYZED_FRAME_MISSING "$out/warm-runtime.log"
       grep -Fx C11_RAW_REFILL_AND_ORIGINAL_CALLBACK_WITH_MISSING_ANALYZED_CACHE "$out/warm-runtime.log"
     fi
