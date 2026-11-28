@@ -359,7 +359,7 @@ else:
                 assert start>=mixed_start, 'C11_MIXED_REOPENED_LISTING_START'
                 # Generation 7 genuinely lacks terminal raw input. The fixture
                 # supplies a short response, not a fake hold or readiness.
-                if generation==7 and stop==END:
+                if generation==7 and stop==END and MIXED!='retained-blank':
                     return []
                 for row in rows:
                     assert mixed_rows[row[0]].available_at<=now, 'C11_MIXED_USED_FUTURE_SOURCE'
@@ -489,6 +489,14 @@ else:
             # Each must acquire it before its respective initial-state path.
             h.store.record(SYMBOL,M,tuple(mixed_rows[t].closed() for t in range(mixed_start,mixed_cutoff,M)
                 if t!=mixed_hole))
+            if MIXED=='retained-blank':
+                # The observed blank candidates also had an existing 15m
+                # cache, all 260 overlapping bars equal to the 1m basis.
+                # Reuse that genuine projection, not synthetic prices.
+                from closed_minute_basis import project_closed_minutes
+                old=project_closed_minutes(h.store,SYMBOL,Q,mixed_cutoff-260*Q,mixed_cutoff,now)
+                assert len(old)==260
+                h.store.record(SYMBOL,Q,old)
         if REVIEWED_PARTIAL or AUTO_STALE:
             # Simulate the real half-initialized shape in this private
             # temporary store using the separately pinned JCT origin.
@@ -797,7 +805,7 @@ else:
                 raise AssertionError('C11_MIXED_NO_ORIGINAL_READ')
             assert now//Q==END//Q
             next_now=now+(5_000 if MIXED=='retained-blank' else 250)
-            if generation==7:
+            if generation==7 and MIXED!='retained-blank':
                 assert not mixed_callbacks and not mixed_reads, 'C11_MIXED_PREMATURE_ORIGINAL_CALLBACK'
                 # Let original authority record a real same-close pending
                 # state before the next immutable publication supersedes it.
@@ -808,7 +816,8 @@ else:
                 # original Worker cycles without another callback.
                 verify_on=mixed_callbacks[0].setdefault('verify_on',cycle_count+2)
                 if cycle_count>=verify_on:
-                    assert_known_once(mixed_callbacks,mixed_reads,target=END,generation=8)
+                    assert_known_once(mixed_callbacks,mixed_reads,target=END,
+                                      generation=7 if MIXED=='retained-blank' else 8)
                     assert not archive_wire
                     proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
                     assert proof and proof.open_ms==mixed_start
@@ -819,7 +828,7 @@ else:
                     check_mixed_ledger()
                     print(json.dumps(dict(status='C11_FINAL_MIXED_PACKAGED_PASS',variant=MIXED,
                         callback_count=len(mixed_callbacks),read_count=len(mixed_reads),
-                        original_status=mixed_reads[0]['status'],rpd=mixed_reads[0]['rpd'],generation=8)),flush=True)
+                        original_status=mixed_reads[0]['status'],rpd=mixed_reads[0]['rpd'],generation=generation)),flush=True)
                     raise Done
             # Yield in real time to let the documented public transport and
             # background planner process their asynchronous replies.

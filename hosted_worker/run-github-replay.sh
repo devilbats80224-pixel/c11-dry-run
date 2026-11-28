@@ -299,7 +299,7 @@ for line in Path(sys.argv[1]).read_text(errors='replace').splitlines():
     events.append(json.loads(line))
 assert len(events)==1, 'C11_MIXED_RESULT_COUNT'
 e,=events
-assert e['variant']==sys.argv[2] and e['generation']==8
+assert e['variant']==sys.argv[2] and e['generation']==(7 if e['variant']=='retained-blank' else 8)
 assert e['callback_count']==e['read_count']==1
 assert e['original_status'] in ('NO_SIGNAL','NW15_PRIMARY_SIGNAL') and e['rpd'] in ('PASS','VETO')
 print('C11_FINAL_MIXED_PACKAGED_PASS',e['variant'],e['original_status'],e['rpd'])
