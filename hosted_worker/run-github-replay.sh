@@ -234,8 +234,13 @@ PYFAIL
       grep -E '^C11_UNREADY_PEER_DOES_NOT_DELAY_ORIGINAL_CALLBACK [0-9]+$' "$out/warm-runtime.log" ||
       { echo C11_HOSTED_WORKER_CASE_FAILED warm-original-callback; return 1; }
     if [ "$missing" = yes ]; then
-      grep -E '^C11_LATE_ORIGINAL_RESULT NW15_[A-Z_]+ (PASS|VETO)$' "$out/warm-runtime.log" &&
-      grep -E '^C11_FRESH_READY_OFFSET_MS [0-9]+$' "$out/warm-runtime.log" || return 1
+      count="$(grep -E -c '^C11_LATE_ORIGINAL_RESULT (NW15_PRIMARY_SIGNAL|NO_SIGNAL) (PASS|VETO)$' "$out/warm-runtime.log" || :)"
+      if [ "$count" != 2 ] || ! grep -Fxq 'C11_FRESH_READY_OFFSET_MS 62000' "$out/warm-runtime.log" ||
+          ! awk '/^C11_FRESH_READY_OFFSET_MS / && $2>0 && $2<60000 { ok=1 } END { exit !ok }' "$out/warm-runtime.log"; then
+          { echo 'C11_FRESH_DELIVERY_RECEIPT_MISSING'; echo 'Expected: two known original results, one before the previous nominal expiry and one at +62000ms.'; echo "Actual: $count recognized known-result receipts. Last successful stage: original Worker fixture process."; } | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          return 1
+      fi
+      grep -E '^C11_(LATE_ORIGINAL_RESULT (NW15_PRIMARY_SIGNAL|NO_SIGNAL) (PASS|VETO)|FRESH_READY_OFFSET_MS [0-9]+)$' "$out/warm-runtime.log"
     fi
     if [ "$mixed_history_pressure" = yes ]; then
       grep -Fx C11_MIXED_SYNTHETIC_HISTORY_ACCOUNTED_BEFORE_REAL_STRATEGY "$out/warm-runtime.log"
