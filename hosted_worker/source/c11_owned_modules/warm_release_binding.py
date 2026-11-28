@@ -1,5 +1,7 @@
 """Original Worker single-receipt route; candidate, not a release authorization."""
 import sqlite3
+from dataclasses import dataclass
+from threading import get_ident
 from committed_projection import AuthoritativePrimaryCommit,CommittedProjection,canonical,frame_sha
 from primary_coverage_gate import NativePrimaryHandoff
 from canonical_guard import same_native_frame
@@ -18,6 +20,21 @@ def _durable_terminal_matches(stored, bar, width):
             and stored[1:]==(bar.op,bar.high,bar.low,bar.close,bar.volume,bar.quote))
 
 
+@dataclass(frozen=True)
+class ReadableWarmInput:
+    pair:str
+    symbol:str
+    end:int
+    at:int
+    frame_hash:str
+    primary:tuple
+    closed:object
+    source_pin:str
+    rpd_pin:str
+    last_receipt:int
+    durable_check:object
+
+
 class WarmReleaseBinding:
     def __init__(self,scheduler):
         self.sc=scheduler
@@ -29,6 +46,18 @@ class WarmReleaseBinding:
         self.claim_end=None
         self.refresh=None
         self.reused=set()
+        self.owner=get_ident()
+        self.readable={}
+
+    def readiness_at(self,candidate,end,now):
+        if get_ident()!=self.owner or type(now) is not int or not end<=now<end+QUARTER:
+            return None
+        proof=self.readable.get((candidate.pair,candidate.symbol,end))
+        if proof is None or now<proof.at:
+            return None
+        store=self.sc.adapter.ready.store
+        usable=optional_observation(proof.durable_check,(store.db,))
+        return proof.at if usable is True else None
 
     def eligible(self,s,start):
         sc=self.sc
@@ -36,6 +65,7 @@ class WarmReleaseBinding:
             self.claim_end=s.end
             self.claimed.clear()
             self.reused.clear()
+            self.readable={k:v for k,v in self.readable.items() if k[-1]==s.end}
         self.prefix={k:v for k,v in self.prefix.items() if (k.generation,k.end)==(s.generation,s.end)}
         self.selected={k for k in self.selected if (k.generation,k.end)==(s.generation,s.end)}
         if sc.commit_and_decide.wants_multilane(s):
@@ -242,8 +272,9 @@ class WarmReleaseBinding:
                 return 'HOLD_NATIVE_RPD_LINEAGE',None
             durable.append((width,bar.open_ms,saved))
         durable=tuple(durable)
-        def still():
-            if not self._current(s) or store.db.in_transaction or store.segment(s.symbol)!=origin:
+        def durable_check():
+            if (get_ident()!=self.owner or store.db.in_transaction or self.sc.adapter.ready.store is not store
+                    or store.segment(s.symbol)!=origin):
                 return False
             if store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(s.symbol,)).fetchone()!=(packed,):
                 return False
@@ -251,6 +282,8 @@ class WarmReleaseBinding:
                 if store.db.execute(query,(s.symbol,width,opened)).fetchone()!=saved:
                     return False
             return True
+        def still():
+            return self._current(s) and durable_check()
         # The archived incoming receipt and the already-durable old raw
         # rows are distinct. No retained old minute is a new 5m/15m input.
         proof=('AUTHENTIC_ORIGINAL_CCXT_MINUTE_DERIVED',key,receipt.source_proof,batches,durable)
@@ -267,6 +300,11 @@ class WarmReleaseBinding:
             current_authority=lambda _c,r,_t:r is seal and still(),
             trusted_rpd_pin=lambda c,e,_t:lineage if (c.pair,c.symbol,c.generation,e)==key and still() else None)
         event=projector.project(seal,candidate,before,material,closed)
+        # Record the earliest actual owner-proved complete input. This grants
+        # no stale rank permission, and source-clock refresh never restamps it.
+        key_input=(s.pair,s.symbol,s.end)
+        self.readable.setdefault(key_input,ReadableWarmInput(*key_input,at,identity,material,closed,
+                          provenance,lineage,last,durable_check))
         gate=NativePrimaryHandoff(wall=sc.wall,original_scope=projector.still_native,
             frame_sha=lambda _p,e:frame_sha(frame(),e)[0])
         bot._c11_native_primary_handoff=gate

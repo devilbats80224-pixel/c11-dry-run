@@ -20,6 +20,7 @@ class UnifiedScheduler:
         from warm_release_binding import WarmReleaseBinding
         self.warm=WarmReleaseBinding(self)
         self.plan.warm_prepare=self.warm.eligible
+        self.plan.verified_readiness_at=self.warm.readiness_at
         self.plan.warm_minute_span=self.warm.minute_span
         # Preserve only the earlier explicitly reviewed correction. Original
         # independent position-protection cadence remains untouched.
