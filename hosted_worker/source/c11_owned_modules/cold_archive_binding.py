@@ -8,12 +8,16 @@ PUBLIC_MODE='BINANCE_PUBLIC_CLOSED_1M_V1'
 DISCOVERY_KEY='unseeded_archive_discovery'
 DISCOVERY_MODE='BOUNDED_OFFICIAL_ARCHIVE_V1'
 REVIEWED_ONLY='REVIEWED_OFFICIAL_ARCHIVE_ONLY_V1'
+BOOTSTRAP_KEY='unseeded_recent_minute_bootstrap'
+BOOTSTRAP_MODE='BINANCE_SHARED_RECENT_1M_V1'
 
 
 class ColdSourceAdmission:
     """Prefer each candidate’s reviewed source without blocking other candidates."""
-    def __init__(self,reviewed,wall,*,discover_unseeded=False):
-        self.discover_unseeded=discover_unseeded
+    def __init__(self,reviewed,wall,*,discover_unseeded=False,recent_minute_bootstrap=False):
+        if type(recent_minute_bootstrap) is not bool or recent_minute_bootstrap and discover_unseeded is not True:
+            raise ValueError('C11_RECENT_BOOTSTRAP_REQUIRES_UNSEEDED_DISCOVERY')
+        self.recent_minute_bootstrap=recent_minute_bootstrap
         self.reviewed=ColdPrefixAdmission(
             {s:v for s,v in reviewed.items() if not v.download_only},wall,prewarm_idle=True)
         remote={s:v for s,v in reviewed.items() if v.download_only}
@@ -24,7 +28,7 @@ class ColdSourceAdmission:
 
     def allows_unseeded_minutes(self,fact):
         from native_cold_minute_page import bootstrap_bounds
-        return (self.discover_unseeded is True and fact.symbol not in self.reviewed.sources
+        return (self.recent_minute_bootstrap is True and fact.symbol not in self.reviewed.sources
                 and fact.symbol not in self.reviewed_remote
                 and bootstrap_bounds(fact.origin,fact.boundary) is not None)
 
@@ -91,7 +95,11 @@ def plan(runtime,sources,wall,history_enabled):
         raise ValueError('C11_REVIEWED_DOWNLOAD_REQUIRES_PUBLIC_HISTORY')
     if DISCOVERY_KEY in runtime and (runtime[DISCOVERY_KEY] not in (DISCOVERY_MODE,REVIEWED_ONLY) or mode!=PUBLIC_MODE):
         raise ValueError('C11_UNSEEDED_DISCOVERY_EXACT_MODE')
+    discovery=(mode==PUBLIC_MODE and runtime.get(DISCOVERY_KEY)!=REVIEWED_ONLY)
+    bootstrap=BOOTSTRAP_KEY in runtime
+    if bootstrap and (runtime[BOOTSTRAP_KEY]!=BOOTSTRAP_MODE or not discovery):
+        raise ValueError('C11_RECENT_BOOTSTRAP_EXACT_MODE')
     if not sources and mode is None:
         return None
     return ArchivePrepLane({},wall,cold_prefix_sources=sources,public_cold_archive=mode==PUBLIC_MODE,
-                           discover_unseeded=(mode==PUBLIC_MODE and runtime.get(DISCOVERY_KEY)!=REVIEWED_ONLY))
+                           discover_unseeded=discovery,recent_minute_bootstrap=bootstrap)
