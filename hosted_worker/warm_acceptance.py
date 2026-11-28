@@ -848,15 +848,41 @@ def main(outer):
             native_inputs=policy.bars.inputs
             original_proof=sc.warm.readable[(PAIR,fresh.symbol,E)]
             from c11_primary_decision_seam_v1.exact_rpd5_join import join
+            from contextlib import ExitStack
+            from primary_coverage_gate import NativePrimaryHandoff
             actual=[]
+            flow=[]
+            def wrapper(label,original):
+                def deliver(*args,**kwargs):
+                    tracked=hasattr(w.freqtrade,'_c11_native_primary_handoff')
+                    if tracked:flow.append(label+'_ENTER')
+                    try:
+                        result=original(*args,**kwargs)
+                    except Exception:
+                        if tracked:flow.append(label+'_EXCEPTION')
+                        raise
+                    if tracked:
+                        flow.append(label+('_NONE' if result is None else '_VALUE'))
+                    return result
+                return deliver
             def observe_native_inputs(symbol,end,as_of,**kwargs):
                 value=native_inputs(symbol,end,as_of,**kwargs)
                 if symbol==fresh.symbol and hasattr(w.freqtrade,'_c11_native_primary_handoff'):
                     actual.append((end,as_of,kwargs,value))
                 return value
-            with patch.object(policy.bars,'inputs',side_effect=observe_native_inputs):
+            with ExitStack() as witnesses:
+                for owner,name,label in (
+                    (strategy,'primary_inputs','STRATEGY'),
+                    (f,'candidate','RANK'),
+                    (policy,'primary_inputs','POLICY'),
+                    (NativePrimaryHandoff,'validated_expiry','EXPIRY'),
+                    (NativePrimaryHandoff,'resolve','RESOLVE'),
+                ):
+                    witnesses.enter_context(patch.object(owner,name,wrapper(label,getattr(owner,name))))
+                witnesses.enter_context(patch.object(policy.bars,'inputs',side_effect=observe_native_inputs))
                 w.freqtrade.process()
                 strategy.analyze_pair(PAIR)
+            print('C11_LATE_DELIVERY_FLOW',*flow[:42],flush=True)
             calls=[a for a in advice if a==(62_000,PAIR,'ORIGINAL_NATIVE_CALLBACK')]
             print('C11_LATE_DELIVERY_COUNTS',len(calls),len(actual),len(exact_requests)-baseline_wire,flush=True)
             assert len(calls)==1 and len(actual)==1, (
