@@ -86,8 +86,31 @@ def completed_input_uses_fresh_same_close_rank_after_old_expiry():
     print("C11_READY_CLOCK_REQUIRES_FRESH_SAME_CLOSE_CANDIDATE")
 
 
+def ready_decision_does_not_inherit_the_same_generation_wire_cap():
+    now=[END+55_000]
+    row=SimpleNamespace(pair=PAIR,symbol="EXAMPLEUSDT",generation=7,
+        expires_ns=(END+110_000)*1_000_000,rank=1,ratio=Decimal(".25"),received_at=1)
+    bot=SimpleNamespace(feed=SimpleNamespace(latest_owner_observation=(row,)),
+                        observed_ranked=lambda r:r is row)
+    plan=OriginalPlan(SimpleNamespace(freqtrade=bot),lambda:now[0],lambda:now[0]*1_000_000,
+                      lambda *args:END)
+    first=plan.provisional_scope(PAIR,END)
+    assert first is not None and first.expires==END+60_000
+    now[0]=END+68_000
+    plan.verified_readiness_at=lambda candidate,e,at: END+68_000 if (
+        candidate is row and e==END and at>=END+68_000) else None
+    current=plan.provisional_scope(PAIR,END)
+    assert current is not None, "C11_FRESH_SAME_GENERATION_REUSES_EXPIRED_WIRE_CAP"
+    assert current.generation==first.generation and current.expires==END+110_000
+    assert plan.current(current,now[0]) and not plan.current(first,now[0])
+    assert plan(bot)==(7,END,()), "C11_FRESH_READY_REOPENED_WIRE"
+    assert plan.provisional_scope(PAIR,END)==current
+    print("C11_READY_SCOPE_SEPARATES_SAME_GENERATION_WIRE_CAP")
+
+
 if __name__ == "__main__":
     for case in ("ready","not-ready","source-changed","generation-changed","expired","absent-state"):
         check(case)
     print("C11_ORIGINAL_SAME_SCOPE_WARM_OFFER_SURVIVES_RECOVERY")
     completed_input_uses_fresh_same_close_rank_after_old_expiry()
+    ready_decision_does_not_inherit_the_same_generation_wire_cap()
