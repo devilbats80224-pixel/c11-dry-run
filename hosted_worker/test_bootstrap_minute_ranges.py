@@ -59,6 +59,24 @@ def main():
         assert db.db.execute('SELECT count(*) FROM rpd_checkpoint').fetchone()==(0,)
     finally:
         db.db.close()
+    from cold_archive_binding import plan
+    archive={'cold_archive_preparation':'BINANCE_PUBLIC_CLOSED_1M_V1'}
+    modern={'unseeded_recent_minute_bootstrap':'BINANCE_SHARED_RECENT_1M_V1'}
+    for config,expected in ((archive,False),({**archive,**modern},True)):
+        prep=plan(config,{},lambda:NOW,True)
+        lane=prep.cold_admission(lambda:NOW)
+        try:
+            assert lane.discover_unseeded is True and lane.allows_unseeded_minutes(fact) is expected
+        finally:
+            lane.close()
+            prep.close()
+    for invalid in (modern,{**archive,**modern,'unseeded_archive_discovery':'REVIEWED_OFFICIAL_ARCHIVE_ONLY_V1'}):
+        try:
+            plan(invalid,{},lambda:NOW,True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('C11_EXACT_BOOTSTRAP_SOURCE_MODE_NOT_ENFORCED')
     print('C11_BLANK_EXACT_SINGLE_MISSING_MINUTE_PLAN_PASS')
 
 
