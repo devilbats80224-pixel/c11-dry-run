@@ -14,7 +14,7 @@ from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.worker import Worker
 
 from bridge_protocol import need
-from entry_verdict_receipt import ADMISSION, mark_primary, publish
+from entry_verdict_receipt import ADMISSION, mark_primary, publish, unavailable_order_fact
 from owner_wrapper import install_if_present
 from sealed_owned_scheduler import OWNED_SCHEDULER_EXPECTED_SEAL, OWNED_SCHEDULER_FACTORY
 from feature_warmup import FeatureWarmup
@@ -341,6 +341,7 @@ class PaperBot(C11PaperRecoveryRunner):
         self._entry_open_clock = None
         inputs = self.primary_inputs(pair)
         if inputs is None:
+            unavailable_order_fact('ENTRY_FACTS_PRIMARY_RECHECK_UNAVAILABLE')
             return None, None
         return self.policy.entry_facts(self, pair, inputs), inputs
 
