@@ -289,7 +289,9 @@ else:
         # Reload only the same fixture-verified market, never public network.
         feed._reviewed_metaclass_fetch=lambda:N(verified={SYMBOL:PAIR},
                                                 received_monotonic_ns=time.monotonic_ns())
-    observer=N(point=lambda sym,_: (generation,1,Decimal('.25')) if sym==SYMBOL and qualified else None)
+    def fixed_point(sym,_):
+        return (generation,1,Decimal('.25')) if sym==SYMBOL and qualified else None
+    observer=N(point=fixed_point,current_point=fixed_point)
     if MIXED:
         from mixed_replay_evidence import assert_known_once, load_causal_tape, observer_feed
         print('C11_MIXED_STAGE LOCKED_DRIVER_INPUTS_VERIFIED',flush=True)

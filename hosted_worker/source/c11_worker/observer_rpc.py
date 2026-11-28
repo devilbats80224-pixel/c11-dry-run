@@ -23,9 +23,10 @@ def clock(value):
 
 
 class ObserverClient:
-    def __init__(self,pipe,binding):
+    def __init__(self,pipe,binding,*,docked_current=False):
         need(type(binding) is str and HEX.fullmatch(binding),'C11_OBSERVER_ATTESTED_BINDING_REQUIRED')
         self.pipe,self.binding=pipe,binding
+        self.docked_current=docked_current
 
     def _read(self,view,symbol,end,start=None):
         need(type(symbol) is str and SYMBOL.fullmatch(symbol) and clock(end),
@@ -40,7 +41,15 @@ class ObserverClient:
         return reply.get('data')
 
     def point(self,symbol,decision):
-        data=self._read('point',symbol,decision)
+        return self._decode_point(self._read('point',symbol,decision))
+
+    def current_point(self,symbol,decision):
+        if not self.docked_current:
+            return self.point(symbol,decision)
+        return self._decode_point(self._read('current_point',symbol,decision))
+
+    @staticmethod
+    def _decode_point(data):
         if data is None:
             return None
         generation,rank,raw=data

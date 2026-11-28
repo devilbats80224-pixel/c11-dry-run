@@ -9,6 +9,7 @@ from unittest.mock import patch
 root = Path(__file__).parent / "source"
 sys.path[:0] = [str(root / "c11_owned_modules"), str(root / "c11_worker")]
 import entry_feed
+from bridge_protocol import Refused
 from docker_observer import CaptureBridge, DockerObserver
 from observer_rpc import ObserverClient
 
@@ -34,8 +35,10 @@ def classifier(stamp):
 
 
 class Publication:
+    ratio = "0.25"
+
     def response(self, nonce):
-        rows = [{"symbol": symbol, "native_oi_change_24h_raw": "0.25"}]
+        rows = [{"symbol": symbol, "native_oi_change_24h_raw": self.ratio}]
         rows.extend({"symbol": f"BAR{i}USDT", "native_oi_change_24h_raw": "0.00"} for i in range(59))
         return dict(nonce=nonce, status="FRESH", source=entry_feed.SOURCE,
                     query_sha256=entry_feed.QUERY, offset=0, page_size=60,
@@ -54,29 +57,45 @@ def mono():
 with TemporaryDirectory() as dirname, patch("time.time_ns", mono), patch("time.monotonic_ns", mono):
     observer = DockerObserver(Path(dirname).resolve() / "docker-observer.sqlite", binding, wall=wall, mono=mono)
     try:
-        bridge = CaptureBridge(Publication(), observer, binding, lambda: feed.classification)
+        publication = Publication()
+        bridge = CaptureBridge(publication, observer, binding, lambda: feed.classification)
         bridge.send(dict(op="C11_PAPER_BRIDGE_V1", nonce="0" * 32))
         bridge.receive(2)
         feed = entry_feed.EntryFeed(bridge, generation)
         # Exactly 297 ms of the initial Binance exchangeInfo lease remains.
         feed.classification = classifier(end + 1_301 - 300_000)
         feed._reviewed_metaclass_fetch = lambda: classifier(now)
-        rank = ObserverClient(bridge, binding)
+        rank = ObserverClient(bridge, binding, docked_current=True)
         (first,) = feed.read()
-        assert rank.point(first.symbol, now) == (first.generation, first.rank, first.ratio)
+        assert rank.current_point(first.symbol, now) == (first.generation, first.rank, first.ratio)
         assert rank.point(first.symbol, end) is None, "Must not backdate observer evidence"
 
         now = end + 2_000
-        assert rank.point(first.symbol, now) is None, "Thin proof really expired before refresh"
+        assert rank.current_point(first.symbol, now) is None, "Thin proof really expired before refresh"
         now = end + 3_491
         (current,) = feed.read()
         assert current.expires_ns > mono() and current.generation == generation
-        assert rank.point(current.symbol, now) == (current.generation, current.rank, current.ratio), (
+        assert rank.current_point(current.symbol, now) == (current.generation, current.rank, current.ratio), (
             "C11_FRESH_FEED_BUT_OBSERVER_SCOPE_EXPIRED", now-end, current.expires_ns//1_000_000-end)
         assert rank.point(current.symbol, end) is None, "Must not backdate observer evidence"
         assert rank.point(current.symbol, end+2_000) is None, "Do not erase an elapsed classifier gap"
+        assert rank.point(current.symbol, now) is None, "Current-only proof must not become a historical point"
+        assert rank.current_point(current.symbol, end+2_000) is None, "Cannot backdate a renewed receipt"
+        now += 1
+        publication.ratio = "0.26"
+        try:
+            feed.read()
+        except Refused as e:
+            assert str(e) == "C11_OBSERVER_GENERATION_REWRITE"
+        else:
+            raise AssertionError("Changed source payload must not renew this generation")
+        assert rank.current_point(current.symbol, now) is None, "A failed refresh must revoke current proof"
+        publication.ratio = "0.25"
+        feed.read()
+        assert rank.current_point(current.symbol, now) == (current.generation, current.rank, current.ratio)
         now = provider_expires
-        assert rank.point(current.symbol, now) is None, "Must not exceed the provider's lease"
+        assert rank.current_point(current.symbol, now) is None, "Must not exceed the provider's lease"
+        assert rank.current_point(current.symbol, now) is None, "Current proof must obey publisher expiry"
     finally:
         observer.close()
 

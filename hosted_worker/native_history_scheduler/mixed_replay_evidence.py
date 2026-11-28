@@ -138,7 +138,7 @@ def observer_feed(root, symbol, pair, metadata, wall, mono):
         return SimpleNamespace(verified={symbol:pair},body_sha256=body_sha,received_monotonic_ns=mono())
     feed.classification = classify()
     feed._reviewed_metaclass_fetch = classify
-    return feed, ObserverClient(bridge, binding), observer, publication
+    return feed, ObserverClient(bridge, binding, docked_current=True), observer, publication
 
 
 def assert_known_once(callbacks, reads, *, target, generation):

@@ -111,6 +111,9 @@ class ObserverHost:
             start-=FIVE
         return None
 
+    def current_point(self,symbol,decision):
+        return None  # Only the docked observer can attest a new capture receipt.
+
     def reply(self,req):
         need(type(req) is dict and set(req)=={'op','nonce','view','symbol','end_ms','start_ms'}
              and req['op']==OP and type(req['nonce']) is str and re.fullmatch('[a-f0-9]{32}',req['nonce']),
@@ -119,7 +122,7 @@ class ObserverHost:
         now=now_ms()
         need(type(symbol) is str and SYMBOL.fullmatch(symbol) and clock(end) and now-DAY<=end<=now
              and ((key=='span' and clock(start) and end-DAY<=start<=end)
-                  or (key in ('point','weak','episode') and start is None)),
+                  or (key in ('point','current_point','weak','episode') and start is None)),
              'C11_OBSERVER_HOST_SCOPE')
         db=self.store.db
         db.execute('BEGIN')
@@ -128,6 +131,8 @@ class ObserverHost:
             if key=='point':
                 got=self.store.oi20_at(self.binding,symbol,end)
                 data=[got[0],got[1],str(got[2])] if got else None
+            elif key=='current_point':
+                data=self.current_point(symbol,end)
             elif key=='weak':
                 row=db.execute('SELECT binding FROM source_bucket WHERE source=?',(self.mod.BINANCE_SOURCE,)).fetchone()
                 expected={'host':'fapi.binance.com','path':'/futures/data/openInterestHist','period':'5m','field':'sumOpenInterest'}
