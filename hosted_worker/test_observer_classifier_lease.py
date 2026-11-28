@@ -157,4 +157,11 @@ with TemporaryDirectory() as dirname, patch("time.time_ns", mono), patch("time.m
     finally:
         observer.close()
 
+# The reviewed-partial replay and legacy read-only adapters have only the
+# monotonic clock when no metered classifier is installed.
+passive = entry_feed.EntryFeed(None, generation)
+passive.classification = classifier(now)
+with patch.object(entry_feed,"time",SimpleNamespace(monotonic_ns=mono)):
+    assert passive.refresh_classification() is passive.classification
+
 print("C11_FRESH_CLASSIFIER_BEFORE_SHORT_SCOPE_PASS")

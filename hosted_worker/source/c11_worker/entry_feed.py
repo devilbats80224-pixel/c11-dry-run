@@ -57,12 +57,14 @@ class EntryFeed:
 
     def _cover_active_acquisition(self, now):
         previous = self.classification
+        fetch = self._reviewed_metaclass_fetch
+        if not callable(fetch):
+            return previous  # Existing read-only/monotonic adapter is untouched.
         cached_until = previous.received_monotonic_ns + METADATA_NS
         wall = time.time_ns()
         boundary = wall // QUARTER_NS * QUARTER_NS
         remaining = boundary + ACQUISITION_NS - wall
-        fetch = self._reviewed_metaclass_fetch
-        if (not callable(fetch) or remaining <= 0 or cached_until >= now + remaining
+        if (remaining <= 0 or cached_until >= now + remaining
                 or now < self.retry_metadata_ns or self._classification_rollover_attempt == boundary):
             return previous
         # This is the existing metered native classifier, not a new request
