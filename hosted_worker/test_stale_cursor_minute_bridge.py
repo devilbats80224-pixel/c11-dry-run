@@ -113,6 +113,61 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
         store.db.close()
 
 
+def verified_cursor_prefetch_uses_capacity_and_waits_for_missing_predecessor():
+    symbol='全新樣本USDT'
+    first=T-20*PAGE
+    origin=first-Q
+    wall=T+1000
+    fact=N(symbol=symbol,origin=origin,boundary=T,generation=8)
+    store=CausalBars(':memory:')
+    proof=SegmentStart(symbol,origin,origin+M)
+    store.set_segment(proof)
+    state=RpdState.start(proof)
+    for t in range(origin,first,FIVE):
+        state.advance(ClosedBar(t,t+FIVE,100,104,99,101,10,1000),first)
+    with store.db:
+        store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(symbol,state.pack()))
+    calls=[]; release=set(); inflight=set()
+    class Lane:
+        def __init__(self,guard):self.guard=guard
+        def offer(self,job):
+            if not self.guard(job) or len(inflight)>=3:return False
+            self.job=job; calls.append(job.start); inflight.add(job.start)
+            return True
+        def tick(self):
+            j=self.job
+            if j.start not in release:return None
+            assert self.guard(j)
+            rows=[[t,'100','104','99','101','10',t+M-1,'1000',5,'4','400','0']
+                  for t in range(j.start,j.stop,M)]
+            return j,(wall-1,wall,rows)
+        def close(self):
+            if hasattr(self,'job'):inflight.discard(self.job.start)
+    owner=N(store=store,check_store=lambda:None,tap=N(current=lambda f:f is fact),
+            run=N(wall=lambda:wall,queue=N(inflight={})))
+    loop=MinuteAdmissionLoop(owner,Lane)
+    loop.cycle_headroom=lambda:True
+    def cursor():
+        payload,=store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
+        return RpdState.restore(payload).next_open
+    try:
+        loop.tick([fact],has_headroom=lambda:len(inflight)<3)
+        assert calls==[first,first+PAGE,first+2*PAGE],(
+            'C11_FIXED_ONE_REQUEST_BLOCKS_AVAILABLE_HISTORY_CAPACITY',calls)
+        release.update((first+PAGE,first+2*PAGE))
+        # Complete the newer requests but intentionally hold the oldest.
+        loop.tick([fact],has_headroom=lambda:False)
+        assert cursor()==first,'C11_VERIFIED_CURSOR_JUMPED_MISSING_PREDECESSOR'
+        assert len(store.range(symbol,M,first+PAGE,first+3*PAGE,wall))==990
+        release.add(first)
+        loop.tick([fact],has_headroom=lambda:False)
+        assert cursor()==first+3*PAGE,'C11_VERIFIED_CONTIGUOUS_OUT_OF_ORDER_PAGES_NOT_REUSED'
+        assert len(calls)==len(set(calls))==3
+    finally:
+        loop.close()
+        store.db.close()
+
+
 def main():
     for symbol in ('NEWCONTRACTUSDT', '陌生候選USDT'):
         fact = N(symbol=symbol, origin=ORIGIN, boundary=T, generation=8)
@@ -135,6 +190,7 @@ def main():
         assert make_job(fact, T, (), T+1, TOKEN) is None
         assert make_job(fact, None, (), T + 1, TOKEN) is None
     owner_replay()
+    verified_cursor_prefetch_uses_capacity_and_waits_for_missing_predecessor()
     owner_replay(primary_occupied="disjoint")
     owner_replay(primary_occupied="overlap")
     for gap in (5*96, 7*96+1, 14*96):
