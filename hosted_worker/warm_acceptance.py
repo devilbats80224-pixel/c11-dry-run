@@ -610,9 +610,18 @@ def main(outer):
             if first.pair==PAIR and clock[0]==E+7000:
                 assert binding.prepared is not None and binding.prepared[0] is first
                 delayed_frames.append(first)
-                # Simulate a durable frame not yet ready; leave all actual
-                # same-scope checks and normal analysis unchanged next cycle.
-                return ()
+                # Use the actual disposable native ledger and the exact
+                # warm persist path. A second connection denies the write;
+                # release it before the original owner's next cycle.
+                with sqlite3.connect('/c11-paper/causal-candles.sqlite',timeout=0) as blocker:
+                    blocker.execute('BEGIN IMMEDIATE')
+                    try:
+                        result=exact_frame(binding,first)
+                        assert result==(), 'C11_LOCK_TEST_UNEXPECTEDLY_PERSISTED'
+                    finally:
+                        blocker.rollback()
+                print('C11_MIXED_WARM_REAL_SQLITE_WRITE_HELD',flush=True)
+                return result
             return exact_frame(binding,first)
         for i in range(3):
           clock[0]=E+2000+5000*i
@@ -670,6 +679,15 @@ def main(outer):
             lane=w.freqtrade.strategy._c11_native_entry_owner
             assert delayed_frames and lane.holds.get(PAIR) is delayed_frames[0] and (PAIR,E) not in lane.spent
             assert not any((pair,status)==(PAIR,'ORIGINAL_NATIVE_CALLBACK') for _,pair,status in advice)
+            held=delayed_frames[0]
+            scheduler=w._c11_owned_scheduler
+            scheduler=getattr(getattr(scheduler,'active',scheduler),'scheduler')
+            row=scheduler.first_gate.rows.get((held.generation,held.symbol),{})
+            recorded=row.get('atomic_refusals',{}).get('ATOMIC_SQLITE_BUSY')
+            assert recorded and recorded[:2]==[7000,7000] and recorded[2]>=1, (
+                'C11_WARM_SQLITE_BUSY_REASON_MISSING', 'warm atomic write',
+                'ATOMIC_SQLITE_BUSY at +7000ms', row.get('atomic_refusals',{}))
+            print('C11_MIXED_WARM_ATOMIC_SQLITE_BUSY_RECORDED',flush=True)
           else:
             w.freqtrade.process()
           if i==1:
