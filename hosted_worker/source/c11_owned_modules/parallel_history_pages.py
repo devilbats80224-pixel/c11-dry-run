@@ -2,12 +2,13 @@
 from threading import get_ident
 
 class PendingHistoryPages:
-    def __init__(self, make, authority, *, parallel_ranges=False, audit=None, receipt_authority=None):
+    def __init__(self, make, authority, *, parallel_ranges=False, audit=None, receipt_authority=None, on_unreadable=None):
         self.make, self.authority = make, authority
         self.owner = get_ident()
         self.parallel_ranges = parallel_ranges
         self.audit = audit
         self.receipt_authority = receipt_authority
+        self.on_unreadable = on_unreadable
         self.pending = {}
         self.closed = False
 
@@ -68,6 +69,9 @@ class PendingHistoryPages:
                     complete(job, fact, payload)
                 elif self.audit is not None:
                     self.audit(job,'PERSIST_REJECTED','DELIVERY_SCOPE_LOST')
+            elif (reply_job is job and callable(self.on_unreadable)
+                  and getattr(lane,'archive_retry_eligible',False) is True):
+                self.on_unreadable(job,fact)
 
     def close(self):
         self._check_owner()

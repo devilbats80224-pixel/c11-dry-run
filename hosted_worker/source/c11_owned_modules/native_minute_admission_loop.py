@@ -8,16 +8,60 @@ from native_cold_minute_page import F,Q,M,bootstrap_bounds
 from parallel_history_pages import PendingHistoryPages
 from rpd_checkpoint import RpdState
 from bridge_protocol import Refused
+from bounded_archive_fallback import BoundedArchiveFallback
 
 class MinuteAdmissionLoop:
     def __init__(self,owner,make_forwarder):
         self.owner=owner
         self.thread=get_ident()
         self.pending=PendingHistoryPages(make_forwarder,self.authority,parallel_ranges=True,
-                                         receipt_authority=self.receipt_authority)
+                                         receipt_authority=self.receipt_authority,on_unreadable=self._archive_after_wire)
         self.granted={}
         self.reason={}
         self._cursor=None
+        self._archive_attempts={}
+        self.archive_fallback=BoundedArchiveFallback(
+            lambda:self.owner.run.wall(),qualified=self._archive_qualified,
+            attempted=self._archive_attempted,commit_raw=self._archive_raw_commit)
+
+    @staticmethod
+    def _archive_key(f):
+        return f.symbol,f.pair,f.origin,f.generation,f.boundary
+
+    def _archive_qualified(self,scope):
+        return (get_ident()==self.thread and self.owner.tap.current(scope)
+                and self.blank_bootstrap(scope) and self.bootstrap_contract(scope))
+
+    def _archive_attempted(self,scope):
+        done=self._archive_attempts.get(self._archive_key(scope),())
+        return all(any(left<=a<b<=right for left,right in done) for a,b in scope.spans)
+
+    def _archive_after_wire(self,j,f):
+        if j.bootstrap is not True or not self._bootstrap_authority(j,f) or not self.owner.tap.current(f):
+            return
+        active=self._archive_attempts.setdefault(self._archive_key(f),set())
+        active.add((j.start,j.stop))
+        self.archive_fallback.request(f,((j.start,j.stop),))
+
+    def _archive_raw_commit(self,scope,receipt):
+        if not (self.phase() and self._archive_qualified(scope) and self._archive_attempted(scope)):
+            return False
+        o=self.owner
+        o.check_store()
+        store=o.store
+        if store.db.in_transaction:
+            return False
+        try:
+            with store.db:
+                store.db.execute('BEGIN IMMEDIATE')
+                if not (self._archive_qualified(scope) and self._archive_attempted(scope)):
+                    return False
+                store._record_checked_rows(scope.symbol,M,receipt.rows)
+                if not (self._archive_qualified(scope) and self._archive_attempted(scope)):
+                    raise ValueError('C11_ARCHIVE_RAW_SCOPE_CHANGED')
+        except (Refused,ValueError):
+            return False
+        return True
 
     def cycle_headroom(self):
         o=self.owner
@@ -140,6 +184,10 @@ class MinuteAdmissionLoop:
         self.reason={}
         self.pending.drain(self.complete)
         if not self.phase():return
+        current_end=self.owner.run.wall()//Q*Q
+        self._archive_attempts={key:v for key,v in self._archive_attempts.items() if key[-1]==current_end}
+        for scope,status,_ in self.archive_fallback.drain():
+            self.reason[scope.symbol]=status
         self.flush_granted()
         if not self.phase():return
         o=self.owner; o.check_store()
@@ -164,7 +212,9 @@ class MinuteAdmissionLoop:
                             'SELECT open_ms FROM candle WHERE symbol=? AND width=? AND open_ms>=? '
                             'AND open_ms<? AND received_ms<=?',(f.symbol,M,left,cutoff,now)))
                         waiting=tuple((a.start,a.stop) for a,_,_ in self.granted.values() if a.symbol==f.symbol)
-                        blocked=(*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol),*waiting)
+                        archive=tuple(span for scope,_,_ in self.archive_fallback.pending.values()
+                                      if scope.symbol==f.symbol for span in scope.spans)
+                        blocked=(*self.pending.inflight_ranges(f.symbol),*occupied_ranges(f.symbol),*waiting,*archive)
                         ready.append((f,iter_bootstrap_jobs(f,have,now,blocked,lambda:token_hex(16))))
                         self.reason[f.symbol]='WAITING_FOR_EXACT_BOOTSTRAP_MINUTES'
                     else:
@@ -278,5 +328,7 @@ class MinuteAdmissionLoop:
                 self.reason[j.symbol]='NATIVE_MINUTES_REFUSED'
 
     def close(self):
+        self.archive_fallback.close()
+        self._archive_attempts.clear()
         self.granted.clear()
         self.pending.close()

@@ -57,6 +57,7 @@ class Lane:
         self.tag=None
         self.result=None
         self.last_offer_reason=None
+        self.archive_retry_eligible=False
         self.receipt_authority=None
     def offer(self,job):
         return self.wire.offer(self,job)
@@ -124,6 +125,7 @@ class SharedHistoryForwarder:
         return Lane(self,authority)
     def offer(self,lane,job):
         lane.last_offer_reason='HISTORY_PAGE_HELD'
+        lane.archive_retry_eligible=False
         if self.closed or lane.tag is not None or not lane.authority(job):return False
         token=self.budget.try_reserve_history(job,cold_current=lane.authority)
         if token is None:
@@ -195,6 +197,14 @@ class SharedHistoryForwarder:
         else:
             self.audit(job,'REPLY_ACCEPTED',**evidence)
             self.finish(tag,(sent,received,x['rows']));return
+        # A rejected result with a witnessed request may use independently
+        # verified archived data. Budget refusal, stale scope, malformed IPC
+        # and rate enforcement are not evidence that the endpoint is short.
+        lane.archive_retry_eligible=(
+            getattr(job,'bootstrap',False) is True and valid_keys
+            and type(wire_ms) is int and sent<=wire_ms<=self.wall()
+            and (reason in ('ROW_COUNT','NO_HTTP_RECEIPT')
+                 or (reason=='HTTP_STATUS' and status in (404,500,502,503,504))))
         self.audit(job,'REPLY_REJECTED',reason,**evidence)
         self.finish(tag,None,cancel=True)
     def abort(self):
