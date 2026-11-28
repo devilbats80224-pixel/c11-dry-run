@@ -1,11 +1,13 @@
 """The 15:00 KAVA behavior, on public contract identity and synthetic prices."""
 from types import SimpleNamespace as N
+from unittest.mock import patch
 
 from admission_minute_job import iter_bootstrap_jobs
 from atr_er_checkpoint import AtrErCheckpoint
 from atr_er_state import REQUIRED_QUARTERS
 from causal_bars import CausalBars, ClosedBar, FIVE, MINUTE as M, QUARTER as Q
 from cold_archive_binding import plan
+from native_protection import FeatureSpan
 
 END = 1795849200000
 # Exact Binance USD-M exchangeInfo for KAVAUSDT (TRADING, PERPETUAL).
@@ -53,6 +55,19 @@ def main():
         admitted.tick(o,ready_only=True)
         assert store.contract_segment(SYMBOL,LISTED,now).open_ms==START
         assert store.contract_segment(SYMBOL,LISTED-FIVE,now) is None
+        # The independently admitted original terminal features can advance
+        # both ATR widths without inventing a quarter-aligned market listing.
+        store.record(SYMBOL,FIVE,tuple(ClosedBar(t,t+FIVE,100,101,99,100,50,5000)
+                     for t in range(CUTOFF,END,FIVE)))
+        store.record(SYMBOL,Q,(ClosedBar(CUTOFF,END,100,101,99,100,150,15000),))
+        metadata={'id':SYMBOL,'info':{'onboardDate':LISTED}}
+        bot=N(exchange=N(markets={f.pair:metadata}))
+        with patch('native_protection.wall_ms',lambda:now):
+            status,value=FeatureSpan(store,N(query=unexpected_archive)).warm(bot,f.pair,END)
+            assert status=='ATR_ER_KNOWN' and value['origin_ms']==START
+            metadata['info']['onboardDate']=LISTED-FIVE
+            refute,_=FeatureSpan(store,N(query=unexpected_archive)).warm(bot,f.pair,END)
+            assert refute!='ATR_ER_KNOWN'
     finally:
         admitted.close()
         route.close()
