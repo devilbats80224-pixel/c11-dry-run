@@ -525,12 +525,12 @@ class AutoColdAdmission(ColdPrefixAdmission):
 
     def offer_retained(self,owner,f,*,prior=None,advanced=False):
         from atr_er_state import REQUIRED_QUARTERS
-        from causal_bars import MINUTE
+        from causal_bars import FIVE,MINUTE
         now=self.wall()
         if (get_ident()!=self.thread or f.symbol in self.active_jobs or not owner.tap.current(f)
                 or not quote_contract_shape(f.symbol) or f.pair!=f.symbol[:-4]+'/USDT:USDT'
                 or type(f.origin) is not int or type(f.boundary) is not int
-                or not 0<f.origin<f.boundary-QUARTER or f.origin%QUARTER
+                or not 0<f.origin<f.boundary-QUARTER or f.origin%FIVE
                 or f.boundary%QUARTER):
             return None
         existing=self.pending.get(f.symbol)
@@ -555,13 +555,26 @@ class AutoColdAdmission(ColdPrefixAdmission):
         # A blank strategy has no lifetime recurrence to resume. Derive a
         # new, explicitly labeled segment from the needed contiguous local
         # minutes. A recent listing still uses its original verified start.
-        if prior is not None and origin==f.origin:
+        if origin%QUARTER or (prior is not None and origin==f.origin):
             return None
         rows=store.range(f.symbol,MINUTE,origin,cutoff,now)
         if not rows or not owner.tap.current(f):
             return None
-        self.offer(f)
-        slot=self.pending.get(f.symbol)
+        if f.origin%QUARTER:
+            # Only a fully causal, quarter-aligned retained window can enter
+            # here. Do not enable listing-day archive discovery when the
+            # venue's authentically five-aligned date is not a quarter.
+            slot=self.pending.get(f.symbol)
+            if slot is None:
+                slot=Slot(f,now,now)
+                self.pending[f.symbol]=slot
+            elif slot.fact.origin!=f.origin:
+                return None
+            else:
+                slot.fact,slot.seen_ms=f,now
+        else:
+            self.offer(f)
+            slot=self.pending.get(f.symbol)
         if slot is None:
             return None
         if prior is not None:
