@@ -74,7 +74,8 @@ assert not BACKGROUND_REVIEWED or (CACHED and AUTO_MODE and not PREPARED_CHECKPO
 assert not NO_LISTING_ORIGIN or (AUTO_MODE and not (CACHED or PINNED_REMOTE or PREPARED_CHECKPOINT))
 assert not PREPARED_CHECKPOINT or (CACHED and AUTO_MODE)
 MIXED=os.environ.get('C11_JCT_MIXED_PACKAGED','')
-assert MIXED in ('','blank','unusable')
+assert MIXED in ('','blank','unusable','advanced')
+ADVANCED=MIXED=='advanced'
 assert not MIXED or (AUTO_MODE and not (HAN_MODE or INIT_MODE or REVIEWED_PARTIAL or AUTO_STALE))
 EXACT_CALLBACK_CLOCK = bool(MIXED) or REVIEWED_PARTIAL or AUTO_STALE or EARLY_ROSTER or PREPARED_CHECKPOINT or BACKGROUND_REVIEWED
 LEASE_CLOCK = EXACT_CALLBACK_CLOCK or EARLY_ROSTER
@@ -217,6 +218,7 @@ def main():
     mixed_reads=[]
     mixed_callbacks=[]
     mixed_shared=[]
+    mixed_old=None
     original_enter=PaperState.__enter__
     lock_identity=None
     def state_enter(state):
@@ -359,7 +361,7 @@ else:
                 assert start>=mixed_start, 'C11_MIXED_REOPENED_LISTING_START'
                 # Generation 7 genuinely lacks terminal raw input. The fixture
                 # supplies a short response, not a fake hold or readiness.
-                if generation==7 and stop==END:
+                if not ADVANCED and generation==7 and stop==END:
                     return []
                 for row in rows:
                     assert mixed_rows[row[0]].available_at<=now, 'C11_MIXED_USED_FUTURE_SOURCE'
@@ -459,7 +461,7 @@ else:
         print('C11_REVIEWED_FIXTURE_LEASE_CONTROLS_PASS',flush=True)
 
     def attach(run):
-        nonlocal loaded
+        nonlocal loaded,mixed_old
         from atr_er_checkpoint import AtrErCheckpoint
         from current_history import CurrentHistory
         if REVIEWED_PARTIAL:
@@ -477,6 +479,10 @@ else:
         h.atr=AtrErCheckpoint(h.store)
         if MIXED:
             print('C11_MIXED_STAGE ORIGINAL_OWNER_LEDGER_BOUND',flush=True)
+            if ADVANCED:
+                from mixed_replay_evidence import seed_advanced_rpd
+                mixed_old=seed_advanced_rpd(Path('/archive-wire'),SYMBOL,ORIGIN,mixed_start,now,h.store)
+                print('C11_MIXED_STAGE AUTHENTIC_ADVANCED_PREDECESSOR_STORED',flush=True)
             if MIXED=='unusable':
                 from causal_bars import SegmentStart
                 old=SegmentStart(SYMBOL,ORIGIN,ORIGIN)
@@ -488,7 +494,7 @@ else:
             # Both variants have the same real one-minute history hole.
             # Each must acquire it before its respective initial-state path.
             h.store.record(SYMBOL,M,tuple(mixed_rows[t].closed() for t in range(mixed_start,mixed_cutoff,M)
-                if t!=mixed_hole))
+                if ADVANCED or t!=mixed_hole))
         if REVIEWED_PARTIAL or AUTO_STALE:
             # Simulate the real half-initialized shape in this private
             # temporary store using the separately pinned JCT origin.
@@ -792,12 +798,15 @@ else:
                     minute_pending=history.minute_admission.pending.busy(SYMBOL),
                     covers=len(scheduler.covers),warm_scopes=len(scheduler.warm.selected),
                     statuses=sorted({x['status'] for x in advice_sources}),
+                    terminal_rows=len(history.store.range(SYMBOL,M,END-Q,END,now)),
                     history_requests=len(mixed_shared),callback_count=len(mixed_callbacks),
                     read_count=len(mixed_reads))),flush=True)
                 raise AssertionError('C11_MIXED_NO_ORIGINAL_READ')
             assert now//Q==END//Q
-            next_now=now+250
-            if generation==7:
+            next_now=now+(5_000 if ADVANCED else 250)
+            if ADVANCED and generation==7 and now>=END+49_000 and not mixed_callbacks:
+                next_generation=8
+            if not ADVANCED and generation==7:
                 assert not mixed_callbacks and not mixed_reads, 'C11_MIXED_PREMATURE_ORIGINAL_CALLBACK'
                 # Let original authority record a real same-close pending
                 # state before the next immutable publication supersedes it.
@@ -808,18 +817,35 @@ else:
                 # original Worker cycles without another callback.
                 verify_on=mixed_callbacks[0].setdefault('verify_on',cycle_count+2)
                 if cycle_count>=verify_on:
-                    assert_known_once(mixed_callbacks,mixed_reads,target=END,generation=8)
+                    selected_generation=mixed_callbacks[0]['generation'] if ADVANCED else 8
+                    assert_known_once(mixed_callbacks,mixed_reads,target=END,generation=selected_generation)
                     assert not archive_wire
                     proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
                     assert proof and proof.open_ms==mixed_start
                     late=[(a,b,n,k) for _g,a,b,n,k in mixed_shared if b<=mixed_cutoff]
-                    expected=[(mixed_hole,mixed_hole+M,1,1)]
+                    expected=[] if ADVANCED else [(mixed_hole,mixed_hole+M,1,1)]
                     assert late==expected, ('C11_MIXED_HISTORY_REQUESTS',late,expected)
                     assert not Trade.get_open_trades()
                     check_mixed_ledger()
+                    old_archived=False
+                    if ADVANCED:
+                        assert mixed_callbacks[0]['read_at']<END+60_000, 'C11_ADVANCED_MISSED_NORMAL_OWNER_WINDOW'
+                        terminal=history.store.range(SYMBOL,M,END-Q,END,now)
+                        assert len(terminal)==15 and all(
+                            bar.payload()==mixed_rows[bar.open_ms].closed().payload() for bar in terminal), (
+                            'C11_ADVANCED_TERMINAL_RAW_RECEIPT_NOT_PRESERVED')
+                        payload,old_bar=mixed_old
+                        saved=history.store.db.execute(
+                            'SELECT previous_state,previous_sha FROM retained_bootstrap_advanced_prior '
+                            'WHERE symbol=? AND start_ms=?',(SYMBOL,mixed_start)).fetchone()
+                        assert saved and sha256(saved[0].encode()).hexdigest()==saved[1]
+                        assert json.loads(saved[0])['rpd']==payload
+                        assert history.store.range(SYMBOL,FIVE,old_bar.open_ms,old_bar.open_ms+FIVE,now)==(old_bar,)
+                        old_archived=True
                     print(json.dumps(dict(status='C11_FINAL_MIXED_PACKAGED_PASS',variant=MIXED,
                         callback_count=len(mixed_callbacks),read_count=len(mixed_reads),
-                        original_status=mixed_reads[0]['status'],rpd=mixed_reads[0]['rpd'],generation=8)),flush=True)
+                        original_status=mixed_reads[0]['status'],rpd=mixed_reads[0]['rpd'],generation=selected_generation,
+                        historical_requests=len(late),old_advanced_archived=old_archived)),flush=True)
                     raise Done
             # Yield in real time to let the documented public transport and
             # background planner process their asynchronous replies.

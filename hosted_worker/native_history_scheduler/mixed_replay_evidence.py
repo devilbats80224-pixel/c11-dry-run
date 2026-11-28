@@ -91,6 +91,60 @@ def load_causal_tape(root, tail, tail_sha, end, shift):
     return start, cutoff, retained
 
 
+def seed_advanced_rpd(root, symbol, listing, recent_start, as_of, store):
+    """Build a real progressed private replay checkpoint from published pinned rows."""
+    from causal_bars import FIVE, SegmentStart
+    from minute_rollup import roll
+    from rpd_checkpoint import RpdState
+    state=RpdState.start(SegmentStart(symbol,listing,listing))
+    grid=[]
+    old=[]
+    records=json.loads((root/'manifest.json').read_bytes())
+    listing_day=datetime.fromtimestamp(listing/1000,timezone.utc).date()
+    months=set()
+    for offset in range(3):
+        year,month=divmod(listing_day.year*12+listing_day.month-1+offset,12)
+        months.add(f'{year:04d}-{month+1:02d}')
+    for record in sorted(records,key=lambda r:r['date']):
+        if record['date'] not in months:
+            continue
+        name=record['name']
+        assert Path(name).name==name and record['actual_received_ms']<as_of
+        blob=(root/name).read_bytes()
+        verify_archive_blob(name,record['bytes'],record['sha256'],blob,
+                            (root/(name+'.CHECKSUM')).read_bytes())
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            assert archive.namelist()==[name.removesuffix('.zip')+'.csv']
+            with archive.open(archive.namelist()[0]) as member:
+                rows=csv.reader(io.TextIOWrapper(member,newline=''))
+                header=next(rows)
+                assert header[0]=='open_time' and len(header)==12
+                for row in rows:
+                    assert len(row)==12
+                    t=int(row[0])
+                    if t<listing:
+                        continue
+                    assert t==state.next_open+len(grid)*MINUTE and int(row[6])==t+MINUTE-1
+                    row[0],row[6],row[8]=t,int(row[6]),int(row[8])
+                    grid.append(row)
+                    if len(grid)==5:
+                        normalized=roll(grid,state.next_open,FIVE)
+                        bar=ClosedBar(state.next_open,record['actual_received_ms'],
+                                      *(float(normalized[k]) for k in (1,2,3,4,5,7)))
+                        state.advance(bar,as_of)
+                        old.append(bar)
+                        grid.clear()
+                    if state.n==16_833:
+                        assert state.next_open<recent_start and state.observed<=as_of
+                        store.set_segment(SegmentStart(symbol,listing,listing))
+                        store.record(symbol,FIVE,tuple(old))
+                        payload=state.pack()
+                        with store.db:
+                            store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(symbol,payload))
+                        return payload,old[0]
+    raise AssertionError('C11_ADVANCED_PINNED_OLD_ROWS_NOT_FOUND')
+
+
 class ReplayPublication:
     """Staged deterministic ranking changes; native CaptureBridge implements intake."""
     def __init__(self, symbol, wall):
