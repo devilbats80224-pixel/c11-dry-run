@@ -124,6 +124,8 @@ jobs:
           fetch-depth: 0
       - name: Verify version record rules
         run: python3 -I -B release_regressions/test_version_record.py
+      - name: Require all C11 recovery gates in the combined CI
+        run: python3 -I -B release_regressions/check_c11_recovery_ci_union.py
       - name: Require a traceable version record for this PR
         run: python3 -I -B release_regressions/check_version_record.py HEAD^1 HEAD^2
       - run: python3 -I -B hosted_worker/test_stage_archive_cache.py
