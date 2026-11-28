@@ -96,6 +96,36 @@ def older_but_fully_retained_can_queue_without_archive():
         store.db.close()
 
 
+def old_listing_with_blank_state_uses_recent_required_rows():
+    # Published market identity is old, but there is no checkpoint to resume.
+    # Supply only actual usable recent 1m rows, not a fake market start or 2020 replay.
+    listing=1_577_836_800_000  # 2020-01-01 UTC, exact quarter boundary
+    fact=N(symbol=SYMBOL,pair=FACT.pair,origin=listing,boundary=END)
+    store=CausalBars(':memory:')
+    AtrErCheckpoint(store)
+    owner=N(store=store,check_store=lambda:None,tap=N(current=lambda x:x is fact),
+            cold_delivery_window=lambda:True,cold_delivery_allows=lambda x:x is fact)
+    def unexpected_archive(*_):
+        raise AssertionError('C11_BLANK_OLD_CONTRACT_TRIED_ARCHIVE_FROM_LISTING')
+    lane=AutoColdAdmission(lambda:WALL,unexpected_archive)
+    # 401 previous quarter bars are enough for original ATR/ER data, with
+    # 260 quarters for NW15 and 260 fives for RPD. The final quarter is
+    # independently received by the native terminal lane.
+    earliest=CUTOFF-401*QUARTER
+    try:
+        store.record(SYMBOL,MINUTE,tuple(ClosedBar(t,t+MINUTE,100,101,99,100,10,1000)
+                     for t in range(earliest,CUTOFF,MINUTE)))
+        assert store.segment(SYMBOL) is None
+        actual=lane.offer_retained(owner,fact)
+        assert actual=='AUTO_RETAINED_MINUTES_QUEUED',(
+            'C11_BLANK_OLD_CONTRACT_IGNORED_COMPLETE_RECENT_CANONICAL_HISTORY',actual)
+        assert fact.origin==listing and store.segment(SYMBOL) is None
+    finally:
+        lane.close()
+        store.db.close()
+
+
 if __name__=='__main__':
     main()
     older_but_fully_retained_can_queue_without_archive()
+    old_listing_with_blank_state_uses_recent_required_rows()
