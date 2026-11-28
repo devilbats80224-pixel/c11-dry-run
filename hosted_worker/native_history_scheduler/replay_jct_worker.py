@@ -615,7 +615,7 @@ else:
                 # Modern proof uses the exact policy sealed into the shipped
                 # artifact. The fixture cannot promote a disabled release mode.
                 assert runtime.get(raw_mode)=='BINANCE_SHARED_RECENT_1M_V1', 'C11_MIXED_POLICY_NOT_SEALED'
-            elif EARLY_ROSTER or ON_DEMAND or ARCHIVE_OUTAGE or NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
+            elif EARLY_ROSTER or AUTO_STALE or ON_DEMAND or ARCHIVE_OUTAGE or NO_LISTING_ORIGIN or PINNED_WITHOUT_DISCOVERY:
                 # Keep the established explicit archive and outage controls
                 # on their original source mode while separate mixed cases
                 # exercise the sealed modern source route. Do not weaken
@@ -746,6 +746,7 @@ else:
         now,generation=next_now,next_generation
         if MIXED and generation!=previous_generation:
             publication.publish(generation,qualified=True)
+            print('C11_MIXED_STAGE NEXT_SAME_CLOSE_ROSTER_PUBLISHED',flush=True)
         cycle_wall_start=real_mono()
         scheduler=self._c11_owned_scheduler.scheduler
         if history is None:
@@ -775,6 +776,10 @@ else:
             result=original_cycle(self,*a,**kw)
         cycle_count+=1
         if MIXED:
+            observed_proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
+            if observed_proof is not None and not getattr(history,'_mixed_stage_verified',False):
+                history._mixed_stage_verified=True
+                print('C11_MIXED_STAGE NATIVE_CANONICAL_STATE_PERSISTED',flush=True)
             assert now<END+120_000 and cycle_count<300, ('C11_MIXED_NO_ORIGINAL_READ',len(mixed_callbacks),len(mixed_reads))
             assert now//Q==END//Q
             next_now=now+250
@@ -1145,6 +1150,10 @@ else:
                 # Keep the real observer freshness predicate, but reference
                 # the same explicit causal tape clock as the paper Worker.
                 patches.enter_context(patch.object(observer_host,'now_ms',lambda:now))
+                # Historical replay never waits for real minute closes. Skip
+                # only the outer throttle's real wait while advancing the
+                # fixture clock and gifting real IPC threads a short turn.
+                patches.enter_context(patch.object(native.PaperWorker,'_sleep',lambda *_,**__:None))
             if LEASE_CLOCK:
                 import refresh
                 # Align the fixture's monotonic lease with its market time,
