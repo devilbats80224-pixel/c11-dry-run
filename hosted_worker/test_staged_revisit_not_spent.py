@@ -80,3 +80,31 @@ def same_close_warm_receipt_failure_is_explained_before_source_expiry():
 
 
 same_close_warm_receipt_failure_is_explained_before_source_expiry()
+
+
+def native_crossing_rechecks_the_verified_ready_clock():
+    from primary_coverage_gate import NativePrimaryEvidence,NativePrimaryHandoff
+    wall=[E+68_200]
+    row=SimpleNamespace(symbol="SYNTHUSDT",generation=8)
+    material=((),(),"sealed")
+    rpd=object()
+    evidence=NativePrimaryEvidence(PAIR,row.symbol,row.generation,E,E+68_100,E+110_000,
+                                   "same-native-frame",material,rpd)
+    allowed=[True]
+    gate=NativePrimaryHandoff(wall=lambda:wall[0],
+        original_scope=lambda c,proof,t: c is row and proof is evidence and allowed[0],
+        frame_sha=lambda p,e:"same-native-frame")
+    with gate.committed(evidence):
+        assert gate.resolve(PAIR,row,E) is None,"C11_RAW_REPLAY_CAN_FORGE_READY_CLOCK"
+    gate.verified_ready_at=lambda c,proof,t: E+68_000 if c is row and proof is evidence else None
+    with gate.committed(evidence):
+        assert gate.resolve(PAIR,row,E)==(material,rpd),"C11_NATIVE_CROSSING_STILL_USES_WIRE_CLOCK"
+        allowed[0]=False
+        assert gate.resolve(PAIR,row,E) is None,"C11_LATE_NATIVE_CROSSING_USED_STALE_RANK"
+        allowed[0]=True
+        wall[0]=evidence.expires_ms
+        assert gate.resolve(PAIR,row,E) is None,"C11_LATE_NATIVE_CROSSING_USED_EXPIRED_AUTHORIZATION"
+    print("C11_NATIVE_CROSSING_USES_ONLY_VERIFIED_READY_CLOCK_AND_FRESH_RANK")
+
+
+native_crossing_rechecks_the_verified_ready_clock()
