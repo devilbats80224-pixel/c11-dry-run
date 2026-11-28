@@ -42,12 +42,27 @@ class OriginalPlan:
         self.warm_prepare=None
         self.warm_minute_span=None
         self.warm_keep_legacy=None
+        # Only an original owner can bind a proof of complete, readable data.
+        # If unbound, the previously verified first-minute route is unchanged.
+        self.verified_readiness_at=None
+
+    def evaluation_ceiling(self,row,end,now):
+        if now<end+60_000:
+            return end+60_000
+        if not callable(self.verified_readiness_at):
+            return 0
+        observed=self.verified_readiness_at(row,end,now)
+        if type(observed) is not int or not end<=observed<=now:
+            return 0
+        return min(end+QUARTER,observed+60_000)
 
     def entries(self):
         now=self.wall();current_end=now//QUARTER*QUARTER
         observed=getattr(self.bot.feed,'latest_owner_observation',())
-        if not observed or now>=current_end+60_000:return current_end,()
-        live=tuple(x for x in observed if x.expires_ns>self.mono())
+        if not observed:return current_end,()
+        tick=self.mono()
+        live=tuple(x for x in observed if x.expires_ns>tick and
+                   now<self.evaluation_ceiling(x,current_end,now))
         if not live or len({x.generation for x in live})!=1:return current_end,()
         return current_end,live
 
@@ -73,11 +88,11 @@ class OriginalPlan:
         if get_ident()!=self.owner or self.closed:return None
         at=self.wall()
         actual,live=self.entries()
-        if end!=actual or not end<=at<end+60_000:return None
+        if end!=actual or not end<=at<end+QUARTER:return None
         candidate=next((x for x in live if x.pair==pair),None)
         if candidate is None or not self.bot.observed_ranked(candidate):return None
         residual=(candidate.expires_ns-self.mono())//1_000_000
-        expires=min(end+60_000,at+residual)
+        expires=min(self.evaluation_ceiling(candidate,end,at),at+residual)
         if expires<=self.wall():return None
         g=candidate.generation
         self.provisional_caps={k:v for k,v in self.provisional_caps.items() if (k[0],k[1])==(g,end)}
@@ -129,6 +144,8 @@ class OriginalPlan:
         return 0
 
     def transport_still_due(self,j,now):
+        if not j.end<=now<j.expires<=j.end+60_000:
+            return False
         # Detached transport reads only immutable accepted roster tuples and
         # the clock; the SQLite original authority stays on original owner.
         end,live=self.entries()
@@ -169,6 +186,11 @@ class OriginalPlan:
             self.retry_fenced.update(k for k in self.strict_retry if k[1]==end)
             return None
         g=live[0].generation
+        # Past the original acquisition window, this scope is evaluation-only
+        # and never opens or repeats an original wire task. Its safe callback
+        # requires a separately verified durable input owner.
+        if self.wall()>=end+60_000:
+            return g,end,()
         self.last={k:v for k,v in self.last.items() if k[0]==g and k[1]==end}
         self.strict_retry={k:v for k,v in self.strict_retry.items() if k[:2]==(g,end)}
         self.original_warm_offers={k:v for k,v in self.original_warm_offers.items() if k[:2]==(g,end)}

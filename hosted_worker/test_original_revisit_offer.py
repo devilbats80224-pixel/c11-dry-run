@@ -73,6 +73,7 @@ def completed_input_uses_fresh_same_close_rank_after_old_expiry():
     assert scope is not None, 'C11_CLOSE_CLOCK_DISCARDS_NEWLY_READABLE_FRESH_CANDIDATE'
     assert (scope.generation,scope.end,scope.expires)==(3,END,END+125000)
     assert plan.current(scope,now[0]) and not plan.current(expired,now[0])
+    assert plan(bot)==(3,END,()), "C11_READY_ONLY_SCOPE_REPEATED_MARKET_REQUESTS"
     now[0]=END+100000
     newer=SimpleNamespace(pair=PAIR,symbol=old.symbol,generation=4,
         expires_ns=(END+150000)*1_000_000,rank=1,ratio=Decimal(".25"),received_at=3)
