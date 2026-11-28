@@ -133,6 +133,7 @@ def activate():
         'NATIVE_CONFIG','NATIVE_WORKER_CONSTRUCTOR','NATIVE_WORKER_RUN'))
     def phase(label):
        nonlocal last_phase
+       if label=='READONLY_LINEAGE_REVERIFIED':status(label)
        if label in allowed_phases:last_phase=label
     try:
        def record(_pair,_status):return None

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 from importlib.metadata import version
 from bridge_protocol import Refused, need
 
@@ -11,6 +12,33 @@ ROOT=Path('/c11-paper')
 FILES=('hard-stop.sqlite','intents.sqlite','paper-evidence.sqlite',
        'causal-candles.sqlite','observer-native.sqlite','docker-observer.sqlite','observer-native-v4a.sqlite',
        'observer-native-owned-v1.sqlite')
+
+def prove_readonly_startup_lineage(verify, still_owner, pause=time.sleep):
+    """Retry only the existing binding proof while still holding the same writer."""
+    reason = 'C11_STARTUP_OBSERVER_BINDING'
+    prior_refusal = None
+    successes = 0
+    for attempt in range(5):
+        still_owner()
+        try:
+            verify()
+        except Refused as exc:
+            if str(exc) != reason:
+                raise
+            prior_refusal = exc
+            successes = 0
+        else:
+            still_owner()
+            successes += 1
+            if prior_refusal is None or successes == 2:
+                return 'stable' if prior_refusal is None else 'reverified'
+        still_owner()
+        if attempt < 4:
+            pause(0.4)
+    if prior_refusal is not None:
+        raise prior_refusal
+    raise Refused(reason)
+
 
 def run_locked(scope,mount_identity,State,verify_state_file,intake,config,policy_factory,Worker,*,seed_scope=None,one_shot=None,diagnostic=None,history_startup=None):
     from startup_status import Status,code,first_migration,ARCHIVE,PRESERVED,STATUS,file_info
@@ -46,7 +74,9 @@ def run_locked(scope,mount_identity,State,verify_state_file,intake,config,policy
                 phase('READONLY_LINEAGE_PRECHECK')
                 if os.path.lexists(ROOT/STATUS):
                     file_info(ROOT/STATUS,'C11_STARTUP_STATUS_FILE_ID')
-                first_migration(ROOT,before_consume=True)
+                confirmation = prove_readonly_startup_lineage(
+                    lambda: first_migration(ROOT,before_consume=True), state.check_locked)
+                if confirmation == 'reverified':phase('READONLY_LINEAGE_REVERIFIED')
                 state.check_locked()
                 phase('ONE_SHOT_CONSUME')
                 if history_startup is None:
