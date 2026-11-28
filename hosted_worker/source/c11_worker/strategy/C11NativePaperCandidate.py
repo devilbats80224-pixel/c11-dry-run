@@ -2,6 +2,7 @@
 from math import isfinite
 
 from C11OfflineAssemblyV2 import C11OfflineAssemblyV2
+from entry_verdict_receipt import ADMISSION, mark_primary
 from c11_arithmetic import partial_geometry, partial_open_plan
 from freqtrade.exchange import timeframe_to_msecs
 from freqtrade.exceptions import OperationalException
@@ -19,17 +20,42 @@ class C11NativePaperCandidate(C11OfflineAssemblyV2):
         out = super().populate_entry_trend(dataframe, metadata)
         inputs = getattr(self, 'primary_inputs', None)
         if inputs is None or out.empty:
+            mark_primary('NATIVE_INPUT_UNAVAILABLE')
             return out
         evidence = inputs(metadata['pair'])
         if not evidence:
+            mark_primary('NATIVE_INPUT_UNAVAILABLE')
             return out
         scope = evidence['scope']
         if scope.end_ms != int(out.iloc[-1]['date'].timestamp()*1000) + timeframe_to_msecs(self.timeframe):
+            mark_primary('NATIVE_FRAME_END_MISMATCH', force=True)
             return out
-        if self.preview_primary(**evidence).state == 'PRIMARY_SIGNAL_ONLY':
+        decision = self.preview_primary(**evidence)
+        reason = ('PRIMARY_SIGNAL_ONLY' if decision.state == 'PRIMARY_SIGNAL_ONLY'
+                  else 'NO_PRIMARY_SIGNAL' if decision.state == 'NO_SIGNAL' else decision.reason)
+        mark_primary(reason, force=True)
+        if decision.state == 'PRIMARY_SIGNAL_ONLY':
             out.iat[-1, out.columns.get_loc('enter_long')] = 1
             out.iat[-1, out.columns.get_loc('enter_tag')] = 'c11_primary'
         return out
+
+    def get_entry_signal(self, pair, timeframe, dataframe):
+        result = super().get_entry_signal(pair, timeframe, dataframe)
+        trace = ADMISSION.get()
+        if trace is not None and trace['pair'] == pair and result[0] and result[1] == 'c11_primary':
+            try:
+                closed = dataframe.iloc[-1]['date']
+                trace['end'] = int(closed.timestamp()*1000) + timeframe_to_msecs(timeframe)
+            except (ValueError, AttributeError, KeyError, TypeError, IndexError, OverflowError):
+                pass
+        return result
+
+    def is_pair_locked(self, pair, *args, **kwargs):
+        result = super().is_pair_locked(pair, *args, **kwargs)
+        trace = ADMISSION.get()
+        if trace is not None and trace['pair'] == pair and result:
+            trace['reason'] = 'NATIVE_ENTRY_PAIR_LOCKED'
+        return result
 
     def leverage(self, **kwargs):
         return 5.

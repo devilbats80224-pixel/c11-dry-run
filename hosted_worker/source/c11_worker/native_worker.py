@@ -14,6 +14,7 @@ from freqtrade.freqtradebot import FreqtradeBot
 from freqtrade.worker import Worker
 
 from bridge_protocol import need
+from entry_verdict_receipt import ADMISSION, mark_primary, publish
 from owner_wrapper import install_if_present
 from sealed_owned_scheduler import OWNED_SCHEDULER_EXPECTED_SEAL, OWNED_SCHEDULER_FACTORY
 from feature_warmup import FeatureWarmup
@@ -181,6 +182,29 @@ class PaperBot(C11PaperRecoveryRunner):
             self._owned_original_cycle_deadline_ns = None
             owned.before_protection()
             raise
+    def create_trade(self, pair):
+        # Do not repeat any native protection/position/signal call. In the
+        # normal native call stack the original methods fill this trace.
+        if self.config.get('dry_run') is not True:
+            return super().create_trade(pair)
+        trace = {'pair': pair, 'end': None, 'reason': None, 'attempted': False}
+        token = ADMISSION.set(trace)
+        try:
+            result = super().create_trade(pair)
+            if not result and trace['end'] is not None and not trace['attempted']:
+                publish(pair, trace['end'], 'admission',
+                        trace['reason'] or 'NATIVE_ENTRY_NOT_REQUESTED')
+            return result
+        finally:
+            ADMISSION.reset(token)
+
+    def _check_depth_of_market(self, *args, **kwargs):
+        result = super()._check_depth_of_market(*args, **kwargs)
+        trace = ADMISSION.get()
+        if trace is not None and not result:
+            trace['reason'] = 'NATIVE_ENTRY_DEPTH_REJECTED'
+        return result
+
     def enter_positions(self, free_trade_slots):
         # Freqtrade's entry hooks are unchanged. Give its primary pass a
         # private sorted view and restore the collector-ranked watch list.
@@ -292,6 +316,7 @@ class PaperBot(C11PaperRecoveryRunner):
     def primary_inputs(self, pair):
         candidate = self.feed.candidate(pair)
         if candidate is None or not self.observed_ranked(candidate):
+            mark_primary('NATIVE_RANK_AUTHORITY_UNAVAILABLE')
             return None
         features = self.policy.primary_inputs(self, pair, candidate)
         if not features:
@@ -302,6 +327,7 @@ class PaperBot(C11PaperRecoveryRunner):
         received_ms = int(datetime.fromisoformat(candidate.received_at).timestamp() * 1000)
         remaining = (candidate.expires_ns - time.monotonic_ns()) // 1_000_000
         if not received_ms <= wall_now or remaining <= 0:
+            mark_primary('NATIVE_RANK_LEASE_EXPIRED')
             return None
         with localcontext() as ctx:
             ctx.prec = 40

@@ -10,6 +10,7 @@ from ccxt import BaseError
 from freqtrade.persistence import Trade
 
 from bridge_protocol import Refused, need
+from entry_verdict_receipt import mark_primary
 from campaign_journal import CampaignJournal
 from causal_bars import CausalBars, FIVE, HOUR, MINUTE, QUARTER
 from c11_native_rules import EntryFacts, PositionFacts
@@ -83,21 +84,29 @@ class StandalonePolicy:
         try:
             expiry=handoff.validated_expiry(pair,candidate,end) if late else end+MINUTE
             if expiry is None:
+                mark_primary('NATIVE_READ_SCOPE_EXPIRED')
                 return None
             primary,state=native_primary_read(handoff,bot,self,pair,candidate,end,INPUT_ERRORS,readiness)
             if primary is None or state is None:
+                mark_primary('NATIVE_READY_HANDOFF_UNAVAILABLE')
                 return None
             now=time.time_ns()//1_000_000
             if now>=expiry or not self.slots.ready:
+                mark_primary('NATIVE_READ_SCOPE_EXPIRED' if now>=expiry else 'NATIVE_JOURNAL_NOT_READY')
                 return None
             clock=dict(valid_until_ms=expiry) if late else {}
             features=self.bars.inputs(candidate.symbol,end,now,primary=primary,state=state,**clock)
             if features and not late:
                 self.candles.update_entry_hour(bot,candidate.symbol,end)
             if late and handoff.validated_expiry(pair,candidate,end)!=expiry:
+                mark_primary('NATIVE_READ_SCOPE_EXPIRED')
                 return None
-            return features if time.time_ns()//1_000_000<expiry else None
+            if time.time_ns()//1_000_000<expiry:
+                return features
+            mark_primary('NATIVE_READ_SCOPE_EXPIRED')
+            return None
         except INPUT_ERRORS+(sqlite3.Error,):
+            mark_primary('NATIVE_EVIDENCE_ERROR')
             return None
 
     def entry_facts(self, bot, pair, features):
