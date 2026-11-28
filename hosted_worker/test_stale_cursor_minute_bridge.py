@@ -4,6 +4,7 @@ from threading import get_ident
 from prepared_owner_history import BoundOwnerHistory
 
 from admission_minute_job import make_job
+from atr_er_checkpoint import AtrErCheckpoint
 from causal_bars import CausalBars, ClosedBar, FIVE, SegmentStart
 from native_minute_admission_loop import MinuteAdmissionLoop
 from rpd_checkpoint import RpdState
@@ -15,7 +16,7 @@ ORIGIN = T - 365 * 96 * Q
 
 
 
-def owner_replay(*, gap_quarters=None, primary_occupied=None):
+def owner_replay(*, gap_quarters=None, primary_occupied=None, atr_must_continue=False):
     symbol = '陌生候選USDT'
     first = T - (300 if gap_quarters is None else gap_quarters) * Q
     origin = first - Q
@@ -29,6 +30,12 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
         state.advance(ClosedBar(t,t+FIVE,100,104,99,101,10,1000),first)
     with store.db:
         store.db.execute('INSERT INTO rpd_checkpoint VALUES (?,?)',(symbol,state.pack()))
+    atr=AtrErCheckpoint(store)
+    if atr_must_continue:
+        for width in (FIVE,Q):
+            store.record(symbol,width,tuple(ClosedBar(t,t+width,100,104,99,101,10,1000)
+                                           for t in range(origin,first,width)))
+            assert atr.extend(symbol,width,proof,first,wall)==first
     roster = [fact]
     calls = []
 
@@ -52,7 +59,7 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
         raise AssertionError('C11_AUTHENTICATED_STALE_CURSOR_SENT_TO_ARCHIVE_FALLBACK')
 
     owner = N(
-        store=store,check_store=lambda:None,run=N(wall=lambda:wall,queue=N(inflight={})),
+        store=store,atr=atr,check_store=lambda:None,run=N(wall=lambda:wall,queue=N(inflight={})),
         tap=N(current=lambda f:f in roster),cold_delivery_window=lambda:True,
         cold_prefix=N(offer_existing=wrong_archive))
     loop = MinuteAdmissionLoop(owner,Lane)
@@ -106,6 +113,11 @@ def owner_replay(*, gap_quarters=None, primary_occupied=None):
             assert len(store.range(symbol,M,first,first+PAGE,wall)) == 495
             payload, = store.db.execute('SELECT payload FROM rpd_checkpoint WHERE symbol=?',(symbol,)).fetchone()
             assert RpdState.restore(payload).next_open == first + PAGE
+            if atr_must_continue:
+                for width in (FIVE,Q):
+                    assert atr.cursor(symbol,width,proof)==first+PAGE,(
+                        'C11_STALE_MINUTE_BRIDGE_DID_NOT_ADVANCE_ATR',width)
+                print('C11_STALE_MINUTE_BRIDGE_CONTINUES_RPD_AND_BOTH_ATR_WIDTHS')
             roster.clear()
             loop.tick([fact],has_headroom=lambda:not loop.pending.busy(symbol))
             assert not store.range(symbol,M,first+PAGE,first+2*PAGE,wall)
@@ -191,6 +203,7 @@ def main():
         assert make_job(fact, T, (), T+1, TOKEN) is None
         assert make_job(fact, None, (), T + 1, TOKEN) is None
     owner_replay()
+    owner_replay(atr_must_continue=True)
     verified_cursor_prefetch_uses_capacity_and_waits_for_missing_predecessor()
     owner_replay(primary_occupied="disjoint")
     owner_replay(primary_occupied="overlap")

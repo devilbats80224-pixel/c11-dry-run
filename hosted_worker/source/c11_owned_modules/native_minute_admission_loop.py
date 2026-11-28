@@ -127,7 +127,7 @@ class MinuteAdmissionLoop:
                 self.reason[f.symbol]='VERIFIED_LOCAL_INTERVAL_REUSED'
                 if self.authority(j,f):
                     try:
-                        o.store.rpd_progress(j.symbol,j.end-Q,at,authority=lambda:self.authority(j,f))
+                        self.advance_verified_state(j,f)
                     except (Refused,ValueError):
                         self.reason[f.symbol]='NATIVE_PREPARATION_REFUSED'
                         continue
@@ -146,6 +146,22 @@ class MinuteAdmissionLoop:
                               (j.symbol,w,j.start,j.stop,as_of)).fetchone()[0]==(j.stop-j.start)//w
                    for w in (M,F,Q))
 
+    def advance_verified_state(self,j,f):
+        o=self.owner
+        due=lambda:self.authority(j,f)
+        if not due():return
+        target=j.end-Q
+        o.store.rpd_progress(j.symbol,target,o.run.wall(),authority=due)
+        atr=getattr(o,'atr',None)
+        proof=o.store.segment(j.symbol) if atr is not None and due() else None
+        if proof is not None and proof.open_ms==j.origin:
+            for width in (F,Q):
+                if not due():break
+                try:
+                    atr.extend(j.symbol,width,proof,target,o.run.wall(),authority=due)
+                except (Refused,ValueError):
+                    self.reason[j.symbol]='NATIVE_ATR_CONTINUATION_REFUSED'
+
     def complete(self,j,f,data):
         o=self.owner; due=lambda:self.authority(j,f)
         if not due():return
@@ -153,7 +169,7 @@ class MinuteAdmissionLoop:
         try:
             o.check_store()
             commit(o.store,j.symbol,j.origin,j.start,j.stop,rows,sent,received,due)
-            if due():o.store.rpd_progress(j.symbol,j.end-Q,o.run.wall(),authority=due)
+            self.advance_verified_state(j,f)
             # The original worker consumes the updated read model through its
             # normal admission on the next local cycle, never a fabricated signal.
         except (Refused,ValueError):
