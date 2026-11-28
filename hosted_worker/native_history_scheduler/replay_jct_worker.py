@@ -798,6 +798,7 @@ else:
                     minute_pending=history.minute_admission.pending.busy(SYMBOL),
                     covers=len(scheduler.covers),warm_scopes=len(scheduler.warm.selected),
                     statuses=sorted({x['status'] for x in advice_sources}),
+                    terminal_rows=len(history.store.range(SYMBOL,M,END-Q,END,now)),
                     history_requests=len(mixed_shared),callback_count=len(mixed_callbacks),
                     read_count=len(mixed_reads))),flush=True)
                 raise AssertionError('C11_MIXED_NO_ORIGINAL_READ')
@@ -829,6 +830,10 @@ else:
                     old_archived=False
                     if ADVANCED:
                         assert mixed_callbacks[0]['read_at']<END+60_000, 'C11_ADVANCED_MISSED_NORMAL_OWNER_WINDOW'
+                        terminal=history.store.range(SYMBOL,M,END-Q,END,now)
+                        assert len(terminal)==15 and all(
+                            bar.payload()==mixed_rows[bar.open_ms].closed().payload() for bar in terminal), (
+                            'C11_ADVANCED_TERMINAL_RAW_RECEIPT_NOT_PRESERVED')
                         payload,old_bar=mixed_old
                         saved=history.store.db.execute(
                             'SELECT previous_state,previous_sha FROM retained_bootstrap_advanced_prior '

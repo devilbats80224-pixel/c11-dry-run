@@ -101,9 +101,12 @@ def seed_advanced_rpd(root, symbol, listing, recent_start, as_of, store):
     old=[]
     records=json.loads((root/'manifest.json').read_bytes())
     listing_day=datetime.fromtimestamp(listing/1000,timezone.utc).date()
-    days={(listing_day+i*timedelta(days=1)).isoformat() for i in range(3)}
+    months=set()
+    for offset in range(3):
+        year,month=divmod(listing_day.year*12+listing_day.month-1+offset,12)
+        months.add(f'{year:04d}-{month+1:02d}')
     for record in sorted(records,key=lambda r:r['date']):
-        if record['date'] not in days:
+        if record['date'] not in months:
             continue
         name=record['name']
         assert Path(name).name==name and record['actual_received_ms']<as_of
@@ -131,7 +134,7 @@ def seed_advanced_rpd(root, symbol, listing, recent_start, as_of, store):
                         state.advance(bar,as_of)
                         old.append(bar)
                         grid.clear()
-                    if state.n==300:
+                    if state.n==16_833:
                         assert state.next_open<recent_start and state.observed<=as_of
                         store.set_segment(SegmentStart(symbol,listing,listing))
                         store.record(symbol,FIVE,tuple(old))
