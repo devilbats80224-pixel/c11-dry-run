@@ -777,10 +777,24 @@ else:
         cycle_count+=1
         if MIXED:
             observed_proof=history.store.contract_segment(SYMBOL,ORIGIN,now)
-            if observed_proof is not None and not getattr(history,'_mixed_stage_verified',False):
+            if (observed_proof is not None and observed_proof.open_ms==mixed_start
+                    and not getattr(history,'_mixed_stage_verified',False)):
                 history._mixed_stage_verified=True
                 print('C11_MIXED_STAGE NATIVE_CANONICAL_STATE_PERSISTED',flush=True)
-            assert now<END+120_000 and cycle_count<300, ('C11_MIXED_NO_ORIGINAL_READ',len(mixed_callbacks),len(mixed_reads))
+            if now>=END+120_000 or cycle_count>=300:
+                slot=history.cold_prefix.public.pending.get(SYMBOL)
+                proof_status=('absent' if observed_proof is None else
+                              'recent' if observed_proof.open_ms==mixed_start else 'other')
+                print('C11_MIXED_DIAGNOSTICS',json.dumps(dict(
+                    generation=generation,age_ms=now-END,proof=proof_status,
+                    slot=slot.status if slot else None,
+                    minute=history.minute_admission.reason.get(SYMBOL),
+                    minute_pending=history.minute_admission.pending.busy(SYMBOL),
+                    covers=len(scheduler.covers),warm_scopes=len(scheduler.warm.selected),
+                    statuses=sorted({x['status'] for x in advice_sources}),
+                    history_requests=len(mixed_shared),callback_count=len(mixed_callbacks),
+                    read_count=len(mixed_reads))),flush=True)
+                raise AssertionError('C11_MIXED_NO_ORIGINAL_READ')
             assert now//Q==END//Q
             next_now=now+250
             if generation==7:

@@ -311,6 +311,7 @@ PY_MIXED
     # only allowlisted code locations and assertion/exception classifications.
     python3 -I -B - "$out/mixed.log" "$1" <<'PY_MIXED_FAILURE' | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 from pathlib import Path
+import json
 import re
 import sys
 rows=Path(sys.argv[1]).read_text(errors='replace').splitlines()
@@ -323,7 +324,23 @@ why=[(m[1],known.findall(l)) for l in rows if (m:=error.match(l))]
 marks=[l for l in rows if stage.fullmatch(l)]
 print('### Combined original Worker replay: '+sys.argv[2])
 print('- Expected: one original decision and canonical read after a real missing minute is resolved and the same-close roster changes.')
-print('- Actual: no complete combined receipt.')
+diag={}
+for line in rows:
+    if line.startswith('C11_MIXED_DIAGNOSTICS '):
+        try: diag=json.loads(line.split(' ',1)[1])
+        except ValueError: pass
+safe={}
+for key in ('generation','age_ms','covers','warm_scopes','history_requests','callback_count','read_count'):
+    val=diag.get(key)
+    if type(val) is int and 0<=val<=1000000:safe[key]=val
+for key in ('proof','slot','minute'):
+    val=diag.get(key)
+    if type(val) is str and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,80}',val):safe[key]=val
+if type(diag.get('minute_pending')) is bool:safe['minute_pending']=diag['minute_pending']
+if type(diag.get('statuses')) is list:
+    safe['statuses']=[x for x in diag['statuses'] if type(x) is str and
+                      re.fullmatch(r'[A-Z][A-Z0-9_]{1,80}',x)][:16]
+print('- Actual: '+(json.dumps(safe,sort_keys=True) if safe else 'no complete combined receipt.'))
 print('- Last successful stage: '+(marks[-1].split(' ',1)[1] if marks else 'fixture driver or image setup'))
 if why:
     kind, codes=why[-1]

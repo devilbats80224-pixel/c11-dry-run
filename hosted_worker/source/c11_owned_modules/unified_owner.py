@@ -338,8 +338,15 @@ class UnifiedScheduler:
         self._owner()
         now=self.wall()
         if type(first) is not Scope or (first.pair,first.end)!=(pair,end):return False
-        if (now>=min(first.expires,end+60_000) or not self.plan.current(first,now)) and self.warm.arm_late(first,pair,end):
+        current=self.plan.current(first,now)
+        if (now>=min(first.expires,end+60_000) or not current) and self.warm.arm_late(first,pair,end):
             return True
+        if not current:
+            fresh=self.plan.provisional_scope(pair,end)
+            if (type(fresh) is Scope and (fresh.pair,fresh.symbol,fresh.end)==(pair,first.symbol,end)
+                    and fresh.generation>first.generation and self.plan.current(fresh,now)):
+                warm=self.warm.revisit(first,pair,end,fresh_source=fresh)
+                if warm is not None:return warm
         if not end<=now<first.expires:
             self._transition(first,'REVISIT_ORIGINAL_LEASE_EXPIRED')
             return False

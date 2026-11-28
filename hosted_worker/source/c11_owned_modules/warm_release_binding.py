@@ -264,13 +264,20 @@ class WarmReleaseBinding:
             return None
         return row,values
 
-    def revisit(self,first,pair,end):
+    def revisit(self,first,pair,end,*,fresh_source=None):
         sc=self.sc
         self.prepared=None
         s=next((q for q in sc.covers.values() if (q.pair,q.end)==(pair,end) and q in self.selected),None)
         if s is None:return None
-        if ((first.pair,first.symbol,first.generation,first.end)!=(s.pair,s.symbol,s.generation,s.end)
-             or s.expires>first.expires):
+        # An earlier HOLD can request a revisit, but cannot authorize it.
+        # Across a roster change, the fresh observed rank, selected native
+        # scope, and witnessed terminal data must all be from the new rank.
+        source=first if fresh_source is None else fresh_source
+        if ((first.pair,first.symbol,first.end)!=(s.pair,s.symbol,s.end)
+             or (source.pair,source.symbol,source.generation,source.end)!=(s.pair,s.symbol,s.generation,s.end)
+             or s.expires>source.expires or (pair,end) in self.claimed
+             or (fresh_source is not None and
+                 (source.generation<=first.generation or not sc.plan.current(source,sc.wall())))):
             self._report_hold(first,'WARM_REVISIT_SCOPE_NOT_OWNED')
             return False
         reason=self._current_reason(s)
