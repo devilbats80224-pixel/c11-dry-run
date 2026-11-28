@@ -7,9 +7,10 @@ MAX_ANALYZER_QUARTERS=260
 # Checkpoint age alone does not invalidate a compatible native recurrence.
 # The owner verifies symbol, contract origin, and observation time separately;
 # physical work remains one bounded page per authorized shared-queue job.
-def repairable_checkpoint(fact,cursor):
-    return (type(cursor) is int and fact.origin<cursor
-            and cursor//Q*Q>=fact.origin)
+def repairable_checkpoint(fact,cursor,*,causal_origin=None):
+    origin=fact.origin if causal_origin is None else causal_origin
+    return (type(cursor) is type(origin) is int and fact.origin<=origin<cursor
+            and cursor//Q*Q>=origin)
 
 @dataclass(frozen=True)
 class MinuteHistoryJob:
@@ -51,11 +52,12 @@ def make_job(fact,verified_cursor,analysis_gaps,now,ticket):
     j=MinuteHistoryJob(fact.symbol,fact.generation,fact.boundary,fact.origin,ticket,page.start,page.stop)
     return j if j.valid(now) else None
 
-def iter_jobs(fact,verified_cursor,analysis_gaps,now,blocked,next_ticket):
-    if not repairable_checkpoint(fact,verified_cursor):
+def iter_jobs(fact,verified_cursor,analysis_gaps,now,blocked,next_ticket,*,causal_origin=None):
+    if not repairable_checkpoint(fact,verified_cursor,causal_origin=causal_origin):
         return
+    origin=fact.origin if causal_origin is None else causal_origin
     for page in missing_intervals(fact.boundary,verified_cursor,analysis_gaps,blocked):
-        j=MinuteHistoryJob(fact.symbol,fact.generation,fact.boundary,fact.origin,
+        j=MinuteHistoryJob(fact.symbol,fact.generation,fact.boundary,origin,
                            next_ticket(),page.start,page.stop)
         if j.valid(now):
             yield j
