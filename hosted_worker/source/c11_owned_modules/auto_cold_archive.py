@@ -479,11 +479,13 @@ class AutoColdAdmission(ColdPrefixAdmission):
         return slot.status
 
     def offer_retained(self,owner,f):
-        from causal_bars import MINUTE
+        from causal_bars import MAX_SEGMENT_BARS,MINUTE
         now=self.wall()
         if (get_ident()!=self.thread or self.active is not None or not owner.tap.current(f)
                 or not quote_contract_shape(f.symbol) or f.pair!=f.symbol[:-4]+'/USDT:USDT'
-                or not inside_recent_window(f) or f.origin%QUARTER or f.origin>=f.boundary-QUARTER):
+                or type(f.origin) is not int or type(f.boundary) is not int
+                or not 0<f.origin<f.boundary-QUARTER or f.origin%QUARTER
+                or f.boundary%QUARTER):
             return None
         existing=self.pending.get(f.symbol)
         if (existing is not None and (existing.result is not None or existing.continuation is not None)
@@ -495,8 +497,11 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 'SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()):
             return None
         cutoff=f.boundary-QUARTER
-        # Full native continuity from the observed contract origin is needed.
-        # An arbitrary tail of an older contract never reaches this query.
+        # Existing canonical rows can be used regardless of listing age.
+        # Leave overlarge copies to the existing paged archive lane; do not
+        # truncate the verified interval or infer a new recurrence origin.
+        if (cutoff-f.origin)//MINUTE>MAX_SEGMENT_BARS:
+            return None
         rows=store.range(f.symbol,MINUTE,f.origin,cutoff,now)
         if not rows or not owner.tap.current(f):
             return None
