@@ -1,6 +1,7 @@
 from exact_symbol import ID_CHAR
 import re
-PATTERN=re.compile(fr"{ID_CHAR}{{2,50}}USDT")
+# Quote suffix is not part of the base length; markets may have one character.
+PATTERN=re.compile(fr"{ID_CHAR}{{1,50}}USDT")
 Q=900_000
 TTL=60_000
 MAX_LINE=2048
