@@ -47,3 +47,36 @@ clock = proof.expires
 assert not owner.one_public_revisit(strategy, PAIR)
 assert (PAIR, E) not in owner.spent
 print("C11_STAGING_WAIT_PRESERVES_ORIGINAL_SAME_CLOSE_REVISIT")
+
+
+def same_close_warm_receipt_failure_is_explained_before_source_expiry():
+    from coordinator import Scope
+    from warm_release_binding import WarmReleaseBinding
+
+    s=Scope(PAIR,"SYNTHUSDT",7,E,E+11949)
+    now=[E+7562]
+    remaining=[29]
+    diagnostic=[]
+    ready=SimpleNamespace(latency_budget=30,effective_expiry=lambda scope,_:scope.expires,
+                          authority=lambda scope,_:scope is s)
+    bot=SimpleNamespace(config={"dry_run":True},_owned_revisit_no_positions=True,
+                        _owned_revisit_reconciled=True)
+    adapter=SimpleNamespace(ready=ready,_proven={})
+    scheduler=SimpleNamespace(wall=lambda:now[0],marker=(s.generation,E),
+        covers={PAIR:s},worker=SimpleNamespace(freqtrade=bot),
+        commit_and_decide=SimpleNamespace(remaining=lambda:remaining[0]),
+        _transition=lambda scope,why:diagnostic.append((scope,why)),
+        queue=SimpleNamespace(accept_completed_original_scope=lambda *_:None),tickets={})
+    branch=WarmReleaseBinding(scheduler)
+    branch.selected.add(s)
+    branch.prefix[s]=((),())
+    assert not branch.revisit(s,PAIR,E)
+    assert diagnostic==[(s,'WARM_REVISIT_OWNER_HEADROOM')], 'C11_VISIBLE_RECEIPT_STAGE_FAILURE_UNEXPLAINED'
+    assert branch.prepared is None and now[0]<s.expires
+    remaining[0]=100
+    assert not branch.revisit(s,PAIR,E)
+    assert diagnostic[-1]==(s,'WARM_REVISIT_NO_WITNESSED_MINUTE')
+    print("C11_WARM_STAGE_REFUSAL_REPORTED_BEFORE_SOURCE_EXPIRY")
+
+
+same_close_warm_receipt_failure_is_explained_before_source_expiry()
