@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, ProxyHandler, Requ
 from zipfile import BadZipFile
 
 from cold_prefix import (ArchiveRecurrence, ColdPrefixAdmission, ClosedPrefixSource, PreparedPrefix,
-                         QUARTER, archive_item, verify_archive_blob)
+                         QUARTER, archive_item, unusable_retained_prior, verify_archive_blob)
 from primary_only_route import NW_WARM
 from stale_state_install import snapshot
 from rpd_checkpoint import RpdState
@@ -523,7 +523,7 @@ class AutoColdAdmission(ColdPrefixAdmission):
         slot.fact,slot.seen_ms=f,now
         return slot.status
 
-    def offer_retained(self,owner,f):
+    def offer_retained(self,owner,f,*,prior=None):
         from atr_er_state import REQUIRED_QUARTERS
         from causal_bars import MINUTE
         now=self.wall()
@@ -539,7 +539,10 @@ class AutoColdAdmission(ColdPrefixAdmission):
             return None
         owner.check_store()
         store=owner.store
-        if (store.segment(f.symbol) is not None or store.db.execute(
+        if prior is not None:
+            if snapshot(store.db,f.symbol)!=prior or not unusable_retained_prior(store.db,prior,f,now):
+                return None
+        elif (store.segment(f.symbol) is not None or store.db.execute(
                 'SELECT 1 FROM rpd_checkpoint WHERE symbol=?',(f.symbol,)).fetchone()):
             return None
         cutoff=f.boundary-QUARTER
@@ -547,6 +550,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
         # new, explicitly labeled segment from the needed contiguous local
         # minutes. A recent listing still uses its original verified start.
         origin=max(f.origin,cutoff-REQUIRED_QUARTERS*QUARTER)
+        if prior is not None and origin==f.origin:
+            return None
         rows=store.range(f.symbol,MINUTE,origin,cutoff,now)
         if not rows or not owner.tap.current(f):
             return None
@@ -554,6 +559,8 @@ class AutoColdAdmission(ColdPrefixAdmission):
         slot=self.pending.get(f.symbol)
         if slot is None:
             return None
+        if prior is not None:
+            self.repair_prior[f.symbol]=prior
         slot.retained=(f,rows,now,f.boundary+QUARTER,origin)
         slot.due_ms=now
         slot.status='AUTO_RETAINED_MINUTES_QUEUED'
@@ -570,6 +577,9 @@ class AutoColdAdmission(ColdPrefixAdmission):
             old=snapshot(owner.store.db,f.symbol)
             if old.segment is None or old.segment[0]!=f.origin:
                 return 'AUTO_REPAIR_ORIGIN_MISMATCH'
+            retained=self.offer_retained(owner,f,prior=old)
+            if retained is not None:
+                return retained
             if old.checkpoint is not None:
                 prior=RpdState.restore(old.checkpoint)
                 if ((prior.symbol,prior.origin)!=(f.symbol,f.origin)
