@@ -15,7 +15,7 @@ STARTUP_REGRESSIONS={
     'test_advanced_checkpoint_long_gap.py',
     'test_archive_fallback_wire_evidence.py',
 }
-WORKER_REPLAYS={'warm-missing-analysis','mixed-blank','mixed-unusable',
+WORKER_REPLAYS={'warm-missing-analysis','mixed-blank','mixed-unusable','mixed-retained-blank',
                 'early-roster-return','unseeded-on-demand','archive-source-outage'}
 
 

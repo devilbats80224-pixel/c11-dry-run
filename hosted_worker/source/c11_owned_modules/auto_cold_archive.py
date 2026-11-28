@@ -667,7 +667,10 @@ class AutoColdAdmission(ColdPrefixAdmission):
         # Drain completed, in-scope work before launching another fetch.
         # In insertion order a due retry could otherwise bypass the ready
         # candidate at every completion, even when no new data is needed.
+        delivered=False
         for symbol,slot in tuple(self.pending.items()):
+            if ready_only and not allowed():
+                return delivered
             if slot.result is not None and (owner.cold_delivery_allows(slot.fact) if ready_only else owner.tap.current(slot.fact)):
                 source,prefix=slot.result
                 if (source.review_expires_ms is not None
@@ -699,14 +702,18 @@ class AutoColdAdmission(ColdPrefixAdmission):
                 finally:
                     self.sources.pop(symbol,None)
                 if installed:
+                    delivered=True
                     self.pending.pop(symbol,None)
                     self.repair_prior.pop(symbol,None)
                     if getattr(source,'daily_fallback',False) is True:
                         emit=getattr(getattr(owner,'primary_admission',None),'gate',None)
                         if callable(emit):
                             emit('AUTO_ARCHIVE_DAILY_FALLBACK_INSTALLED',slot.fact)
-                return True
-        if ready_only or not allowed():
+                if not ready_only:
+                    return True
+        if ready_only:
+            return delivered
+        if not allowed():
             return
         for symbol,slot in tuple(self.pending.items()):
             if not allowed():
