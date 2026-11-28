@@ -1,4 +1,5 @@
 """Bounded public archive preparation after reviewed owner startup."""
+from collections import deque
 from copy import deepcopy
 from dataclasses import astuple, dataclass
 from datetime import datetime, timedelta, timezone
@@ -379,31 +380,40 @@ def retained_minute_prefix(f,rows,captured,expires,cancel):
     origin,cutoff=f.origin,f.boundary-QUARTER
     class SavedMinutes:
         def range(self,symbol,width,start,end,as_of):
-            if (symbol,width,start,end,as_of)==(f.symbol,MINUTE,origin,cutoff,captured):
-                return rows
+            if ((symbol,width,as_of)==(f.symbol,MINUTE,captured)
+                    and origin<=start<end<=cutoff
+                    and (start-origin)%MINUTE==(end-origin)%MINUTE==0):
+                return rows[(start-origin)//MINUTE:(end-origin)//MINUTE]
             return ()
     if cancel.is_set():
         raise Hold('AUTO_ARCHIVE_CANCELLED')
+    if len(rows)!=(cutoff-origin)//MINUTE:
+        raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP')
     basis=SavedMinutes()
     rpd=RpdState.start(SegmentStart(f.symbol,origin,captured))
-    states=[]
-    for width in (FIVE,QUARTER):
-        bars=project_closed_minutes(basis,f.symbol,width,origin,cutoff,captured)
-        if not bars:
-            raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP')
-        indicator=new_atr()
-        for bar in bars:
-            if cancel.is_set():
-                raise Hold('AUTO_ARCHIVE_CANCELLED')
-            advance(indicator,bar,width)
-            if width==FIVE:
-                rpd.advance(bar,captured)
-        states.append((width,indicator))
+    indicators={width:new_atr() for width in (FIVE,QUARTER)}
+    last_quarters=deque(maxlen=NW_WARM)
+    # The projection read limit is per slice, not a history-age cutoff.
+    # Keep one recurrence across all slices; do not re-seed it at the join.
+    for start in range(origin,cutoff,NW_WARM*QUARTER):
+        stop=min(cutoff,start+NW_WARM*QUARTER)
+        for width,indicator in indicators.items():
+            bars=project_closed_minutes(basis,f.symbol,width,start,stop,captured)
+            if not bars:
+                raise Hold('AUTO_ARCHIVE_CONTINUITY_GAP')
+            for bar in bars:
+                if cancel.is_set():
+                    raise Hold('AUTO_ARCHIVE_CANCELLED')
+                advance(indicator,bar,width)
+                if width==FIVE:
+                    rpd.advance(bar,captured)
+                else:
+                    last_quarters.append(bar)
     proof=sha256(json.dumps(['owner-verified-minutes-v1',f.symbol,origin,cutoff,
                              [astuple(bar) for bar in rows]],separators=(',',':'),
                             allow_nan=False).encode()).hexdigest()
     return (ClosedPrefixSource(Path('/unused-retained-native-minutes'),proof,origin,cutoff,expires),
-            PreparedPrefix(rpd,tuple(states),bars))
+            PreparedPrefix(rpd,tuple(indicators.items()),tuple(last_quarters)))
 
 
 @dataclass

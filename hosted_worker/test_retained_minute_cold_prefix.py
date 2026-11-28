@@ -70,7 +70,7 @@ def older_but_fully_retained_can_queue_without_archive():
     def unexpected_archive(*_):
         raise AssertionError('C11_OLDER_RETAINED_HISTORY_UNEXPECTED_NETWORK_REQUEST')
     lane=AutoColdAdmission(lambda:WALL,unexpected_archive)
-    gap=old_origin+MINUTE
+    gap=old_origin+260*QUARTER  # an actual missing minute at the page join
     def bar(t):
         return ClosedBar(t,t+MINUTE,100,101,99,100,10,1000)
     try:
@@ -83,7 +83,9 @@ def older_but_fully_retained_can_queue_without_archive():
         assert store.segment(SYMBOL) is None  # only queue, no premature authorization
         lane.tick(owner,prepare_only=True)
         source,prefix=lane.active[2].result(timeout=25)
-        assert (source.origin,prefix.rpd.next_open)==(old_origin,CUTOFF)
+        assert (source.origin,prefix.rpd.origin,prefix.rpd.next_open)==(old_origin,old_origin,CUTOFF)
+        assert tuple(b.open_ms for b in prefix.quarters)==tuple(range(CUTOFF-260*QUARTER,CUTOFF,QUARTER))
+        assert {width for width,_ in prefix.atr}=={FIVE,QUARTER}
         lane.tick(owner,ready_only=True)
         assert store.segment(SYMBOL).open_ms==old_origin
         assert store.db.execute('SELECT COUNT(*) FROM rpd_checkpoint WHERE symbol=?',(SYMBOL,)).fetchone()==(1,)
