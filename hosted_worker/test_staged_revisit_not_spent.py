@@ -132,3 +132,45 @@ def durable_projection_rechecks_verified_ready_clock():
 
 
 durable_projection_rechecks_verified_ready_clock()
+
+
+def native_policy_reads_late_inputs_only_through_the_authenticated_handoff():
+    from unittest.mock import patch
+    from primary_coverage_gate import NativePrimaryEvidence,NativePrimaryHandoff
+    from standalone_policy import StandalonePolicy
+    now=E+68_200
+    expires=E+110_000
+    row=SimpleNamespace(symbol="SYNTHUSDT",generation=8)
+    primary=((),(),"sealed")
+    rpd=object()
+    event=NativePrimaryEvidence(PAIR,row.symbol,row.generation,E,E+68_100,expires,
+                                "same-native-frame",primary,rpd)
+    active=[True]
+    handoff=NativePrimaryHandoff(wall=lambda:now,
+        original_scope=lambda c,p,t:c is row and p is event and active[0],
+        frame_sha=lambda p,e:"same-native-frame",
+        verified_ready_at=lambda c,p,t:E+68_000 if c is row and p is event else None)
+    seen=[]
+    def inputs(symbol,end,asof,*,primary,state,valid_until_ms=None):
+        seen.append((symbol,end,asof,primary,state,valid_until_ms))
+        return {"valid_until_ms":valid_until_ms}
+    def no_wire(*_):
+        raise AssertionError("C11_LATE_NATIVE_PRIMARY_OPENED_NEW_MARKET_WIRE")
+    policy=object.__new__(StandalonePolicy)
+    policy.slots=SimpleNamespace(ready=True)
+    policy.bars=SimpleNamespace(inputs=inputs)
+    policy.candles=SimpleNamespace(update_entry_hour=no_wire)
+    bot=SimpleNamespace(_c11_native_primary_handoff=handoff,config={'dry_run':True},
+                        native_paper_exchange=lambda:True)
+    with patch("standalone_policy.time.time_ns",return_value=now*1_000_000):
+        assert policy.primary_inputs(bot,PAIR,row) is None
+        with handoff.committed(event):
+            result=policy.primary_inputs(bot,PAIR,row)
+            assert result=={"valid_until_ms":expires}, "C11_NATIVE_POLICY_STILL_DROPS_VERIFIED_LATE_INPUTS"
+            assert seen==[(row.symbol,E,now,primary,rpd,expires)]
+            active[0]=False
+            assert policy.primary_inputs(bot,PAIR,row) is None
+    print("C11_NATIVE_POLICY_CONSUMES_AUTHENTICATED_READY_SCOPE_WITHOUT_WIRE")
+
+
+native_policy_reads_late_inputs_only_through_the_authenticated_handoff()
