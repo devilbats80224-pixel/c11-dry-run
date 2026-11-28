@@ -55,7 +55,7 @@ finally:
     os.close(test_error_pipe)
     close()
 '''
-proc = subprocess.run([sys.executable, "-I", "-B", "-c", child],
+proc = subprocess.run([sys.executable, "-P", "-B", "-c", child],
                       check=False, capture_output=True, timeout=30)
 if proc.returncode != 0:
     print(proc.stderr.decode("utf-8", errors="replace")[-3000:], file=sys.stderr)
