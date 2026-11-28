@@ -17,6 +17,8 @@ QUERY = 'ef5fea69e4bea1b579e2857dcf8dcc65f7516edecad0e0310a7b3a2ff377b815'
 SYMBOL = re.compile(fr'{ID_CHAR}{{2,40}}')
 RATIO = re.compile(r'-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?')
 METADATA_NS = 300_000_000_000
+QUARTER_NS = 900_000_000_000
+ACQUISITION_NS = 60_000_000_000
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class EntryFeed:
         self.classification = None
         self.retry_metadata_ns = 0
         self._reviewed_metaclass_fetch = None
+        self._classification_rollover_attempt = None
         self._last_tracking = {}  # Watch only; never an entry fallback.
         self.latest_owner_observation = ()
         self._owner_read_sequence = 0
@@ -45,12 +48,43 @@ class EntryFeed:
     def refresh_classification(self):
         now = time.monotonic_ns()
         if self.classification is not None and now < self.classification.received_monotonic_ns + METADATA_NS:
-            return self.classification
+            return self._cover_active_acquisition(now)
         need(now >= self.retry_metadata_ns, 'C11_BINANCE_CLASSIFICATION_NOT_READY')
         self.retry_metadata_ns = now + 60_000_000_000
         fetch = self._reviewed_metaclass_fetch or public_market.fetch
         self.classification = fetch()
         return self.classification
+
+    def _cover_active_acquisition(self, now):
+        previous = self.classification
+        fetch = self._reviewed_metaclass_fetch
+        if not callable(fetch):
+            return previous  # Existing read-only/monotonic adapter is untouched.
+        cached_until = previous.received_monotonic_ns + METADATA_NS
+        wall = time.time_ns()
+        boundary = wall // QUARTER_NS * QUARTER_NS
+        remaining = boundary + ACQUISITION_NS - wall
+        if (remaining <= 0 or cached_until >= now + remaining
+                or now < self.retry_metadata_ns or self._classification_rollover_attempt == boundary):
+            return previous
+        # This is the existing metered native classifier, not a new request
+        # lane or a publisher lease extension. Try once for this overlapping
+        # cache/window; a failed anticipation must not consume the regular
+        # expired-cache refresh opportunity.
+        self._classification_rollover_attempt = boundary
+        try:
+            refreshed = fetch()
+            seen = refreshed.received_monotonic_ns
+            need(type(seen) is int and previous.received_monotonic_ns < seen <= time.monotonic_ns()
+                 and type(refreshed.verified) is dict and type(refreshed.body_sha256) is str
+                 and re.fullmatch('[a-f0-9]{64}',refreshed.body_sha256),
+                 'C11_THIN_CLASSIFIER_REFRESH_UNVERIFIED')
+        except Exception:
+            if time.monotonic_ns() < cached_until:
+                return previous  # exact unexpired proof; no artificial extension
+            raise
+        self.classification = refreshed
+        return refreshed
 
     def read(self):
         self.latest_owner_observation = ()

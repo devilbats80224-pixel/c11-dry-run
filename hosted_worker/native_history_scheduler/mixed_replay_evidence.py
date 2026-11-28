@@ -195,6 +195,7 @@ def observer_feed(root, symbol, pair, metadata, wall, mono, *, thin_classifier=F
         # Actual incident's first same-generation capture had only 297 ms
         # of classifier freshness left, not 297 ms of publisher lease.
         feed.classification.received_monotonic_ns -= 299_703 * 1_000_000
+        feed.retry_metadata_ns = mono() + 297 * 1_000_000
     feed._reviewed_metaclass_fetch = classify
     return feed, ObserverClient(bridge, binding, docked_current=True), observer, publication
 

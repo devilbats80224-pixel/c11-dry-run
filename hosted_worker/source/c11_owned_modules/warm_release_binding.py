@@ -77,22 +77,19 @@ class WarmReleaseBinding:
             and getattr(bot,'_owned_revisit_no_positions',False) is True
             and getattr(bot,'_owned_revisit_reconciled',False) is True
             and sc.commit_and_decide.remaining()>sc.adapter.ready.latency_budget
-            and sc.plan.current(scope,now)
-            and optional_observation(proof.durable_check,(sc.adapter.ready.store.db,)) is True)
+            and sc.plan.current_readable_scope(scope,now))
 
     def arm_late(self,first,pair,end):
         self.late=None
         now=self.sc.wall()
         if (first.pair,first.end)!=(pair,end):
             return False
-        fresh=self.sc.plan.provisional_scope(pair,end)
-        if fresh is None or (fresh.pair,fresh.symbol,fresh.end)!=(pair,first.symbol,end):
+        fresh=self.sc.plan.confirmed_readable_scope(pair,end)
+        if (fresh is None or (fresh.pair,fresh.symbol,fresh.end)!=(pair,first.symbol,end)
+                or fresh.generation<first.generation):
             return False
-        if now<min(first.expires,end+60_000):
-            # A still-current original scope keeps its normal path. Only a
-            # genuinely newer authenticated roster can supersede it early.
-            if fresh.generation<=first.generation or self.sc.plan.current(first,now):
-                return False
+        if self.sc.plan.current(first,now):
+            return False  # Retain the normal path while its scope is current.
         proof=self.readable.get((fresh.pair,fresh.symbol,fresh.end))
         if proof is None:
             return False
@@ -113,7 +110,7 @@ class WarmReleaseBinding:
         sc=self.sc
         bot=sc.worker.freqtrade
         store=sc.adapter.ready.store
-        candidate=sc.plan.accepted_candidate(s)
+        candidate=sc.plan.accepted_readable_candidate(s,sc.wall())
         if candidate is None or hasattr(bot,'_c11_native_primary_handoff'):
             return 'HOLD_NO_ORIGINAL_ACCEPTED_RANK',None
         at=sc.wall()

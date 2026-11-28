@@ -391,6 +391,27 @@ cold() {
     fi
     # CI jobs are public; do not print raw fixture diagnostics or archive rows.
     echo "C11_HOSTED_WORKER_CASE_FAILED $mode"
+    python3 -I -B - "$out/$mode.log" <<'PY_COLD_FAILURE' | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+from pathlib import Path
+import re,sys
+rows=Path(sys.argv[1]).read_text(errors='replace').splitlines()
+places=re.compile(r'^  File "(?:/fixture-driver/|/opt/c11_owned_modules/|/opt/c11_worker/)([a-z0-9_]+\.py)", line ([0-9]{1,5}), in [A-Za-z_<>]+$')
+types=re.compile(r'^([A-Za-z_.]*(?:Error|Exception|Refused|Hold))(?::|$)')
+codes=re.compile(r'\b(?:C11|JCT|UNWITNESSED)_[A-Z0-9_]{4,80}\b')
+trace=[]
+failure=[]
+for line in rows:
+    if m:=places.fullmatch(line):
+        trace.append(f'{m[1]}:{m[2]}')
+    if m:=types.match(line):
+        failure.append((m[1],codes.findall(line)))
+if failure:
+    name,markers=failure[-1]
+    print('- Worker replay stopped: '+name+' at '+(trace[-1] if trace else 'driver/setup')
+          +(' ('+', '.join(markers[:6])+')' if markers else ''))
+else:
+    print('- Worker replay stopped before a safe exception or a terminal receipt was available.')
+PY_COLD_FAILURE
     if grep -q 'C11_REPLAY_FIXTURE_NOT_READABLE' "$out/$mode.log"; then
         echo "C11_REPLAY_FIXTURE_NOT_READABLE $mode"
     elif grep -q 'Permission denied' "$out/$mode.log"; then
